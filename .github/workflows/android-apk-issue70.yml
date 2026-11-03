@@ -1,18 +1,18 @@
-# Issue #70 test build: patched chat-keyboard APK for arm64-v8a.
-# Runs only on the fix/issue-70-chat-keyboard branch of this fork.
+# Debug-branch test build: APK for arm64-v8a.
+# Runs only on the debug-branch branch of this fork.
 # Not an upstream workflow: it builds a local (non-public) debug APK with
 # the generated engine tables from tools/android_prepare.py, then uploads
 # the APK as a workflow artifact for on-device testing. No signing secrets
 # are needed: android_build.py creates a throwaway debug keystore.
-name: Android APK (issue #70)
+name: Android APK (debug)
 on:
   push:
-    branches: [fix/issue-70-chat-keyboard]
+    branches: [debug-branch]
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: android-apk-issue70-${{ github.ref }}
+  group: android-apk-debug-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   apk:
@@ -55,11 +55,11 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - name: Build patched APK (arm64-v8a)
+      - name: Build debug APK (arm64-v8a)
         run: python3 tools/android_build.py --abi arm64-v8a --sdk "$ANDROID_HOME" --java-home "$JAVA_HOME" --gradle "$GITHUB_WORKSPACE/gradle-8.14/bin/gradle"
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: horizon-android-issue70-arm64
+          name: horizon-android-debug-arm64
           path: .local/android/apk/arm64-v8a/*.apk
           if-no-files-found: error
