@@ -48,6 +48,13 @@ jobs:
           ./gradle-8.14/bin/gradle --version
       - name: Prepare engine resources
         run: python3 tools/android_prepare.py --java-home "$JAVA_HOME"
+      # Gradle 8.14 cannot run on JDK 25 (Unsupported class file major
+      # version 69). Prepare keeps JDK 25, the Gradle build uses JDK 17.
+      - name: Set up JDK 17 for Gradle
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
       - name: Build patched APK (arm64-v8a)
         run: python3 tools/android_build.py --abi arm64-v8a --sdk "$ANDROID_HOME" --java-home "$JAVA_HOME" --gradle "$GITHUB_WORKSPACE/gradle-8.14/bin/gradle"
       - name: Upload APK
