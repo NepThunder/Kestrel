@@ -37,8 +37,10 @@ jobs:
           rustup target add aarch64-linux-android
       - name: Install Android SDK packages
         run: |
-          sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
-          yes | sdkmanager --licenses > /dev/null || true
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
       - name: Download Gradle 8.14
         run: |
           curl -L -o gradle-8.14-all.zip https://services.gradle.org/distributions/gradle-8.14-all.zip
