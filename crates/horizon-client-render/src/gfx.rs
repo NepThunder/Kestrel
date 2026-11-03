@@ -4609,6 +4609,52 @@ impl Renderer {
         [self.config.width, self.config.height]
             .map(|v| ((v as f32 * self.world_post.scale).round() as u32).clamp(1, 8192))
     }
+    /// Build the improved-transparency (OIT) pipelines, if not built yet.
+    /// Callers must already have checked the option is on and supported and
+    /// that no shader pack owns drawing; see `prepare_improved_transparency`.
+    fn ensure_oit(&mut self) {
+        if self.oit.is_some() {
+            return;
+        }
+        let clouds = [0, 1].map(|i| self.cloud_pipeline.get_bind_group_layout(i));
+        let features = [
+            self.entity_pipeline.get_bind_group_layout(0),
+            self.weather.pipeline().get_bind_group_layout(1),
+            self.border_pipeline.get_bind_group_layout(0),
+        ];
+        let flat = self
+            .flat
+            .as_ref()
+            .map(|f| f.translucent.get_bind_group_layout(1));
+        let oit = oit::Oit::new(
+            &self.device,
+            &self.terrain_layout,
+            flat.as_ref(),
+            [&features[0], &features[1], &features[2]],
+            [&clouds[0], &clouds[1]],
+            self.terrain_sprites,
+            self.config.format.remove_srgb_suffix(),
+        );
+        self.oit = Some(oit);
+    }
+    /// Build the improved-transparency (OIT) pipelines now, instead of on
+    /// the first world frame that draws with them. Creating them lazily in
+    /// `draw_frame` put a long Mali shader compile on the game thread while
+    /// touch input was waiting, which Android reports as a repeated ANR
+    /// (input dispatch timeout for MotionEvent ACTION_UP). Building them
+    /// when settings are applied (world load, options change) moves that
+    /// compile to a moment when no gameplay input is in flight. A no-op
+    /// when the option is off, unsupported, or a shader pack owns drawing.
+    pub fn prepare_improved_transparency(&mut self) {
+        if !self.improved_transparency
+            || !oit::supported(&self.device)
+            || self.pack_post.as_ref().is_some_and(|p| p.1.is_some())
+            || self.native.is_some()
+        {
+            return;
+        }
+        self.ensure_oit();
+    }
     /// Runs `post` over the world from now on (`None`: no pack), for the dimension `dimension`;
     /// `block_ids` gives each block sprite layer's `mc_Entity` (id, fluid) pair.
     /// Returns the programs that run and the notes of loading them.
@@ -6438,38 +6484,19 @@ impl Renderer {
                 .size()
                 .filter(|_| scaled.is_some())
                 .unwrap_or([self.config.width, self.config.height]);
-            let (device, layout, sprites) =
-                (&self.device, &self.terrain_layout, self.terrain_sprites);
-            let clouds = [0, 1].map(|i| self.cloud_pipeline.get_bind_group_layout(i));
-            let format = self.config.format.remove_srgb_suffix();
-            let flat = self
-                .flat
-                .as_ref()
-                .map(|f| f.translucent.get_bind_group_layout(1));
-            let features = [
-                self.entity_pipeline.get_bind_group_layout(0),
-                self.weather.pipeline().get_bind_group_layout(1),
-                self.border_pipeline.get_bind_group_layout(0),
-            ];
-            self.oit
-                .get_or_insert_with(|| {
-                    oit::Oit::new(
-                        device,
-                        layout,
-                        flat.as_ref(),
-                        [&features[0], &features[1], &features[2]],
-                        [&clouds[0], &clouds[1]],
-                        sprites,
-                        format,
-                    )
-                })
-                .prepare(
+            // Pipelines are normally built by `prepare_improved_transparency`
+            // at world load; this only covers the case where the option was
+            // enabled after the last settings application.
+            self.ensure_oit();
+            if let Some(oit) = &mut self.oit {
+                oit.prepare(
                     &self.device,
                     &self.queue,
                     size,
                     &views.primary().projection,
                     [water_mask_quads > 0, cloud_quads > 0],
                 );
+            }
         }
         let oit = self.oit.as_ref().filter(|_| oit_on);
         let cull = self.cull.as_ref().filter(|_| culling && solid_draws > 0);
