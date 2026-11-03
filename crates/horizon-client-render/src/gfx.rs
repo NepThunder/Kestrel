@@ -6484,19 +6484,43 @@ impl Renderer {
                 .size()
                 .filter(|_| scaled.is_some())
                 .unwrap_or([self.config.width, self.config.height]);
-            // Pipelines are normally built by `prepare_improved_transparency`
-            // at world load; this only covers the case where the option was
-            // enabled after the last settings application.
-            self.ensure_oit();
-            if let Some(oit) = &mut self.oit {
-                oit.prepare(
+            // Pipelines are normally already built by
+            // `prepare_improved_transparency` at world load; this keeps the
+            // original field-disjoint lazy build as a fallback, because a
+            // whole-`self` borrow here would conflict with the view/depth
+            // borrows live in this function (E0502).
+            let (device, layout, sprites) =
+                (&self.device, &self.terrain_layout, self.terrain_sprites);
+            let clouds = [0, 1].map(|i| self.cloud_pipeline.get_bind_group_layout(i));
+            let format = self.config.format.remove_srgb_suffix();
+            let flat = self
+                .flat
+                .as_ref()
+                .map(|f| f.translucent.get_bind_group_layout(1));
+            let features = [
+                self.entity_pipeline.get_bind_group_layout(0),
+                self.weather.pipeline().get_bind_group_layout(1),
+                self.border_pipeline.get_bind_group_layout(0),
+            ];
+            self.oit
+                .get_or_insert_with(|| {
+                    oit::Oit::new(
+                        device,
+                        layout,
+                        flat.as_ref(),
+                        [&features[0], &features[1], &features[2]],
+                        [&clouds[0], &clouds[1]],
+                        sprites,
+                        format,
+                    )
+                })
+                .prepare(
                     &self.device,
                     &self.queue,
                     size,
                     &views.primary().projection,
                     [water_mask_quads > 0, cloud_quads > 0],
                 );
-            }
         }
         let oit = self.oit.as_ref().filter(|_| oit_on);
         let cull = self.cull.as_ref().filter(|_| culling && solid_draws > 0);
