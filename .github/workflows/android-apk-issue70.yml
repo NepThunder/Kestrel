@@ -2,7 +2,8 @@
 # Runs only on the debug-branch branch of this fork.
 # Not an upstream workflow: it builds a local (non-public) debug APK with
 # the generated engine tables from tools/android_prepare.py, then uploads
-# the APK as a workflow artifact for on-device testing. No signing secrets
+# the APK as a release asset for on-device testing, so it downloads as a
+# plain .apk file instead of a zipped workflow artifact. No signing secrets
 # are needed: android_build.py creates a throwaway debug keystore.
 name: Android APK (debug)
 on:
@@ -10,7 +11,7 @@ on:
     branches: [debug-branch]
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 concurrency:
   group: android-apk-debug-${{ github.ref }}
   cancel-in-progress: false
@@ -57,9 +58,13 @@ jobs:
           java-version: "17"
       - name: Build debug APK (arm64-v8a)
         run: python3 tools/android_build.py --abi arm64-v8a --sdk "$ANDROID_HOME" --java-home "$JAVA_HOME" --gradle "$GITHUB_WORKSPACE/gradle-8.14/bin/gradle"
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: horizon-android-debug-arm64
-          path: .local/android/apk/arm64-v8a/*.apk
-          if-no-files-found: error
+      - name: Create release with APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          apk=$(ls .local/android/apk/arm64-v8a/*.apk)
+          tag="debug-build-${{ github.run_number }}-attempt-${{ github.run_attempt }}"
+          gh release create "$tag" --prerelease \
+            --title "Debug build ${{ github.run_number }}" \
+            --notes "Built from debug-branch commit ${{ github.sha }}. Debug build, not a stable release." \
+            "$apk"
