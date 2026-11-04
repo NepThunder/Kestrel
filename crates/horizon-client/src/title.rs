@@ -713,7 +713,12 @@ impl Title {
     /// Vanilla bypasses the selector when there are no saves.
     pub fn enter_singleplayer(&mut self) {
         self.search.clear();
-        self.search_focused = true;
+        // The world list, not the search box, has the keyboard on entry:
+        // starting with the search focused traps controller D-pad input
+        // in the text field (arrow_key returns early while a caret field
+        // has focus) and leaves no way to move the list without a mouse
+        // click first. Search stays reachable by clicking it or by Tab.
+        self.search_focused = false;
         self.scroll.set(crate::ui::Scroll::default());
         let worlds = list_worlds(&self.saves);
         self.create_return_to_main = worlds.is_empty();
