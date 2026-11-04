@@ -1,4 +1,6 @@
-# Debug-branch test build: APK for arm64-v8a.
+# Debug-branch test build: APKs for arm64-v8a and armeabi-v7a.
+# armeabi-v7a is needed for 32-bit-only devices (for example the
+# Android TV reporting issue #125, which cannot install arm64).
 # Runs only on the debug-branch branch of this fork.
 # Not an upstream workflow: it builds a local (non-public) debug APK with
 # the generated engine tables from tools/android_prepare.py, then uploads
@@ -35,7 +37,7 @@ jobs:
         run: |
           rustup toolchain install 1.95.0 --profile minimal
           rustup default 1.95.0
-          rustup target add aarch64-linux-android
+          rustup target add aarch64-linux-android armv7-linux-androideabi
       - name: Install Android SDK packages
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
@@ -58,13 +60,19 @@ jobs:
           java-version: "17"
       - name: Build debug APK (arm64-v8a)
         run: python3 tools/android_build.py --abi arm64-v8a --sdk "$ANDROID_HOME" --java-home "$JAVA_HOME" --gradle "$GITHUB_WORKSPACE/gradle-8.14/bin/gradle"
-      - name: Create release with APK
+      - name: Build debug APK (armeabi-v7a)
+        run: python3 tools/android_build.py --abi armeabi-v7a --sdk "$ANDROID_HOME" --java-home "$JAVA_HOME" --gradle "$GITHUB_WORKSPACE/gradle-8.14/bin/gradle"
+      - name: Create release with APKs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          apk=$(ls .local/android/apk/arm64-v8a/*.apk)
+          apk64=$(ls .local/android/apk/arm64-v8a/*.apk)
+          apk32=$(ls .local/android/apk/armeabi-v7a/*.apk)
+          # Both builds produce the same file name; rename the 32-bit one
+          # so both assets can live in one release.
+          cp "$apk32" horizon-android-armeabi-v7a.apk
           tag="debug-build-${{ github.run_number }}-attempt-${{ github.run_attempt }}"
           gh release create "$tag" --prerelease \
             --title "Debug build ${{ github.run_number }}" \
             --notes "Built from debug-branch commit ${{ github.sha }}. Debug build, not a stable release." \
-            "$apk"
+            "$apk64" horizon-android-armeabi-v7a.apk
