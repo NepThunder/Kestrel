@@ -831,9 +831,7 @@ impl Game<'_> {
         // error is the defence, as in the server's `return_world`.
         let view: Box<dyn std::any::Any> = view;
         if view.downcast::<LentClientWorld>().is_err() {
-            log::error!(
-                "Horizon: the client world's slot held another view at the tick's end"
-            );
+            log::error!("Horizon: the client world's slot held another view at the tick's end");
         }
     }
 
