@@ -1,11 +1,11 @@
-# Kestrel rebrand test build: APKs for all four Android ABIs.
+# Kestrel rebrand test build: arm64 APK only for now (user order 2026-11-07); other ABIs later.
 # Runs only on the kestrel-rebrand branch of this fork.
 # Builds a local (non-public) debug APK with the generated engine tables
 # from tools/android_prepare.py, then uploads the APKs as release assets
 # for on-device testing, so they download as plain .apk files instead of
 # zipped workflow artifacts. No signing secrets are needed:
 # android_build.py creates a throwaway debug keystore.
-name: Android APK (Kestrel, all ABIs)
+name: Android APK (Kestrel, arm64)
 on:
   push:
     branches: [kestrel-rebrand]
@@ -27,12 +27,6 @@ jobs:
         include:
           - abi: arm64-v8a
             target: aarch64-linux-android
-          - abi: armeabi-v7a
-            target: armv7-linux-androideabi
-          - abi: x86
-            target: i686-linux-android
-          - abi: x86_64
-            target: x86_64-linux-android
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -95,11 +89,8 @@ jobs:
         run: |
           ls -R apks
           cp apks/apk-arm64-v8a/*.apk horizon-android-arm64-v8a.apk
-          cp apks/apk-armeabi-v7a/*.apk horizon-android-armeabi-v7a.apk
-          cp apks/apk-x86/*.apk horizon-android-x86.apk
-          cp apks/apk-x86_64/*.apk horizon-android-x86_64.apk
           tag="kestrel-build-${{ github.run_number }}-attempt-${{ github.run_attempt }}"
           gh release create "$tag" --prerelease \
             --title "Kestrel build ${{ github.run_number }}" \
-            --notes "Built from kestrel-rebrand commit ${{ github.sha }}. Debug build, not a stable release. All four ABIs; Kestrel rebrand (app name, falcon icon, package com.kestrel.android)." \
-            horizon-android-arm64-v8a.apk horizon-android-armeabi-v7a.apk horizon-android-x86.apk horizon-android-x86_64.apk
+            --notes "Built from kestrel-rebrand commit ${{ github.sha }}. Debug build, not a stable release. arm64 only for now; Kestrel rebrand (app name, falcon icon, package com.kestrel.android)." \
+            horizon-android-arm64-v8a.apk

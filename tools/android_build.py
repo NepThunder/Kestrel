@@ -228,7 +228,15 @@ def main():
                        '-PdevVersionCode=' + str(args.dev_version_code)] if args.dev_build else [])
     run([gradle, '--no-daemon', '-p', ROOT / 'packaging/android', '-Pabi=' + args.abi, '-PminSdk=' + str(min_sdk), *dev_properties, 'assemble' + variant.title()], cwd=ROOT, env=environment)
     apk = output / ('horizon-android-public.apk' if args.public else 'horizon-android-release.apk' if args.release_candidate else 'horizon-android.apk')
-    shutil.copyfile(ROOT / f'.local/android/gradle-build/outputs/apk/{variant}/HorizonAndroid-{variant}.apk', apk)
+    # Gradle names the output APK after rootProject.name in settings.gradle
+    # (rebranded to 'Kestrel', was 'HorizonAndroid'); read it, don't hardcode it.
+    settings = (ROOT / 'packaging/android/settings.gradle').read_text()
+    project_name = 'HorizonAndroid'
+    for line in settings.splitlines():
+        line = line.strip()
+        if line.startswith('rootProject.name'):
+            project_name = line.split('=', 1)[1].strip().strip("'\"")
+    shutil.copyfile(ROOT / f'.local/android/gradle-build/outputs/apk/{variant}/{project_name}-{variant}.apk', apk)
     # Invoke the signing JAR directly so Windows does not need a batch-file shell.
     signer = [args.java_home / 'bin' / ('java' + suffix), '-jar', tools / 'lib/apksigner.jar']
     run([*signer, 'verify', '--verbose', apk])
