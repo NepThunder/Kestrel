@@ -714,6 +714,75 @@ interface %world {
     set-blocks: func(dimension: string, blocks: list<block-change>) -> result<_, string>;
 }
 
+/// Capability `inventory` (manifest `api = "0.1"`, experimental): the
+/// player's own inventory and the contents of a container the player
+/// currently has open. Read-only: there is no function here that moves a
+/// stack, clicks a slot or gives an item. Nothing here can see a container
+/// that is not open, another player's inventory, or a block entity in the
+/// world. The snapshot is copied once per tick, so a mod reads the
+/// inventory as of the last tick, not as of its call.
+interface %inventory {
+    /// One slot's stack, as the game holds it.
+    record inv-stack {
+        /// The slot, in the client's internal numbering: 0-8 hotbar,
+        /// 9-35 main inventory, 100-108 crafting grid, 200 crafting
+        /// result, 300+ open container, 500-503 armour (head, chest,
+        /// legs, feet), 504 offhand.
+        slot: u32,
+        /// `minecraft:diamond_sword`, ...
+        id: string,
+        count: u32,
+        /// Durability damage taken; 0 for undamageable items.
+        damage: u32,
+        /// The item's maximum damage (0: undamageable). Remaining
+        /// durability is `max-damage - damage`.
+        max-damage: u32,
+        /// Components beyond id/count/damage, in vanilla item syntax
+        /// (`[enchantments={...}]`), or "" when default. Same syntax
+        /// as `recipes.stack.components`.
+        components: string,
+    }
+    /// The player's own inventory, armour, offhand, crafting grid and
+    /// carried stack, as of this tick. Empty slots are omitted.
+    /// `selected` is the hotbar slot, 0-8.
+    record player-inventory {
+        selected: u32,
+        /// The player's saturation, 0 to 20, as the hunger bar's hidden
+        /// half: it lives here, not on `game.player`, so mods built
+        /// against that record keep their shape. Exhaustion is not on
+        /// the client at all and cannot be exposed.
+        saturation: f32,
+        slots: list<inv-stack>,
+        /// The cursor stack, if the player is carrying one.
+        carried: option<inv-stack>,
+    }
+    /// A container the player has open, if any.
+    record container {
+        /// `minecraft:chest`, `minecraft:furnace`, `minecraft:crafting`,
+        /// `inventory`, ... — the menu type the server opened.
+        kind: string,
+        /// The container's slots, in menu order. Slots are numbered as
+        /// `inv-stack.slot`: the container's own slots (300+ for a
+        /// chest-like menu, the workstation's input/result slots), never
+        /// the player's inventory slots, which `inventory()` already
+        /// covers.
+        slots: list<inv-stack>,
+        /// The container's numeric data slots, if it has any, in the
+        /// order the screen shows them (furnace burn/cook progress,
+        /// enchanting costs, seed and clue levels, beacon levels and
+        /// powers, loom/stonecutter selection, anvil cost, lectern
+        /// page). Empty for plain chests. See `docs/mods.md` for the
+        /// layout of each kind.
+        data: list<s32>,
+    }
+    /// The player's own inventory, as of this tick.
+    inventory: func() -> player-inventory;
+    /// The open container, if a container screen is open; none otherwise.
+    /// The slots are cleared the tick the menu closes: a mod can never
+    /// read a container after closing it.
+    open-container: func() -> option<container>;
+}
+
 /// What the server calls in a server mod (manifest `api = "0.3"`,
 /// experimental). Only the hooks `init` asks for are ever called. The player
 /// in each event is as the server saw them when it happened.
@@ -817,6 +886,9 @@ world horizon-mod {
     /// Read-only: `get-block`, `get-biome` and `get-blocks` only, in
     /// singleplayer in v1; `set-blocks` is refused.
     import %world;
+    /// Read-only: the player's own inventory and the open container's
+    /// contents, as of this tick; nothing here writes.
+    import %inventory;
     export events;
 }
 
