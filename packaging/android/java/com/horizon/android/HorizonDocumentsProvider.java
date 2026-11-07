@@ -1,4 +1,4 @@
-package dev.horizon.android;
+package com.horizon.android;
 
 import android.database.Cursor;
 import android.database.MatrixCursor;

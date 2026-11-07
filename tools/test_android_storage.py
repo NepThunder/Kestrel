@@ -163,7 +163,7 @@ extern "system" fn Java_dev_horizon_storageprobe_Probe_nativeCheck(
     manifest = '''<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.horizon.storageprobe">
 <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="35"/>
 <application android:debuggable="true" android:label="Horizon Storage Probe" android:extractNativeLibs="true">
-<provider android:name="dev.horizon.android.HorizonDocumentsProvider" android:authorities="dev.horizon.storageprobe.documents" android:exported="true" android:grantUriPermissions="true" android:permission="android.permission.MANAGE_DOCUMENTS"><intent-filter><action android:name="android.content.action.DOCUMENTS_PROVIDER"/></intent-filter></provider>
+<provider android:name="com.horizon.android.HorizonDocumentsProvider" android:authorities="dev.horizon.storageprobe.documents" android:exported="true" android:grantUriPermissions="true" android:permission="android.permission.MANAGE_DOCUMENTS"><intent-filter><action android:name="android.content.action.DOCUMENTS_PROVIDER"/></intent-filter></provider>
 <activity android:name="dev.horizon.storageprobe.Probe" android:exported="true"/>
 </application></manifest>'''
     (out / 'AndroidManifest.xml').write_text(manifest, encoding='utf-8')
@@ -174,7 +174,7 @@ extern "system" fn Java_dev_horizon_storageprobe_Probe_nativeCheck(
         subprocess.run([str(v) for v in command], check=True, cwd=ROOT, **kwargs)
     run(['cargo', 'build', '--manifest-path', out / 'Cargo.toml', '--target', 'aarch64-linux-android'], env=env)
     run([jdk / 'bin/javac.exe', '-source', '8', '-target', '8', '-classpath', sdk / 'platforms/android-35/android.jar',
-         '-d', out / 'classes', out / 'Probe.java', ROOT / 'packaging/android/java/dev/horizon/android/HorizonDocumentsProvider.java'])
+         '-d', out / 'classes', out / 'Probe.java', ROOT / 'packaging/android/java/com/horizon/android/HorizonDocumentsProvider.java'])
     classes = sorted((out / 'classes').rglob('*.class'))
     run([jdk / 'bin/java.exe', '-cp', bt / 'lib/d8.jar', 'com.android.tools.r8.D8', '--min-api', '28',
          '--lib', sdk / 'platforms/android-35/android.jar', '--output', out / 'dex', *classes])
