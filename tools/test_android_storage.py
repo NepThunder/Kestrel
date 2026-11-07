@@ -36,13 +36,13 @@ public final class Probe extends Activity {
             try (Cursor c = getContentResolver().query(children, null, null, null, null)) {
                 check(c != null && c.getCount() == 6, "six directories");
             }
-            Uri file = DocumentsContract.createDocument(getContentResolver(), mods, "application/zip", "probe.hmod");
+            Uri file = DocumentsContract.createDocument(getContentResolver(), mods, "application/zip", "probe.kmod");
             check(file != null, "create");
             try (OutputStream s = getContentResolver().openOutputStream(file, "wt")) { s.write(new byte[]{1,2,3}); }
             try (InputStream s = getContentResolver().openInputStream(file)) {
                 check(s.read() == 1 && s.read() == 2 && s.read() == 3 && s.read() == -1, "round trip");
             }
-            Uri renamed = DocumentsContract.renameDocument(getContentResolver(), file, "renamed.hmod");
+            Uri renamed = DocumentsContract.renameDocument(getContentResolver(), file, "renamed.kmod");
             check(renamed != null, "rename");
             DocumentsContract.Path path = DocumentsContract.findDocumentPath(getContentResolver(),
                     DocumentsContract.buildDocumentUriUsingTree(
@@ -145,8 +145,8 @@ extern "system" fn Java_dev_horizon_storageprobe_Probe_nativeCheck(
         std::fs::write(home.join("android-launcher.json"), "{}")?;
         let mods = home.join("horizon-mods");
         std::fs::create_dir_all(&mods)?;
-        let _ = std::fs::remove_file(mods.join("probe.hmod"));
-        let _ = std::fs::remove_file(mods.join("renamed.hmod"));
+        let _ = std::fs::remove_file(mods.join("probe.kmod"));
+        let _ = std::fs::remove_file(mods.join("renamed.kmod"));
         let link = mods.join("escape");
         let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink(&home, &link)?;
