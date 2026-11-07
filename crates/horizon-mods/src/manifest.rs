@@ -97,8 +97,8 @@ pub enum Capability {
     Input,
     /// The players on the server and messages to them (server mods).
     Players,
-    /// Blocks in the server's loaded chunks, and changes to them (server
-    /// mods; client mods later, where the game runs the world).
+    /// Blocks in the loaded chunks, and changes to them (server mods;
+    /// client mods read only, singleplayer in v1).
     World,
     /// The recipes and items the game knows, for recipe viewers
     /// (interface `recipes`).
@@ -168,7 +168,9 @@ impl Capability {
                 "see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys"
             }
             Capability::Players => "see who is on the server and message them",
-            Capability::World => "read and change the world's blocks",
+            Capability::World => {
+                "read the world's blocks, and change them where the game runs the world"
+            }
             Capability::Recipes => {
                 "read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items"
             }
@@ -249,11 +251,13 @@ impl Manifest {
                 "{MANIFEST}: a server mod is side = \"server\" with api = \"{SERVER_API}\", and only it"
             ));
         }
-        if let Some(c) = m
-            .capabilities
-            .iter()
-            .find(|c| c.on_server() != server && **c != Capability::Storage)
-        {
+        // `world` is both: server mods read and change blocks, client mods
+        // read them (singleplayer in v1); `storage` is shared the same way.
+        if let Some(c) = m.capabilities.iter().find(|c| {
+            c.on_server() != server
+                && **c != Capability::Storage
+                && **c != Capability::World
+        }) {
             let side = if server { "client" } else { "server" };
             return Err(format!("{MANIFEST}: capability {c} is for {side} mods"));
         }

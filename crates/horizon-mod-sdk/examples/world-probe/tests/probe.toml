@@ -1,0 +1,16 @@
+# Client world reads: the blocks at the player's feet, and the refusal of
+# set-blocks for a client mod. The player stands at 0.5 64 0.5, so the feet
+# are 0 64 0 and below is 0 63 0; the far position is air in this harness
+# (the game itself reads None where no chunk is loaded).
+
+[[step]]
+blocks = [
+  { x = 0, y = 64, z = 0, state = "minecraft:grass_block" },
+  { x = 0, y = 63, z = 0, state = "minecraft:dirt" },
+]
+ticks = 1
+expect.chat = ["probe feet=minecraft:grass_block below=minecraft:dirt far=minecraft:air"]
+
+[[step]]
+command = "probe-set"
+expect.feedback = "probe set: refused: client mods cannot change blocks"

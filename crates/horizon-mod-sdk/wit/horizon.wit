@@ -667,9 +667,12 @@ interface players {
     broadcast: func(text: string);
 }
 
-/// Capability `world`, server mods only (manifest `api = "0.3"`,
-/// experimental): the blocks of the server's loaded chunks, and changes to
-/// them through the server's own block updates.
+/// Capability `world` (manifest `api = "0.3"`, experimental, for server
+/// mods; read-only for client mods): the blocks of the loaded chunks, and
+/// changes to them through the server's own block updates. A client mod
+/// reads only the dimension the player is in, and only chunks the game has
+/// loaded; in v1 only in singleplayer, where the world is the player's own.
+/// `set-blocks` from a client mod is refused.
 interface %world {
     record block-change {
         x: s32,
@@ -679,6 +682,18 @@ interface %world {
         /// defaults, `minecraft:stone` alone is the default state.
         state: string,
     }
+    record block-pos {
+        x: s32,
+        y: s32,
+        z: s32,
+    }
+    record block-result {
+        x: s32,
+        y: s32,
+        z: s32,
+        /// None where no chunk is loaded there.
+        state: option<string>,
+    }
     /// The block state at a position in a dimension (`minecraft:overworld`,
     /// ...), as `minecraft:oak_log[axis=y]`, as of this call: none where the
     /// server has no chunk loaded there.
@@ -686,6 +701,11 @@ interface %world {
     /// The biome at a position (`minecraft:plains`, ...), as the server
     /// stores it (one per 4 x 4 x 4 cell): none where no chunk is loaded.
     get-biome: func(dimension: string, x: s32, y: s32, z: s32) -> option<string>;
+    /// The block states at `positions`, in the same order, as of this call.
+    /// At most 4096 positions per call; a call over the cap returns no
+    /// results. None per position where no chunk is loaded there. This is
+    /// the only bulk read: do not loop get-block.
+    get-blocks: func(dimension: string, positions: list<block-pos>) -> list<block-result>;
     /// Sets blocks as `/setblock` does: the old block entity removed,
     /// neighbours and shapes updated, light, and every player told. Every
     /// state is checked now (an error queues nothing); the changes are made
@@ -794,6 +814,9 @@ world horizon-mod {
     import hud;
     import storage;
     import command;
+    /// Read-only: `get-block`, `get-biome` and `get-blocks` only, in
+    /// singleplayer in v1; `set-blocks` is refused.
+    import %world;
     export events;
 }
 

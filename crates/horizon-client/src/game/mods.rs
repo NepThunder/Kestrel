@@ -30,10 +30,17 @@ use {
     },
     horizon_mods::{
         Clock, ModKey, Mods, Output, Player, Runs, ServerPlayer, Snapshot, Status, UiScreen,
-        UiWidget,
+        UiWidget, WorldView,
     },
     std::time::Instant,
     winit::{event::MouseButton, keyboard::KeyCode},
+};
+#[cfg(feature = "mods")]
+use {
+    horizon_client::{biome::Biomes, chunk::Chunk},
+    horizon_world::registry::{BlockRegistry, BlockStateId},
+    std::collections::HashMap,
+    std::sync::Arc,
 };
 
 #[derive(Default)]
@@ -67,6 +74,12 @@ pub(super) struct ModsState {
     /// levels' chunks to read.
     #[cfg(feature = "mods")]
     pub(super) world: bool,
+    /// A client view is lent for the client tick right now
+    /// ([`Game::lend_client_world`]): its columns are clones, so taking it
+    /// back puts nothing back, but the slot must be empty again before the
+    /// server tick lends its own view.
+    #[cfg(feature = "mods")]
+    client_world_lent: bool,
     /// Blocks server mods set, by dimension, made before that level's next
     /// tick.
     #[cfg(feature = "mods")]
@@ -384,6 +397,62 @@ fn register_menu_types(mods: &[horizon_client::mod_content::ContentMod]) {
 
 /// What the launcher writes beside a game it built with native mods: their ids under `mods`.
 const BUILD_INFO: &str = "native-mods.json";
+
+/// Capability `world`'s view for a client mod's tick: the in-place
+/// dimension's loaded columns at the tick's start, cloned (each column an
+/// `Arc<Chunk>`). Only that dimension answers; every other dimension, and
+/// every unloaded column, is `None`. Read-only: there is nothing here to
+/// write back, and the runtime refuses a client mod's `set-blocks`.
+#[cfg(feature = "mods")]
+struct LentClientWorld {
+    registry: &'static BlockRegistry,
+    biomes: Arc<Biomes>,
+    dimension: &'static str,
+    columns: HashMap<(i32, i32), Arc<Chunk>>,
+}
+#[cfg(feature = "mods")]
+impl WorldView for LentClientWorld {
+    fn block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String> {
+        if dimension != self.dimension {
+            return None;
+        }
+        let chunk = self.columns.get(&(x >> 4, z >> 4))?;
+        Some(state_string(self.registry, chunk.block(x & 15, y, z & 15)))
+    }
+    fn biome(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String> {
+        if dimension != self.dimension {
+            return None;
+        }
+        let chunk = self.columns.get(&(x >> 4, z >> 4))?;
+        Some(self.biomes.get(chunk.biome(x, y, z)).name.clone())
+    }
+    fn has_dimension(&self, dimension: &str) -> bool {
+        dimension == self.dimension
+    }
+    fn check_state(&self, state: &str) -> Result<(), String> {
+        crate::game::render_control::parse_state(self.registry, state)
+            .map(drop)
+            .map_err(|e| format!("{state}: {e}"))
+    }
+}
+
+/// `minecraft:oak_log[axis=y]`, as the server's view formats it
+/// (`game/server_mods.rs` has the same shape for the levels' chunks).
+#[cfg(feature = "mods")]
+fn state_string(registry: &BlockRegistry, state: BlockStateId) -> String {
+    let Some(s) = registry.state(state) else {
+        return "minecraft:air".into();
+    };
+    if s.properties.is_empty() {
+        return s.name.clone();
+    }
+    let props: Vec<String> = s
+        .properties
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    format!("{}[{}]", s.name, props.join(","))
+}
 
 #[cfg(feature = "mods")]
 impl Game<'_> {
@@ -704,9 +773,68 @@ impl Game<'_> {
         self.tick_sandbox_mod_use();
         let snapshot = self.mod_snapshot();
         self.mods.mods.set_snapshot(snapshot);
+        // The client world is lent for the tick only: a mod that reads it
+        // on a frame, chat or command hook gets `None`, as on the title
+        // screen. See [`Game::lend_client_world`].
+        self.lend_client_world();
         self.mods.mods.tick(self.ticks);
+        self.return_client_world();
         self.show_mod_output();
     }
+    /// Lends the in-place dimension's loaded columns to capability `world`
+    /// for the client tick, when a running mod has it and this is the
+    /// player's own world (singleplayer in v1, on the server thread or
+    /// in-frame). The columns are clones — each column is an `Arc<Chunk>`,
+    /// so cloning the map is cheap — and the game's own map is never moved
+    /// out: rendering, streaming and a mod's own commands keep reading it
+    /// during the tick, which the server's move-out pattern could not
+    /// promise here. Nothing is lent on a multiplayer server, at the title
+    /// screen, or with no world mod on, so reads there are `None`.
+    fn lend_client_world(&mut self) {
+        if !self.mods.world || !self.has_singleplayer_server() || self.mods.client_world_lent {
+            return;
+        }
+        let columns: HashMap<(i32, i32), Arc<Chunk>> = self
+            .world
+            .chunks
+            .iter()
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
+        self.mods.mods.lend_world(Box::new(LentClientWorld {
+            registry: self.pack.assets.registry,
+            biomes: self.res.biomes().clone(),
+            dimension: self.dim.id(),
+            columns,
+        }));
+        self.mods.client_world_lent = true;
+    }
+
+    /// Takes back what [`Game::lend_client_world`] lent. The columns are
+    /// clones, so nothing is put back; the slot only has to be empty again
+    /// before the server tick lends its own view into the same slot
+    /// (in-frame singleplayer runs both ticks back-to-back on this thread).
+    /// A call with nothing lent is a no-op.
+    fn return_client_world(&mut self) {
+        if !self.mods.client_world_lent {
+            return;
+        }
+        self.mods.client_world_lent = false;
+        let Some(view) = self.mods.mods.take_world() else {
+            return;
+        };
+        // A view that is not the client's — the server tick's, if the two
+        // ticks ever interleaved. It cannot happen (the ticks run one after
+        // the other on this thread, and `client_world_lent` is only set by
+        // the client lend), so this is a loud error, not a silent drop:
+        // dropping a server view would lose the chunk maps it moved out.
+        // The slot API gives no way to put a taken view back, so the
+        // error is the defence, as in the server's `return_world`.
+        let view: Box<dyn std::any::Any> = view;
+        if view.downcast::<LentClientWorld>().is_err() {
+            log::error!("Horizon: the client world's slot held another view at the tick's end");
+        }
+    }
+
     /// Restarts the dev mods rebuilt since the last check, once a second.
     pub(super) fn reload_dev_mods(&mut self) {
         if self.mods.dev.is_empty()
