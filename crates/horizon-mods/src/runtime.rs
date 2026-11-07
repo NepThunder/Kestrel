@@ -656,7 +656,9 @@ impl Mods {
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
-        store.set_fuel(wall_fuel(FUEL_INIT)).map_err(|e| e.to_string())?;
+        store
+            .set_fuel(wall_fuel(FUEL_INIT))
+            .map_err(|e| e.to_string())?;
         let instance = linker
             .instantiate(&mut store, &component)
             .map_err(|e| reason(&e))?;
