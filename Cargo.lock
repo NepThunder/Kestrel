@@ -1636,6 +1636,7 @@ dependencies = [
  "url",
  "wgpu",
  "winit",
+ "zip",
 ]
 
 [[package]]
