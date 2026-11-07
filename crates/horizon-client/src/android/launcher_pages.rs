@@ -409,6 +409,8 @@ pub(super) enum Action {
     FmRequestDeleteSingle(usize),
     FmRequestDeleteSelected,
     FmConfirmDelete,
+    FmConfirmSlowMod,
+    FmToggleSlowModWarning,
     FmOpenDetails(usize),
     FmExportSingle(usize),
     FmExportSelected,
@@ -3002,6 +3004,71 @@ impl Launcher {
                     [mx + 32.0 + bw, my + mh - 54.0, bw, 38.0],
                     "Confirm Delete",
                     Action::FmConfirmDelete,
+                    true,
+                );
+            }
+            crate::catalog::FmModal::ConfirmSlowMod {
+                title,
+                dont_show_again,
+                ..
+            } => {
+                let mw = (w - 32.0).min(420.0);
+                let mh = 248.0;
+                let mx = (w - mw) * 0.5;
+                let my = (h - mh) * 0.5;
+                ui.rounded(mx, my, mw, mh, 20.0, my3_surface());
+                ui.border(mx, my, mw, mh, 20.0, my3_border());
+                ui.icon(Icon::Mods, mx + 20.0, my + 20.0, 22.0, my3_accent());
+                ui.text(
+                    Face::SemiBold,
+                    18.0,
+                    mx + 50.0,
+                    my + 18.0,
+                    my3_text(),
+                    &format!("Enable {title}?"),
+                );
+                ui.hint_line(
+                    mx + 20.0,
+                    my + 54.0,
+                    mw - 40.0,
+                    "This device is 32-bit, so mods run about 10x slower than on 64-bit.",
+                    my3_muted(),
+                );
+                ui.hint_line(
+                    mx + 20.0,
+                    my + 80.0,
+                    mw - 40.0,
+                    "Light mods (HUD, zoom) should be fine. Heavy mods can stutter or freeze the game.",
+                    my3_muted(),
+                );
+                ui.m3_checkbox(mx + 20.0, my + 112.0, 20.0, dont_show_again, "");
+                let label_r = [mx + 48.0, my + 110.0, mw - 68.0, 24.0];
+                ui.text(
+                    Face::Medium,
+                    13.0,
+                    label_r[0],
+                    label_r[1] + 2.0,
+                    my3_text(),
+                    "Don't show again",
+                );
+                if let Some(c) = ui.clip_rect([mx + 20.0, my + 110.0, mw - 40.0, 24.0]) {
+                    self.targets.push((c, Action::FmToggleSlowModWarning));
+                }
+                let bw = (mw - 52.0) * 0.5;
+                button(
+                    ui,
+                    &mut self.targets,
+                    [mx + 20.0, my + mh - 54.0, bw, 38.0],
+                    "Cancel",
+                    Action::FmCloseModal,
+                    false,
+                );
+                button(
+                    ui,
+                    &mut self.targets,
+                    [mx + 32.0 + bw, my + mh - 54.0, bw, 38.0],
+                    "Enable anyway",
+                    Action::FmConfirmSlowMod,
                     true,
                 );
             }
@@ -6737,6 +6804,18 @@ impl Launcher {
             }
             Some(Action::FmConfirmDelete) => {
                 self.catalog.fm_confirm_delete(&self.home);
+            }
+            Some(Action::FmConfirmSlowMod) => {
+                self.catalog.confirm_slow_mod(&self.home);
+            }
+            Some(Action::FmToggleSlowModWarning) => {
+                if let Some(crate::catalog::FmModal::ConfirmSlowMod {
+                    dont_show_again,
+                    ..
+                }) = &mut self.catalog.fm_modal
+                {
+                    *dont_show_again = !*dont_show_again;
+                }
             }
             Some(Action::FmOpenDetails(idx)) => {
                 if let Some(entry) = self.catalog.fm_entries.get(idx).cloned() {

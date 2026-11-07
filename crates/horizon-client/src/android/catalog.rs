@@ -97,6 +97,10 @@ pub struct Config {
     pub disable_launcher_animations: bool,
     #[serde(default)]
     pub disable_game_animations: bool,
+    /// The 32-bit slow-mod warning (a Pulley interpreter runs code mods
+    /// ~10x slower than Cranelift) was dismissed with "Don't show again".
+    #[serde(default)]
+    pub mod_slow_warning_dismissed: bool,
     #[serde(default)]
     pub last_name_changed: String,
     #[serde(default)]
@@ -556,6 +560,14 @@ pub enum FmModal {
     Rename { target_rel: String },
     NewFolder,
     Details(crate::document_store::FmFileDetails),
+    /// 32-bit only: warn before enabling a code mod, which runs under the
+    /// Pulley interpreter there. `index` is the `local` item to enable on
+    /// confirm; `dont_show_again` is the checkbox state in the modal.
+    ConfirmSlowMod {
+        index: usize,
+        title: String,
+        dont_show_again: bool,
+    },
 }
 
 pub fn format_file_size(bytes: u64) -> String {
@@ -1761,6 +1773,65 @@ impl Catalog {
         });
     }
     pub fn toggle_local(&mut self, home: &Path, index: usize) {
+        if self.slow_mod_warning_needed(home, index) {
+            let title = self
+                .local
+                .get(index)
+                .map(|item| item.title.clone())
+                .unwrap_or_default();
+            self.fm_modal = Some(FmModal::ConfirmSlowMod {
+                index,
+                title,
+                dont_show_again: false,
+            });
+            return;
+        }
+        self.apply_toggle_local(home, index);
+    }
+
+    /// True when enabling `index` on a 32-bit build should first show the
+    /// slow-mod warning: only code mods run code, so content-only `.hmod`
+    /// files and anything that cannot be read need no warning.
+    fn slow_mod_warning_needed(&self, home: &Path, index: usize) -> bool {
+        if cfg!(target_pointer_width = "64") || self.config.mod_slow_warning_dismissed {
+            return false;
+        }
+        let Some(item) = self.local.get(index) else {
+            return false;
+        };
+        if item.kind != horizon_client::content_files::Kind::Mods || item.enabled {
+            return false;
+        }
+        if item.file.starts_with("builtin:") {
+            return true;
+        }
+        let path = self.config.game_home(home).join(&item.file);
+        match horizon_mods::Package::read(&path) {
+            Ok(package) => package.wasm.is_some(),
+            // Unreadable package: let the toggle proceed; loading reports it.
+            Err(_) => false,
+        }
+    }
+
+    /// The slow-mod warning's "Enable anyway": persist "Don't show again"
+    /// if checked, then enable the mod the warning was shown for.
+    pub fn confirm_slow_mod(&mut self, home: &Path) {
+        let Some(FmModal::ConfirmSlowMod {
+            index,
+            dont_show_again,
+            ..
+        }) = self.fm_modal.take()
+        else {
+            return;
+        };
+        if dont_show_again {
+            self.config.mod_slow_warning_dismissed = true;
+            let _ = self.config.save(home);
+        }
+        self.apply_toggle_local(home, index);
+    }
+
+    fn apply_toggle_local(&mut self, home: &Path, index: usize) {
         let Some(item) = self.local.get(index).cloned() else {
             return;
         };
@@ -1769,10 +1840,6 @@ impl Catalog {
         let mut settings = horizon_client::settings::Settings::load(&path);
         match item.kind {
             horizon_client::content_files::Kind::Mods => {
-                if !cfg!(target_pointer_width = "64") {
-                    self.status = "Sandboxed code mods require a 64-bit APK".into();
-                    return;
-                }
                 let mut on = horizon_client::mod_list::ModList::load(&game);
                 if let Some(bid) = item.file.strip_prefix("builtin:") {
                     if item.enabled {
