@@ -279,7 +279,7 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
         for name in [
             "mods/evil.jar",
             "overrides/../../.bashrc",
-            "overrides/horizon-mods/evil.hmod",
+            "overrides/horizon-mods/evil.kmod",
             "overrides/resourcepacks/../options.txt",
             "overrides/servers.dat",
             "overrides/horizon-mods/.horizon-mod-data/other_mod/x",

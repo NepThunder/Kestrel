@@ -566,7 +566,7 @@ impl Mods {
 
     /// Starts a mod's code; `Ok(None)` for a content-only mod, which has
     /// nothing to run (the game reads its content before the world loads).
-    /// `path` is the mod's own `.hmod` or folder, for capability `storage`'s
+    /// `path` is the mod's own `.kmod` or folder, for capability `storage`'s
     /// per-mod directory.
     fn start(
         &mut self,

@@ -30,7 +30,7 @@ capabilities = ["game-read", "chat", "command", "ui", "render", "input", "recipe
 experimental = ["ui", "render", "input", "recipes"]
 "#;
 
-/// Builds the mods once and writes their `.hmod` files; returns the folder.
+/// Builds the mods once and writes their `.kmod` files; returns the folder.
 fn mods_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
@@ -81,8 +81,8 @@ fn mods_dir() -> &'static Path {
         ];
         for (name, manifest) in mods {
             let core = std::fs::read(built.join(format!("{name}.wasm"))).unwrap();
-            let hmod = Package::write(&manifest, &componentize(&core).unwrap()).unwrap();
-            std::fs::write(dir.join(format!("{name}.hmod")), hmod).unwrap();
+            let kmod = Package::write(&manifest, &componentize(&core).unwrap()).unwrap();
+            std::fs::write(dir.join(format!("{name}.kmod")), kmod).unwrap();
         }
         dir
     })
@@ -117,7 +117,7 @@ fn player() -> Snapshot {
 /// line its impact check prints sets off the warhead.
 #[test]
 fn predator_missile_runs_commands() {
-    let mut mods = load("predator_missile.hmod");
+    let mut mods = load("predator_missile.kmod");
     assert_eq!(mods.entries()[0].status, Status::Running);
     mods.set_snapshot(player());
     let commands = |mods: &mut Mods| -> Vec<String> {
@@ -145,7 +145,7 @@ fn predator_missile_runs_commands() {
 
 #[test]
 fn coords_hud_draws_and_answers() {
-    let mut mods = load("coords_hud.hmod");
+    let mut mods = load("coords_hud.kmod");
     assert_eq!(mods.entries()[0].status, Status::Running);
     assert_eq!(mods.commands().collect::<Vec<_>>(), ["where", "coords"]);
     mods.set_snapshot(player());
@@ -181,7 +181,7 @@ fn coords_hud_draws_and_answers() {
 
 #[test]
 fn off_mods_cost_nothing() {
-    let mods = Mods::load(&[mods_dir().join("coords_hud.hmod")], |_| false, |_| false);
+    let mods = Mods::load(&[mods_dir().join("coords_hud.kmod")], |_| false, |_| false);
     assert_eq!(mods.entries()[0].status, Status::Off);
     assert!(!mods.is_running());
     assert_eq!(mods.commands().count(), 0);
@@ -191,7 +191,7 @@ fn off_mods_cost_nothing() {
 fn undeclared_capabilities_are_refused() {
     let dir = mods_dir().join("undeclared");
     std::fs::create_dir_all(&dir).unwrap();
-    let wasm = Package::read(&mods_dir().join("horizon_mods_test_guest.hmod"))
+    let wasm = Package::read(&mods_dir().join("horizon_mods_test_guest.kmod"))
         .unwrap()
         .wasm
         .expect("the guest has code");
@@ -257,17 +257,17 @@ experimental = ["ui", "render", "input", "recipes"]
         let wasm = Package::read(&mods_dir().join(file)).unwrap().wasm.unwrap();
         needed(imports(&wasm).unwrap().iter().map(String::as_str)).0
     };
-    assert_eq!(level("coords_hud.hmod"), 0);
+    assert_eq!(level("coords_hud.kmod"), 0);
     // The UI guest draws far terrain (`render.set-far-terrain`, level 7).
-    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 7);
+    assert_eq!(level("horizon_mods_test_ui_guest.kmod"), 7);
     // The world probe reads blocks (`world.get-blocks`, level 8).
-    assert_eq!(level("world_probe.hmod"), LEVEL);
+    assert_eq!(level("world_probe.kmod"), LEVEL);
 }
 
 #[test]
 fn vanilla_commands_win() {
     let mods = Mods::load(
-        &[mods_dir().join("coords_hud.hmod")],
+        &[mods_dir().join("coords_hud.kmod")],
         |_| true,
         |c| c == "where",
     );
@@ -282,8 +282,8 @@ fn a_misbehaving_mod_is_stopped_alone() {
         ("grow", "it crashed (a panic)"),
     ] {
         let paths = [
-            mods_dir().join("coords_hud.hmod"),
-            mods_dir().join("horizon_mods_test_guest.hmod"),
+            mods_dir().join("coords_hud.kmod"),
+            mods_dir().join("horizon_mods_test_guest.kmod"),
         ];
         let mut mods = Mods::load(&paths, |_| true, |_| false);
         let started = Instant::now();
@@ -308,8 +308,8 @@ fn a_misbehaving_mod_is_stopped_alone() {
 fn hot_reload_restarts_a_changed_mod() {
     let dir = mods_dir().join("reload");
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("guest.hmod");
-    std::fs::copy(mods_dir().join("horizon_mods_test_guest.hmod"), &path).unwrap();
+    let path = dir.join("guest.kmod");
+    std::fs::copy(mods_dir().join("horizon_mods_test_guest.kmod"), &path).unwrap();
     let mut mods = Mods::load(std::slice::from_ref(&path), |_| true, |_| false);
     mods.tick(1);
     assert!(!mods.reload_changed(|_| false));
@@ -334,8 +334,8 @@ fn hot_reload_restarts_a_changed_mod() {
 fn storage_persists_across_reload() {
     let dir = mods_dir().join("storage_reload");
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("guest.hmod");
-    std::fs::copy(mods_dir().join("horizon_mods_test_guest.hmod"), &path).unwrap();
+    let path = dir.join("guest.kmod");
+    std::fs::copy(mods_dir().join("horizon_mods_test_guest.kmod"), &path).unwrap();
     let mut mods = Mods::load(std::slice::from_ref(&path), |_| true, |_| false);
     assert!(mods.command("save remembered"));
     let saved = Output::Feedback {
@@ -367,8 +367,8 @@ fn storage_persists_across_reload() {
 fn storage_write_budget_limits_one_call() {
     let dir = mods_dir().join("storage_budget");
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("guest.hmod");
-    std::fs::copy(mods_dir().join("horizon_mods_test_guest.hmod"), &path).unwrap();
+    let path = dir.join("guest.kmod");
+    std::fs::copy(mods_dir().join("horizon_mods_test_guest.kmod"), &path).unwrap();
     let mut mods = Mods::load(std::slice::from_ref(&path), |_| true, |_| false);
     // Under the 4 MiB on-disk quota, but over the 1 MiB a single call may
     // write: a loop replacing one key can never bypass the quota by
@@ -386,8 +386,8 @@ fn storage_write_budget_limits_one_call() {
 fn storage_quota_is_enforced() {
     let dir = mods_dir().join("storage_quota");
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("guest.hmod");
-    std::fs::copy(mods_dir().join("horizon_mods_test_guest.hmod"), &path).unwrap();
+    let path = dir.join("guest.kmod");
+    std::fs::copy(mods_dir().join("horizon_mods_test_guest.kmod"), &path).unwrap();
     let mut mods = Mods::load(std::slice::from_ref(&path), |_| true, |_| false);
     // Each call is under the per-call write budget; distinct keys so the
     // quota (not the fixed "note" key being overwritten) is what's tested.
@@ -414,8 +414,8 @@ fn storage_quota_is_enforced() {
 fn storage_key_count_is_bounded() {
     let dir = mods_dir().join("storage_keys");
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("guest.hmod");
-    std::fs::copy(mods_dir().join("horizon_mods_test_guest.hmod"), &path).unwrap();
+    let path = dir.join("guest.kmod");
+    std::fs::copy(mods_dir().join("horizon_mods_test_guest.kmod"), &path).unwrap();
     let mut mods = Mods::load(std::slice::from_ref(&path), |_| true, |_| false);
     for i in 0..64 {
         assert!(mods.command(&format!("save_key k{i} x")));
@@ -440,10 +440,10 @@ fn storage_key_count_is_bounded() {
 fn duplicate_mod_ids_are_refused() {
     let dir = mods_dir().join("duplicate_ids");
     std::fs::create_dir_all(&dir).unwrap();
-    let first = dir.join("first.hmod");
-    let second = dir.join("second.hmod");
-    std::fs::copy(mods_dir().join("horizon_mods_test_guest.hmod"), &first).unwrap();
-    std::fs::copy(mods_dir().join("horizon_mods_test_guest.hmod"), &second).unwrap();
+    let first = dir.join("first.kmod");
+    let second = dir.join("second.kmod");
+    std::fs::copy(mods_dir().join("horizon_mods_test_guest.kmod"), &first).unwrap();
+    std::fs::copy(mods_dir().join("horizon_mods_test_guest.kmod"), &second).unwrap();
     // Both declare id "test_guest" (the guest's own manifest): sharing a
     // `data_dir` would let the second read, overwrite or delete the
     // first's storage, so only the first-loaded one may start.
@@ -473,8 +473,8 @@ fn hook_overhead() {
         }
         started.elapsed().as_nanos() as f64 / n as f64
     };
-    let mut guest = load("horizon_mods_test_guest.hmod");
-    let mut hud = load("coords_hud.hmod");
+    let mut guest = load("horizon_mods_test_guest.kmod");
+    let mut hud = load("coords_hud.kmod");
     hud.set_snapshot(player());
     let mut none = Mods::default();
     println!("no mods, tick:        {:8.1} ns", time(&mut none, false));
@@ -482,7 +482,7 @@ fn hook_overhead() {
     println!("empty frame hook:     {:8.1} ns", time(&mut guest, true));
     println!("coords-hud tick hook: {:8.1} ns", time(&mut hud, false));
     let started = Instant::now();
-    let _ = load("coords_hud.hmod");
+    let _ = load("coords_hud.kmod");
     println!(
         "load coords-hud:      {:8.1} ms",
         started.elapsed().as_secs_f64() * 1000.0
@@ -491,7 +491,7 @@ fn hook_overhead() {
 
 #[test]
 fn ui_screens_settings_and_events() {
-    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let mut mods = load("horizon_mods_test_ui_guest.kmod");
     assert_eq!(mods.entries()[0].status, Status::Running);
     assert!(!mods.entries()[0].has_ui_settings());
     // `/ui_screen` pushes the screen; the host clips nothing of this one.
@@ -530,7 +530,7 @@ fn ui_screens_settings_and_events() {
 
 #[test]
 fn render_shapes_and_shakes() {
-    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let mut mods = load("horizon_mods_test_ui_guest.kmod");
     mods.set_snapshot(Snapshot {
         gui_size: (427.0, 240.0),
         ..Snapshot::default()
@@ -561,7 +561,7 @@ fn render_shapes_and_shakes() {
 
 #[test]
 fn input_claims_keys_and_events() {
-    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let mut mods = load("horizon_mods_test_ui_guest.kmod");
     let chat = |mods: &mut Mods| -> Vec<String> {
         mods.drain()
             .into_iter()
@@ -636,7 +636,7 @@ fn the_players_key_choice_wins() {
             })
             .collect()
     };
-    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let mut mods = load("horizon_mods_test_ui_guest.kmod");
     assert!(mods.command("input_claim"));
     // Its keys alone give it a page in Options > Mods, where the game lists them.
     assert!(mods.settings_widgets(0).is_empty() && mods.entries()[0].has_ui_settings());
@@ -654,7 +654,7 @@ fn the_players_key_choice_wins() {
         ["key-down wheel", "key-up wheel", "key-down wheel"]
     );
     // A choice saved earlier replaces the default, registered before or after.
-    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let mut mods = load("horizon_mods_test_ui_guest.kmod");
     mods.set_bindings(|_| vec![("wheel", "key.keyboard.g"), ("bad", "G")]);
     assert!(mods.command("input_claim"));
     assert_eq!(mods.keys_of(0)[0].key, "key.keyboard.g");
@@ -664,7 +664,7 @@ fn the_players_key_choice_wins() {
 
 #[test]
 fn input_wheel_is_the_mods_while_claimed() {
-    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let mut mods = load("horizon_mods_test_ui_guest.kmod");
     let chat = |mods: &mut Mods| -> Vec<String> {
         mods.drain()
             .into_iter()
@@ -687,7 +687,7 @@ fn input_wheel_is_the_mods_while_claimed() {
 
 #[test]
 fn render_zoom_is_clamped_and_the_strongest_counts() {
-    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let mut mods = load("horizon_mods_test_ui_guest.kmod");
     let zoom = |mods: &mut Mods, args: &str| {
         assert!(mods.command(&format!("zoom {args}")));
         mods.zoom().map(|z| (z.factor, z.smooth, z.turn))
@@ -706,7 +706,7 @@ fn render_zoom_is_clamped_and_the_strongest_counts() {
 
 #[test]
 fn render_minimap_is_clamped_and_hidden() {
-    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let mut mods = load("horizon_mods_test_ui_guest.kmod");
     let map = |mods: &mut Mods, args: &str| {
         assert!(mods.command(&format!("minimap {args}")));
         mods.minimap()
@@ -732,7 +732,7 @@ fn render_minimap_is_clamped_and_hidden() {
 
 #[test]
 fn render_far_terrain_is_clamped_and_ended() {
-    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let mut mods = load("horizon_mods_test_ui_guest.kmod");
     let far = |mods: &mut Mods, args: &str| {
         assert!(mods.command(&format!("far_terrain {args}")));
         mods.far_terrain().map(|f| (f.distance, f.reduced))
@@ -749,9 +749,9 @@ fn render_far_terrain_is_clamped_and_ended() {
 /// asked for; the game works it out only while a mod imports the call.
 #[test]
 fn game_raycast_sees_the_view_hit_within_its_distance() {
-    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let mut mods = load("horizon_mods_test_ui_guest.kmod");
     assert!(mods.wants_raycast());
-    assert!(!load("coords_hud.hmod").wants_raycast());
+    assert!(!load("coords_hud.kmod").wants_raycast());
     let said = |mods: &mut Mods, args: &str| -> Vec<String> {
         assert!(mods.command(&format!("raycast {args}")));
         mods.drain()
@@ -788,7 +788,7 @@ fn game_raycast_sees_the_view_hit_within_its_distance() {
 
 #[test]
 fn quiet_commands_come_out_as_one_batch_capped() {
-    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let mut mods = load("horizon_mods_test_ui_guest.kmod");
     let quiet = |mods: &mut Mods, command: &str| -> Vec<(String, Vec<String>)> {
         assert!(mods.command(command));
         mods.drain()
@@ -814,7 +814,7 @@ fn quiet_commands_come_out_as_one_batch_capped() {
 
 #[test]
 fn corner_panels_text_width_and_readings() {
-    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let mut mods = load("horizon_mods_test_ui_guest.kmod");
     // A font of 5-pixel glyphs, 3-pixel spaces.
     let mut widths = vec![5.0f32; 0x250];
     widths[' ' as usize] = 3.0;
@@ -866,10 +866,10 @@ capabilities = ["registries"]
     let block: &[u8] = br#"{"template": "minecraft:iron_block"}"#;
     let dir = mods_dir().join("content");
     std::fs::create_dir_all(&dir).unwrap();
-    let ok = dir.join("ruby.hmod");
+    let ok = dir.join("ruby.kmod");
     let files: &[(&str, &[u8])] = &[("data/ruby/horizon/block/ruby_block.json", block)];
     std::fs::write(&ok, Package::write_files(manifest, None, files).unwrap()).unwrap();
-    let bad = dir.join("bad.hmod");
+    let bad = dir.join("bad.kmod");
     let files: &[(&str, &[u8])] = &[("data/minecraft/recipe/stone.json", b"{}")];
     let bad_manifest = manifest.replace("\"ruby\"", "\"bad\"");
     std::fs::write(
@@ -895,11 +895,11 @@ fn the_examples_test_scripts_pass() {
         ("beacons", "beacons"),
         ("world-probe", "world_probe"),
     ];
-    for (example, hmod) in examples_and_files {
+    for (example, kmod) in examples_and_files {
         for entry in std::fs::read_dir(examples.join(example).join("tests")).unwrap() {
             let path = entry.unwrap().path();
             let script = Script::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
-            let mut game = TestGame::load(&mods_dir().join(format!("{hmod}.hmod"))).unwrap();
+            let mut game = TestGame::load(&mods_dir().join(format!("{kmod}.kmod"))).unwrap();
             script
                 .run(&mut game)
                 .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
@@ -913,7 +913,7 @@ fn the_examples_test_scripts_pass() {
 /// `get-block` finds nothing, `set-blocks` checks its count and queues.
 #[test]
 fn a_server_mod_without_a_world_reads_nothing() {
-    let mut game = TestGame::load(&mods_dir().join("beacons.hmod")).unwrap();
+    let mut game = TestGame::load(&mods_dir().join("beacons.kmod")).unwrap();
     game.join("Alex");
     let alex = game.players[0].clone();
     assert!(game.player_command(&alex, "ground"));
@@ -937,7 +937,7 @@ fn a_test_script_says_which_step_failed_and_why() {
         "#,
     )
     .unwrap();
-    let mut game = TestGame::load(&mods_dir().join("horizon_mods_test_guest.hmod")).unwrap();
+    let mut game = TestGame::load(&mods_dir().join("horizon_mods_test_guest.kmod")).unwrap();
     assert_eq!(
         script.run(&mut game).unwrap_err(),
         "step 1 (3 ticks, /hello there): chat\n    expected: [\"hello there after 2 ticks\"]\n    \
@@ -948,7 +948,7 @@ fn a_test_script_says_which_step_failed_and_why() {
         "a typo is an error"
     );
 
-    let mut game = TestGame::load(&mods_dir().join("welcome.hmod")).unwrap();
+    let mut game = TestGame::load(&mods_dir().join("welcome.kmod")).unwrap();
     let script = "[[step]]\njoin = \"Alex\"\n\n[[step]]\nas = \"Steve\"\ncommand = \"mined\"";
     assert_eq!(
         Script::parse(script).unwrap().run(&mut game).unwrap_err(),
@@ -979,8 +979,8 @@ fn a_test_script_reloads_and_expects_a_stop() {
         "#,
     )
     .unwrap();
-    let mut game = TestGame::load(&mods_dir().join("horizon_mods_test_guest.hmod")).unwrap();
-    let dir = game.hmod().parent().unwrap().to_path_buf();
+    let mut game = TestGame::load(&mods_dir().join("horizon_mods_test_guest.kmod")).unwrap();
+    let dir = game.kmod().parent().unwrap().to_path_buf();
     assert_eq!(
         script.run(&mut game).unwrap_err(),
         "step 4 (reload, /nope): the mod owns no command /nope"
@@ -1011,8 +1011,8 @@ fn a_server_mod_runs_only_where_the_world_does() {
     let dir = mods_dir().join("server");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("welcome.hmod");
-    std::fs::copy(mods_dir().join("welcome.hmod"), &path).unwrap();
+    let path = dir.join("welcome.kmod");
+    std::fs::copy(mods_dir().join("welcome.kmod"), &path).unwrap();
     let paths = std::slice::from_ref(&path);
     let window = Mods::load_for(Runs::Client, paths, |_| true, |_| false);
     assert_eq!(window.entries()[0].status, Status::Elsewhere);
@@ -1070,7 +1070,7 @@ fn a_server_mod_runs_only_where_the_world_does() {
 #[test]
 fn recipes_reads_the_tables() {
     use horizon_mods::{Recipe, RecipeItem, RecipeKind, RecipeStack, Recipes};
-    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let mut mods = load("horizon_mods_test_ui_guest.kmod");
     let stack = |item| RecipeStack {
         item,
         count: 1,
@@ -1191,7 +1191,7 @@ fn recipes_reads_the_tables() {
 #[test]
 fn browser_lists_items_and_hears_the_player() {
     use horizon_mods::{BrowserClick, BrowserEvent, BrowserStack};
-    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let mut mods = load("horizon_mods_test_ui_guest.kmod");
     let said = |mods: &mut Mods, command: &str| {
         assert!(mods.command(command));
         mods.drain()

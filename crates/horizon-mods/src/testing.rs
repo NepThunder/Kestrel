@@ -1,6 +1,6 @@
 //! A mod run with no game: `cargo horizon-mod test` (docs/mods.md, "Testing a mod").
 //!
-//! [`TestGame`] loads one `.hmod` from a scratch copy (its `storage` lives and
+//! [`TestGame`] loads one `.kmod` from a scratch copy (its `storage` lives and
 //! dies with the run) into the same sandbox the game uses, and plays the game's
 //! part: the snapshot, ticks, frames, chat lines and commands, and for a
 //! server mod the players joining, leaving, chatting and breaking or placing
@@ -20,7 +20,7 @@ use std::{
 pub struct TestGame {
     mods: Mods,
     dir: PathBuf,
-    hmod: PathBuf,
+    kmod: PathBuf,
     /// What the mod reads with `game-read`; ticks move the clock as the game does.
     pub player: Option<Player>,
     pub clock: Option<Clock>,
@@ -95,9 +95,9 @@ pub fn default_player() -> Player {
 }
 
 impl TestGame {
-    /// Starts the mod at `hmod`, as the game would with it turned on. Errs
+    /// Starts the mod at `kmod`, as the game would with it turned on. Errs
     /// when it doesn't start, with the game's reason.
-    pub fn load(hmod: &Path) -> Result<TestGame, String> {
+    pub fn load(kmod: &Path) -> Result<TestGame, String> {
         static RUN: AtomicUsize = AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "horizon-mod-test-{}-{}",
@@ -106,10 +106,10 @@ impl TestGame {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        let copy = dir.join(hmod.file_name().unwrap_or("mod.hmod".as_ref()));
+        let copy = dir.join(kmod.file_name().unwrap_or("mod.kmod".as_ref()));
         let mut game = TestGame {
             mods: Mods::default(),
-            hmod: copy.clone(),
+            kmod: copy.clone(),
             dir,
             player: Some(default_player()),
             clock: Some(Clock {
@@ -121,13 +121,13 @@ impl TestGame {
             tick: 0,
             world: Default::default(),
         };
-        copy_mod(hmod, &copy)?;
+        copy_mod(kmod, &copy)?;
         game.start()?;
         Ok(game)
     }
 
     fn start(&mut self) -> Result<(), String> {
-        self.mods = Mods::load(std::slice::from_ref(&self.hmod), |_| true, |_| false);
+        self.mods = Mods::load(std::slice::from_ref(&self.kmod), |_| true, |_| false);
         match &self.mods.entries()[0].status {
             Status::Failed(reason) => Err(format!("the mod didn't start: {reason}")),
             _ if !self.mods.is_running() => Err("the mod has no code to run".into()),
@@ -248,8 +248,8 @@ impl TestGame {
     }
 
     /// The scratch copy the mod runs from; its `storage` is beside it.
-    pub fn hmod(&self) -> &Path {
-        &self.hmod
+    pub fn kmod(&self) -> &Path {
+        &self.kmod
     }
     /// The commands the mod registered.
     pub fn commands(&self) -> Vec<String> {
@@ -278,7 +278,7 @@ impl Drop for TestGame {
     }
 }
 
-/// A `.hmod` file, or a mod folder (`horizon-mod.toml` + `mod.wasm`).
+/// A `.kmod` file, or a mod folder (`horizon-mod.toml` + `mod.wasm`).
 fn copy_mod(from: &Path, to: &Path) -> Result<(), String> {
     let err = |e: std::io::Error| format!("{}: {e}", from.display());
     if !from.is_dir() {
