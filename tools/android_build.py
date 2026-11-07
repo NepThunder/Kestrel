@@ -142,7 +142,10 @@ def main():
     compiler_target = 'armv7a-linux-androideabi' if args.abi == 'armeabi-v7a' else target
     legacy = args.abi in ('armeabi-v7a', 'x86')
     min_sdk = 27 if legacy else 28
-    features = ['--no-default-features', '--features', 'audio'] if legacy else []
+    # Legacy builds get the mod runtime too, but no Cranelift backend exists
+    # for 32-bit targets: the runtime pins the Pulley interpreter there
+    # (crates/horizon-mods/src/runtime.rs). 64-bit builds are unchanged.
+    features = ['--no-default-features', '--features', 'audio,mods'] if legacy else []
     manifests = [(['-p', 'horizon-android'], features)]
     environment = dict(os.environ)
     environment['PATH'] = os.pathsep.join([str(ndk / 'bin'), str(args.java_home / 'bin'), environment['PATH']])
