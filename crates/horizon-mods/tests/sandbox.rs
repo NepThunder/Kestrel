@@ -51,6 +51,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "world-probe",
                 "-p",
+                "inventory-probe",
+                "-p",
                 "horizon-mods-test-guest",
                 "-p",
                 "horizon-mods-test-ui-guest",
@@ -76,6 +78,7 @@ fn mods_dir() -> &'static Path {
             ("welcome", example("welcome")),
             ("beacons", example("beacons")),
             ("world_probe", example("world-probe")),
+            ("inventory_probe", example("inventory-probe")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
         ];
@@ -244,8 +247,8 @@ id = "too_new"
 name = "Too New"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world"]
-experimental = ["ui", "render", "input", "recipes"]
+capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world", "inventory"]
+experimental = ["ui", "render", "input", "recipes", "inventory"]
 "#;
     std::fs::write(dir.join("horizon-mod.toml"), manifest).unwrap();
     std::fs::write(dir.join("mod.wasm"), wasm).unwrap();
@@ -261,7 +264,9 @@ experimental = ["ui", "render", "input", "recipes"]
     // The UI guest draws far terrain (`render.set-far-terrain`, level 7).
     assert_eq!(level("horizon_mods_test_ui_guest.kmod"), 7);
     // The world probe reads blocks (`world.get-blocks`, level 8).
-    assert_eq!(level("world_probe.kmod"), LEVEL);
+    assert_eq!(level("world_probe.kmod"), 8);
+    // The inventory probe reads its inventory (`inventory.inventory`, level 9).
+    assert_eq!(level("inventory_probe.kmod"), LEVEL);
 }
 
 #[test]
@@ -894,6 +899,7 @@ fn the_examples_test_scripts_pass() {
         ("welcome", "welcome"),
         ("beacons", "beacons"),
         ("world-probe", "world_probe"),
+        ("inventory-probe", "inventory_probe"),
     ];
     for (example, kmod) in examples_and_files {
         for entry in std::fs::read_dir(examples.join(example).join("tests")).unwrap() {
@@ -906,7 +912,7 @@ fn the_examples_test_scripts_pass() {
             ran += 1;
         }
     }
-    assert_eq!(ran, 6);
+    assert_eq!(ran, 7);
 }
 
 /// Capability `world` without a world lent (the registry's trial run):

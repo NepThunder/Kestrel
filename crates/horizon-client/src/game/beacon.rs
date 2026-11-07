@@ -321,7 +321,9 @@ impl Game<'_> {
             s.beacon = [index(p), index(sec)];
         }
     }
-    fn beacon_levels(&self) -> i32 {
+    /// The beacon's levels, for the inventory snapshot's data slots
+    /// (`game/mod_inventory.rs`).
+    pub(super) fn beacon_levels(&self) -> i32 {
         let Some(s) = self.station.as_ref() else {
             return 0;
         };

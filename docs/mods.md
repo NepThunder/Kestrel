@@ -38,6 +38,27 @@ reads only the dimension the player is in and only chunks the game has
 loaded, and only on its tick hook. `crates/horizon-mod-sdk/examples/world-probe`
 is a probe mod that shows the blocks at the player's feet.
 
+A code mod with capability `inventory` (experimental) reads the player's own
+inventory and the open container (`inventory.inventory`,
+`inventory.open-container`, API level 9). It is read-only — there is no
+function that moves a stack — and it works in singleplayer and on a
+multiplayer server alike, because the client learns both from server packets;
+before a world loads the inventory is empty and no container is open. A mod
+reads the inventory as of the last tick. The open container's slots are the
+container's own (a chest's 300+, a workstation's input/result slots), never
+the player's inventory slots, which `inventory()` already covers; the
+container reads as closed the tick the menu closes, when the player dies, or
+when the server closes it. Its data slots, in the screen's order, are: a
+furnace's burn left, burn total, cook progress and cook total; a brewing
+stand's brew time, fuel, total brew time and total fuel; a crafter's nine
+disabled flags then whether it triggered; an enchanting table's three costs,
+the seed and the three clue levels; a beacon's levels and its two powers
+(-1: none); a loom's or stonecutter's selected index (-1: none); an anvil's
+cost; a lectern's page. Plain chests and merchants have none, and merchant
+offers are not exposed. `crates/horizon-mod-sdk/examples/inventory-probe`
+is a probe mod that shows the held item's damage, the armour worn and the
+open container.
+
 ## Making a content mod
 
 ```sh

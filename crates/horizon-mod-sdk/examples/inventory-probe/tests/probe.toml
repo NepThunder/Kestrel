@@ -1,0 +1,57 @@
+# Client inventory reads: the held item's damage, the armour worn and
+# saturation, then the open container — and that closing it, or dying with
+# one open, clears the display the next tick. The player holds a damaged
+# diamond sword, wears a helmet and boots, and is at full saturation.
+
+[[step]]
+ticks = 1
+[step.inventory]
+selected = 0
+saturation = 5.0
+slots = [
+  { slot = 0, id = "minecraft:diamond_sword", count = 1, damage = 100, max-damage = 1561 },
+  { slot = 500, id = "minecraft:diamond_helmet", count = 1, damage = 10, max-damage = 363 },
+  { slot = 503, id = "minecraft:diamond_boots", count = 1, damage = 0, max-damage = 429 },
+]
+[step.expect]
+chat = ["probe held=minecraft:diamond_sword 100/1561 armour=2 sat=5.0 container=none"]
+
+[[step]]
+ticks = 1
+[step.container]
+kind = "minecraft:chest"
+slots = [
+  { slot = 300, id = "minecraft:oak_planks", count = 64 },
+  { slot = 301, id = "minecraft:iron_ingot", count = 3 },
+]
+data = []
+[step.expect]
+chat = ["probe held=minecraft:diamond_sword 100/1561 armour=2 sat=5.0 container=minecraft:chest slots=2 data=[]"]
+
+# Closing the menu clears the container the next tick: the probe can never
+# read a chest after closing it.
+[[step]]
+close-container = true
+ticks = 1
+[step.expect]
+chat = ["probe held=minecraft:diamond_sword 100/1561 armour=2 sat=5.0 container=none"]
+
+# A furnace shows its data slots in the screen's order: burn left, burn
+# total, cook progress, cook total.
+[[step]]
+ticks = 1
+[step.container]
+kind = "minecraft:furnace"
+slots = [
+  { slot = 300, id = "minecraft:iron_ore", count = 1 },
+]
+data = [120, 300, 45, 200]
+[step.expect]
+chat = ["probe held=minecraft:diamond_sword 100/1561 armour=2 sat=5.0 container=minecraft:furnace slots=1 data=[120, 300, 45, 200]"]
+
+# Dying with a container open clears it too, the way the death screen does.
+[[step]]
+dead = true
+ticks = 1
+[step.expect]
+chat = ["probe held=minecraft:diamond_sword 100/1561 armour=2 sat=5.0 container=none"]

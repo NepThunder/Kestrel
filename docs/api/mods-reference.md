@@ -19,12 +19,13 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `players` | [`players`](#players) | see who is on the server and message them |
 | `world` | [`world`](#world) | read the world's blocks, and change them where the game runs the world |
 | `recipes` | [`recipes`](#recipes) | read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items |
+| `inventory` | [`inventory`](#inventory) | see your inventory and open containers |
 
 ## World `horizon-mod`
 
 A client mod: runs in the player's game.
 
-- Imports (what the game offers): `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`
+- Imports (what the game offers): `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`
 - Exports (what the mod provides): `events`
 
 ## World `horizon-server-mod`
@@ -38,7 +39,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`
 - Exports (what the mod provides): `ui-events`, `events`
 
 ## World `ui-host`
@@ -704,6 +705,51 @@ Capability `world` (manifest `api = "0.3"`, experimental, for server mods; read-
 | `get-biome` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<string>` | The biome at a position (`minecraft:plains`, ...), as the server stores it (one per 4 x 4 x 4 cell): none where no chunk is loaded. |
 | `get-blocks` | `func(dimension: string, positions: list<block-pos>) -> list<block-result>` | The block states at `positions`, in the same order, as of this call. At most 4096 positions per call; a call over the cap returns no results. None per position where no chunk is loaded there. This is the only bulk read: do not loop get-block. |
 | `set-blocks` | `func(dimension: string, blocks: list<block-change>) -> result<_, string>` | Sets blocks as `/setblock` does: the old block entity removed, neighbours and shapes updated, light, and every player told. Every state is checked now (an error queues nothing); the changes are made in order after this call returns, before that dimension's next tick; one in a chunk not loaded then is skipped. At most 4096 per call. |
+
+## `inventory`
+
+Access: capability `inventory`.
+
+Capability `inventory` (manifest `api = "0.1"`, experimental): the player's own inventory and the contents of a container the player currently has open. Read-only: there is no function here that moves a stack, clicks a slot or gives an item. Nothing here can see a container that is not open, another player's inventory, or a block entity in the world. The snapshot is copied once per tick, so a mod reads the inventory as of the last tick, not as of its call.
+
+### record `inv-stack`
+
+One slot's stack, as the game holds it.
+
+| Field | Type | |
+| --- | --- | --- |
+| `slot` | `u32` | The slot, in the client's internal numbering: 0-8 hotbar, 9-35 main inventory, 100-108 crafting grid, 200 crafting result, 300+ open container, 500-503 armour (head, chest, legs, feet), 504 offhand. |
+| `id` | `string` | `minecraft:diamond_sword`, ... |
+| `count` | `u32` |  |
+| `damage` | `u32` | Durability damage taken; 0 for undamageable items. |
+| `max-damage` | `u32` | The item's maximum damage (0: undamageable). Remaining durability is `max-damage - damage`. |
+| `components` | `string` | Components beyond id/count/damage, in vanilla item syntax (`[enchantments={...}]`), or "" when default. Same syntax as `recipes.stack.components`. |
+
+### record `player-inventory`
+
+The player's own inventory, armour, offhand, crafting grid and carried stack, as of this tick. Empty slots are omitted. `selected` is the hotbar slot, 0-8.
+
+| Field | Type | |
+| --- | --- | --- |
+| `selected` | `u32` |  |
+| `saturation` | `f32` | The player's saturation, 0 to 20, as the hunger bar's hidden half: it lives here, not on `game.player`, so mods built against that record keep their shape. Exhaustion is not on the client at all and cannot be exposed. |
+| `slots` | `list<inv-stack>` |  |
+| `carried` | `option<inv-stack>` | The cursor stack, if the player is carrying one. The cursor has no slot; its `slot` is 0 and means nothing. |
+
+### record `container`
+
+A container the player has open, if any.
+
+| Field | Type | |
+| --- | --- | --- |
+| `kind` | `string` | `minecraft:chest`, `minecraft:furnace`, `minecraft:crafting`, `inventory`, ... — the menu type the server opened. |
+| `slots` | `list<inv-stack>` | The container's slots, in menu order. Slots are numbered as `inv-stack.slot`: the container's own slots (300+ for a chest-like menu, the workstation's input/result slots), never the player's inventory slots, which `inventory()` already covers. |
+| `data` | `list<s32>` | The container's numeric data slots, if it has any, in the order the screen shows them (furnace burn/cook progress, enchanting costs, seed and clue levels, beacon levels and powers, loom/stonecutter selection, anvil cost, lectern page). Empty for plain chests. See `docs/mods.md` for the layout of each kind. |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `inventory` | `func() -> player-inventory` | The player's own inventory, as of this tick. |
+| `open-container` | `func() -> option<container>` | The open container, if a container screen is open; none otherwise. The slots are cleared the tick the menu closes: a mod can never read a container after closing it. |
 
 ## `server-events`
 

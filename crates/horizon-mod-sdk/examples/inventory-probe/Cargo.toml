@@ -1,0 +1,16 @@
+[package]
+name = "inventory-probe"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Prototype probe for client inventory reads: the held item's damage, armour, saturation and the open container, and proof that closing it clears the display"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+horizon-mod-sdk = { path = "../.." }
+
+[lints]
+workspace = true

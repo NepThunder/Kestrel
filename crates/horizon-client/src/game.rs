@@ -185,6 +185,8 @@ mod mob_looting;
 mod mob_sounds;
 mod mod_input;
 #[cfg(feature = "mods")]
+mod mod_inventory;
+#[cfg(feature = "mods")]
 mod mod_panel;
 mod mod_render;
 mod mods;

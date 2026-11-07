@@ -52,11 +52,12 @@ mod ui_bindings {
 pub use bindings::horizon::mods::{
     game::{Clock, Hit, Player},
     hud::{Corner, Line},
+    inventory::{Container, InvStack, PlayerInventory},
 };
 use bindings::{
     HorizonMod,
     exports::horizon::mods::events::Registration,
-    horizon::mods::{chat, command, game, hud, log as mod_log, storage},
+    horizon::mods::{chat, command, game, hud, inventory, log as mod_log, storage},
 };
 pub use server_bindings::{
     exports::horizon::mods::server_events::{
@@ -174,6 +175,15 @@ pub struct Snapshot {
     pub placing: bool,
     /// The player is in creative mode (`recipes.give`).
     pub creative: bool,
+    /// The player's own inventory, armour, offhand, crafting grid and
+    /// carried stack (capability `inventory`); the game fills it once
+    /// per tick, and only while a mod reads it
+    /// ([`Mods::wants_inventory`]). None before any inventory mod runs.
+    pub inventory: Option<PlayerInventory>,
+    /// The open container's kind, slots and data slots (capability
+    /// `inventory`); None when no container screen is open, so a mod
+    /// can never read a container after closing it.
+    pub open_container: Option<Container>,
 }
 
 /// Capability `recipes`'s tables: `items` in the registry's order, which
@@ -325,6 +335,8 @@ struct Running {
     raycasts: bool,
     /// It imports capability `recipes`.
     reads_recipes: bool,
+    /// It imports capability `inventory`.
+    reads_inventory: bool,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -696,6 +708,7 @@ impl Mods {
             hooks,
             raycasts: functions.iter().any(|f| f == "game.raycast"),
             reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
+            reads_inventory: functions.iter().any(|f| f.starts_with("inventory.")),
         }))
     }
 
@@ -1029,6 +1042,13 @@ impl Mods {
         self.entries
             .iter()
             .any(|e| e.run.as_ref().is_some_and(|r| r.reads_recipes))
+    }
+    /// Some running mod reads capability `inventory`: the snapshot needs
+    /// [`Snapshot::inventory`] and [`Snapshot::open_container`].
+    pub fn wants_inventory(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.reads_inventory))
     }
     /// Some running mod has a `frame` hook: the game refreshes the snapshot
     /// every frame for it.
@@ -1422,6 +1442,22 @@ impl game::Host for State {
         let (at, hit) = self.snapshot.view_hit.as_ref()?;
         // NaN compares false: no hit.
         (*at <= distance.min(RAYCAST_MAX) && !distance.is_nan()).then(|| hit.clone())
+    }
+}
+/// Capability `inventory`: the player's own inventory and the open
+/// container, read-only by absence — this interface has no write function
+/// to refuse, unlike `world.set-blocks`.
+impl inventory::Host for State {
+    fn inventory(&mut self) -> PlayerInventory {
+        self.snapshot.inventory.clone().unwrap_or(PlayerInventory {
+            selected: 0,
+            saturation: 0.0,
+            slots: Vec::new(),
+            carried: None,
+        })
+    }
+    fn open_container(&mut self) -> Option<Container> {
+        self.snapshot.open_container.clone()
     }
 }
 impl browser::Host for State {
