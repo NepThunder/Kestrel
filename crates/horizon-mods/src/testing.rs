@@ -8,7 +8,8 @@
 //! test written in TOML, `tests/<name>.toml` in the mod's folder: steps, each
 //! saying what happens and what the mod must have shown by then.
 use crate::{
-    BlockPos, Clock, Corner, GameMode, Mods, Output, Panel, Player, ServerPlayer, Snapshot, Status,
+    BlockPos, Clock, Container, Corner, GameMode, InvStack, Mods, Output, Panel, Player,
+    PlayerInventory, ServerPlayer, Snapshot, Status,
 };
 use serde::Deserialize;
 use std::{
@@ -29,6 +30,11 @@ pub struct TestGame {
     /// Every name that joined, for their id.
     names: Vec<String>,
     tick: u64,
+    /// What the mod reads with capability `inventory`: the player's own
+    /// inventory fixture, and the open container's, if one is open. A
+    /// script sets them with its `inventory` / `container` steps.
+    pub inventory: PlayerInventory,
+    pub open_container: Option<Container>,
     /// Capability `world`'s Overworld: the blocks a script set or the mod
     /// changed; every other block, and the other dimensions, are air. Every
     /// biome is the dimension's plainest: plains, nether wastes, the end.
@@ -119,6 +125,13 @@ impl TestGame {
             players: Vec::new(),
             names: Vec::new(),
             tick: 0,
+            inventory: PlayerInventory {
+                selected: 0,
+                saturation: 5.0,
+                slots: Vec::new(),
+                carried: None,
+            },
+            open_container: None,
             world: Default::default(),
         };
         copy_mod(hmod, &copy)?;
@@ -149,6 +162,8 @@ impl TestGame {
             players: self.players.clone(),
             // The GUI of a 1280 x 720 window at scale 3, as the trial run's.
             gui_size: (427.0, 240.0),
+            inventory: Some(self.inventory.clone()),
+            open_container: self.open_container.clone(),
             ..Snapshot::default()
         });
     }
@@ -360,13 +375,101 @@ pub struct ClockSet {
     day_time: Option<u64>,
 }
 
+/// One stack of a script's inventory fixture, in the client's internal
+/// slot numbering (0-8 hotbar, 9-35 main, 100-108 crafting grid, 200
+/// crafting result, 300+ open container, 500-503 armour, 504 offhand).
+/// A stack without `count` is one item.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct StackSet {
+    slot: u32,
+    id: String,
+    #[serde(default = "one_stack")]
+    count: u32,
+    #[serde(default)]
+    damage: u32,
+    #[serde(default)]
+    max_damage: u32,
+    #[serde(default)]
+    components: String,
+}
+
+fn one_stack() -> u32 {
+    1
+}
+
+impl StackSet {
+    fn to_stack(&self) -> InvStack {
+        InvStack {
+            slot: self.slot,
+            id: self.id.clone(),
+            count: self.count,
+            damage: self.damage,
+            max_damage: self.max_damage,
+            components: self.components.clone(),
+        }
+    }
+}
+
+/// The player's own inventory for a step (capability `inventory`):
+/// replaces the fixture wholesale; a step without it keeps the last one.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct InventorySet {
+    #[serde(default)]
+    selected: u32,
+    /// Full hunger is 5.0; a step without it keeps 5.0.
+    #[serde(default = "full_saturation")]
+    saturation: f32,
+    #[serde(default)]
+    slots: Vec<StackSet>,
+    carried: Option<StackSet>,
+}
+
+fn full_saturation() -> f32 {
+    5.0
+}
+
+impl InventorySet {
+    fn to_inventory(&self) -> PlayerInventory {
+        PlayerInventory {
+            selected: self.selected,
+            saturation: self.saturation,
+            slots: self.slots.iter().map(StackSet::to_stack).collect(),
+            carried: self.carried.as_ref().map(StackSet::to_stack),
+        }
+    }
+}
+
+/// The open container for a step (capability `inventory`): replaces the
+/// fixture; `close-container` clears it instead.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct ContainerSet {
+    kind: String,
+    #[serde(default)]
+    slots: Vec<StackSet>,
+    #[serde(default)]
+    data: Vec<i32>,
+}
+
+impl ContainerSet {
+    fn to_container(&self) -> Container {
+        Container {
+            kind: self.kind.clone(),
+            slots: self.slots.iter().map(StackSet::to_stack).collect(),
+            data: self.data.clone(),
+        }
+    }
+}
+
 /// One step. Its parts happen in this order: `reload`, `title-screen`,
-/// `blocks`, `join`, `player`, `clock`, `ticks`, `frames`, `chat`, `command`,
-/// `break`, `place`, `leave`; then the blocks the mod set are made, and
-/// `expect` is checked against what the mod showed and changed during the
-/// step. For a server mod, `player`, `chat`, `command`, `break`
-/// and `place` are the doing of the player named by `as`, or of the first
-/// player on.
+/// `blocks`, `join`, `player`, `clock`, `inventory`, `container`,
+/// `close-container`, `ticks`, `frames`, `chat`, `command`, `break`,
+/// `place`, `leave`; then the blocks the mod set are made, and `expect`
+/// is checked against what the mod showed and changed during the step.
+/// For a server mod, `player`, `chat`, `command`, `break` and `place` are
+/// the doing of the player named by `as`, or of the first player on.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Step {
@@ -377,6 +480,13 @@ pub struct Step {
     title_screen: bool,
     player: Option<PlayerSet>,
     clock: Option<ClockSet>,
+    /// The player's own inventory (capability `inventory`).
+    inventory: Option<InventorySet>,
+    /// The open container (capability `inventory`).
+    container: Option<ContainerSet>,
+    /// Close the open container (capability `inventory`).
+    #[serde(default)]
+    close_container: bool,
     #[serde(default)]
     ticks: u64,
     #[serde(default)]
@@ -487,6 +597,15 @@ impl Step {
             parts.push("reload".to_string());
         }
         let count = |n: u64, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
+        if self.inventory.is_some() {
+            parts.push("inventory".to_string());
+        }
+        if self.container.is_some() {
+            parts.push("container".to_string());
+        }
+        if self.close_container {
+            parts.push("close container".to_string());
+        }
         if self.ticks > 0 {
             parts.push(count(self.ticks, "tick"));
         }
@@ -564,6 +683,14 @@ impl Step {
                 game_time: 0,
                 day_time: 0,
             }));
+        }
+        if let Some(set) = &self.inventory {
+            game.inventory = set.to_inventory();
+        }
+        if self.close_container {
+            game.open_container = None;
+        } else if let Some(set) = &self.container {
+            game.open_container = Some(set.to_container());
         }
         game.tick(self.ticks);
         game.frames(self.frames);
