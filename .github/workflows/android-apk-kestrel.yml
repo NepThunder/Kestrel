@@ -1,0 +1,105 @@
+# Kestrel rebrand test build: APKs for all four Android ABIs.
+# Runs only on the kestrel-rebrand branch of this fork.
+# Builds a local (non-public) debug APK with the generated engine tables
+# from tools/android_prepare.py, then uploads the APKs as release assets
+# for on-device testing, so they download as plain .apk files instead of
+# zipped workflow artifacts. No signing secrets are needed:
+# android_build.py creates a throwaway debug keystore.
+name: Android APK (Kestrel, all ABIs)
+on:
+  push:
+    branches: [kestrel-rebrand]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: android-apk-kestrel-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      HORIZON_TELEMETRY_URL: "off"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            target: aarch64-linux-android
+          - abi: armeabi-v7a
+            target: armv7-linux-androideabi
+          - abi: x86
+            target: i686-linux-android
+          - abi: x86_64
+            target: x86_64-linux-android
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+      - name: Set up Rust 1.95 and Android target
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+          rustup target add ${{ matrix.target }}
+      - name: Install Android SDK packages
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
+      - name: Download Gradle 8.14
+        run: |
+          curl -L -o gradle-8.14-all.zip https://services.gradle.org/distributions/gradle-8.14-all.zip
+          unzip -q gradle-8.14-all.zip
+          ./gradle-8.14/bin/gradle --version
+      - name: Prepare engine resources
+        run: python3 tools/android_prepare.py --java-home "$JAVA_HOME"
+      # Gradle 8.14 cannot run on JDK 25 (Unsupported class file major
+      # version 69). Prepare keeps JDK 25, the Gradle build uses JDK 17.
+      - name: Set up JDK 17 for Gradle
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Build debug APK (${{ matrix.abi }})
+        run: python3 tools/android_build.py --abi ${{ matrix.abi }} --sdk "$ANDROID_HOME" --java-home "$JAVA_HOME" --gradle "$GITHUB_WORKSPACE/gradle-8.14/bin/gradle"
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ matrix.abi }}
+          path: .local/android/apk/${{ matrix.abi }}/*.apk
+          if-no-files-found: error
+  release:
+    needs: apk
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: apks
+      - name: Create release with APKs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ls -R apks
+          cp apks/apk-arm64-v8a/*.apk horizon-android-arm64-v8a.apk
+          cp apks/apk-armeabi-v7a/*.apk horizon-android-armeabi-v7a.apk
+          cp apks/apk-x86/*.apk horizon-android-x86.apk
+          cp apks/apk-x86_64/*.apk horizon-android-x86_64.apk
+          tag="kestrel-build-${{ github.run_number }}-attempt-${{ github.run_attempt }}"
+          gh release create "$tag" --prerelease \
+            --title "Kestrel build ${{ github.run_number }}" \
+            --notes "Built from kestrel-rebrand commit ${{ github.sha }}. Debug build, not a stable release. All four ABIs; Kestrel rebrand (app name, falcon icon, package com.kestrel.android)." \
+            horizon-android-arm64-v8a.apk horizon-android-armeabi-v7a.apk horizon-android-x86.apk horizon-android-x86_64.apk
