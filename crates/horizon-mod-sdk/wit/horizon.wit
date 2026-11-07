@@ -753,7 +753,8 @@ interface %inventory {
         /// the client at all and cannot be exposed.
         saturation: f32,
         slots: list<inv-stack>,
-        /// The cursor stack, if the player is carrying one.
+        /// The cursor stack, if the player is carrying one. The cursor
+        /// has no slot; its `slot` is 0 and means nothing.
         carried: option<inv-stack>,
     }
     /// A container the player has open, if any.

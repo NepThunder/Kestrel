@@ -734,7 +734,7 @@ The player's own inventory, armour, offhand, crafting grid and carried stack, as
 | `selected` | `u32` |  |
 | `saturation` | `f32` | The player's saturation, 0 to 20, as the hunger bar's hidden half: it lives here, not on `game.player`, so mods built against that record keep their shape. Exhaustion is not on the client at all and cannot be exposed. |
 | `slots` | `list<inv-stack>` |  |
-| `carried` | `option<inv-stack>` | The cursor stack, if the player is carrying one. |
+| `carried` | `option<inv-stack>` | The cursor stack, if the player is carrying one. The cursor has no slot; its `slot` is 0 and means nothing. |
 
 ### record `container`
 
