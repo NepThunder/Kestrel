@@ -76,7 +76,7 @@ for a device-specific test. With the correct device selected:
 ```powershell
 adb -s SERIAL logcat -v threadtime > horizon-system-log.txt
 # Reproduce; stop collection with Ctrl+C.
-adb -s SERIAL shell dumpsys activity exit-info com.horizon.android
+adb -s SERIAL shell dumpsys activity exit-info com.kestrel.android
 ```
 
 A full system log may include other apps' information. Review/redact it before

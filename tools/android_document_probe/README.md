@@ -6,7 +6,7 @@ path; it does not link the game or touch player data.
 
 Build this Cargo manifest for `aarch64-linux-android` with the NDK linker and a
 throwaway target directory. Package the resulting `libhorizon_document_probe.so`
-with the original `packaging/android/java/com/horizon/android/HorizonActivity.java`
+with the original `packaging/android/java/com/kestrel/android/HorizonActivity.java`
 compiled to DEX. Use a separate application ID, e.g. `dev.horizon.documentprobe`,
 that activity as its launcher, and `android.app.lib_name=horizon_document_probe`.
 Do not replace the installed game. Keep generated classes, DEX and APKs in `.local/`.

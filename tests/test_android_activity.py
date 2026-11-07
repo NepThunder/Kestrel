@@ -11,7 +11,7 @@ class ActivityContract(unittest.TestCase):
     def test_input_hotplug_is_delivered_without_recreating_native_activity(self):
         root = ET.parse(ROOT / 'packaging/android/AndroidManifest.xml').getroot()
         activity = next(a for a in root.findall('application/activity')
-                        if a.get(ANDROID + 'name') == 'com.horizon.android.HorizonActivity')
+                        if a.get(ANDROID + 'name') == 'com.kestrel.android.HorizonActivity')
         changes = set(activity.get(ANDROID + 'configChanges', '').split('|'))
         self.assertTrue({'keyboard', 'keyboardHidden', 'navigation'} <= changes)
 

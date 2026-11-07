@@ -29,7 +29,7 @@ fn failure(env: &mut JNIEnv<'_>, message: &str) {
 }
 
 #[unsafe(no_mangle)]
-extern "system" fn Java_com_horizon_android_HorizonDocumentsProvider_nativeCall(
+extern "system" fn Java_com_kestrel_android_HorizonDocumentsProvider_nativeCall(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     home: JString<'_>,
@@ -62,7 +62,7 @@ extern "system" fn Java_com_horizon_android_HorizonDocumentsProvider_nativeCall(
 }
 
 #[unsafe(no_mangle)]
-extern "system" fn Java_com_horizon_android_HorizonDocumentsProvider_nativeOpen(
+extern "system" fn Java_com_kestrel_android_HorizonDocumentsProvider_nativeOpen(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     home: JString<'_>,
