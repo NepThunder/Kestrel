@@ -2,14 +2,14 @@
 //!
 //! - `new <path> [--template code|content] [--name "Name"] [--sdk-path <dir>]`:
 //!   a mod from a template: a Rust crate, or a content mod (no code).
-//! - `build [--debug]`: the `.hmod` in `target/horizon-mod/`, with the mod's
+//! - `build [--debug]`: the `.kmod` in `target/horizon-mod/`, with the mod's
 //!   `assets/` and `data/`; a folder without `Cargo.toml` is content only.
 //! - `run [--game <horizon-client>] [-- <game args>]`: build, then play with
 //!   the mod; run `build` again and the game reloads it.
-//! - `test [--debug] [--hmod <file>] [<name>]`: build, then run the mod's
+//! - `test [--debug] [--kmod <file>] [<name>]`: build, then run the mod's
 //!   `tests/*.toml` scripts in the sandbox, with no game.
 //! - `check <file> [--json]`: what the registry checks of a submission
-//!   (`.hmod`, `.hpack`, resource pack `.zip`), with a trial run for a mod.
+//!   (`.kmod`, `.hpack`, resource pack `.zip`), with a trial run for a mod.
 //! - `registry build|review|check|list`: the registry repository's CI.
 use horizon_mods::{
     Capability, Content, Manifest, Package,
@@ -42,7 +42,7 @@ fn main() -> ExitCode {
         Some("test") => test(&args[1..]),
         Some("check") => check(&args[1..]),
         Some("registry") => registry::main(&args[1..]),
-        _ => Err("usage: cargo horizon-mod new <path> [--template code|content] | build [--debug] | run [--game <horizon-client>] [-- <game args>] | test [--debug] [--hmod <file>] [<name>] | check <file> [--kind <kind>] [--key <public key> --signature <file.minisig>] [--json] | registry build|review|check|list".into()),
+        _ => Err("usage: cargo horizon-mod new <path> [--template code|content] | build [--debug] | run [--game <horizon-client>] [-- <game args>] | test [--debug] [--kmod <file>] [<name>] | check <file> [--kind <kind>] [--key <public key> --signature <file.minisig>] [--json] | registry build|review|check|list".into()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -169,7 +169,7 @@ fn new(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// Builds the mod in the current folder and packs `target/horizon-mod/<id>.hmod`:
+/// Builds the mod in the current folder and packs `target/horizon-mod/<id>.kmod`:
 /// the manifest, the crate's component (none without a `Cargo.toml`: a
 /// content mod) and the files in `assets/` and `data/`.
 fn build(release: bool) -> Result<PathBuf, String> {
@@ -202,9 +202,9 @@ fn build_in(root: &Path, release: bool) -> Result<PathBuf, String> {
     let files: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (*n, b.as_slice())).collect();
     let dir = target_dir.join("horizon-mod");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(format!("{}.hmod", manifest.id));
+    let path = dir.join(format!("{}.kmod", manifest.id));
     // Write then rename, so a running game never reads half a file.
-    let partial = path.with_extension("hmod.partial");
+    let partial = path.with_extension("kmod.partial");
     let bytes = Package::write_files(&manifest_text, wasm.as_deref(), &files)?;
     std::fs::write(&partial, bytes).map_err(|e| e.to_string())?;
     std::fs::rename(&partial, &path).map_err(|e| e.to_string())?;
@@ -279,16 +279,16 @@ fn check(args: &[String]) -> Result<(), String> {
 }
 
 /// `test`: every `tests/*.toml` script (those whose name holds `<name>`)
-/// against the built mod, or the `.hmod` given with `--hmod`.
+/// against the built mod, or the `.kmod` given with `--kmod`.
 fn test(args: &[String]) -> Result<(), String> {
-    let hmod = match flag(args, "--hmod") {
+    let kmod = match flag(args, "--kmod") {
         Some(p) => PathBuf::from(p),
         None => build(!args.iter().any(|a| a == "--debug"))?,
     };
     let filter = args
         .iter()
         .enumerate()
-        .find(|(i, a)| !a.starts_with("--") && (*i == 0 || args[i - 1] != "--hmod"))
+        .find(|(i, a)| !a.starts_with("--") && (*i == 0 || args[i - 1] != "--kmod"))
         .map(|(_, a)| a.as_str());
     let mut scripts: Vec<PathBuf> = std::fs::read_dir("tests")
         .map_err(|e| {
@@ -307,7 +307,7 @@ fn test(args: &[String]) -> Result<(), String> {
     println!(
         "running {} scripts against {}",
         scripts.len(),
-        hmod.display()
+        kmod.display()
     );
     let mut failed = 0;
     for path in &scripts {
@@ -315,7 +315,7 @@ fn test(args: &[String]) -> Result<(), String> {
             .map_err(|e| e.to_string())
             .and_then(|text| Script::parse(&text))
             .and_then(|script| {
-                let mut game = TestGame::load(&hmod)?;
+                let mut game = TestGame::load(&kmod)?;
                 script.run(&mut game)?;
                 Ok(script.steps.len())
             });
@@ -397,18 +397,18 @@ mod tests {
         ];
         new(&new_args).unwrap();
         assert!(!path.join("Cargo.toml").exists());
-        let hmod = build_in(&path, true).unwrap();
-        assert_eq!(hmod, path.join("target/horizon-mod/gems.hmod"));
-        let package = Package::read(&hmod).unwrap();
+        let kmod = build_in(&path, true).unwrap();
+        assert_eq!(kmod, path.join("target/horizon-mod/gems.kmod"));
+        let package = Package::read(&kmod).unwrap();
         assert!(package.wasm.is_none());
-        let content = Content::read(&hmod, &package.manifest).unwrap();
+        let content = Content::read(&kmod, &package.manifest).unwrap();
         assert!(
             content
                 .files
                 .contains(&"data/gems/horizon/block/glowing_amethyst.json".into())
         );
         assert_eq!(content.files.len(), 8, "{:?}", content.files);
-        let report = check::check(&hmod, check::kind_of(&hmod).unwrap(), None, None).unwrap();
+        let report = check::check(&kmod, check::kind_of(&kmod).unwrap(), None, None).unwrap();
         assert!(!report.code);
         assert!(
             report.text().contains("no code: content only"),

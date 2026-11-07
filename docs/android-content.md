@@ -22,8 +22,8 @@ Keep a backup before manual edits; invalid settings may be reset by their loader
 Configuration allows editing known files but not renaming/deleting them or adding
 arbitrary folders. It does not grant access to account tokens or internal files.
 
-To download a `.hmod` from a link, paste its HTTPS URL in the Mods search field
-and press **Import .hmod** (the Search button changes when a URL is entered).
+To download a `.kmod` from a link, paste its HTTPS URL in the Mods search field
+and press **Import .kmod** (the Search button changes when a URL is entered).
 File import and link import are both available.
 
 In **Shaders**, choose **Horizon** for native `.hshader` packs or **Modrinth**
@@ -43,12 +43,12 @@ Catalog searches run separately from installation jobs, so switching tabs does
 not wait for a network response. At most one search runs at once; rapid changes
 replace the pending request, and replies for an old tab cannot replace the current
 list. The last eight query pages are cached for 30 seconds; Search explicitly
-refreshes its query. Changing tabs does not unpack installed `.hmod` WASM files.
+refreshes its query. Changing tabs does not unpack installed `.kmod` WASM files.
 
 Supported files:
 
-- Mods: sandboxed `.hmod` archives; Java `.jar` mods are not accepted. Executing
-  `.hmod` mods requires a 64-bit APK, but the files can be managed on 32-bit builds.
+- Mods: sandboxed `.kmod` archives; Java `.jar` mods are not accepted. Executing
+  `.kmod` mods requires a 64-bit APK, but the files can be managed on 32-bit builds.
 - Resource packs: ZIPs with valid `pack.mcmeta` at the archive root.
 - Shaders: native `.hshader` packs, native shader ZIPs with `horizon-shaders.toml`
   (stored as `.hshader`), or classic ZIPs with shader sources under `shaders/`.
@@ -104,4 +104,4 @@ in Installed before Play, or in the game's Shader Packs settings. It changes the
 sky and adds two post-processing passes; it is a functional example, not an
 Android performance benchmark.
 
-The Horizon catalog also lists source-only `.hnmod` mods so their availability is visible. These require rebuilding the game and cannot be installed into the current Android client; the list marks them as unsupported. `.hmod` file and HTTPS imports remain available.
+The Horizon catalog also lists source-only `.hnmod` mods so their availability is visible. These require rebuilding the game and cannot be installed into the current Android client; the list marks them as unsupported. `.kmod` file and HTTPS imports remain available.

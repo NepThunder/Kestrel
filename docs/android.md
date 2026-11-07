@@ -20,7 +20,7 @@ Worlds, profiles, resource caches and account data use app-private storage.
 Updating with the same signing certificate preserves them; uninstalling the app
 or clearing its storage removes them.
 
-| APK architecture | Minimum Android | Native `.hmod` runtime |
+| APK architecture | Minimum Android | Native `.kmod` runtime |
 | --- | --- | --- |
 | `arm64-v8a` | 9 / API 28 | Included |
 | `x86_64` | 9 / API 28 | Included |
@@ -44,7 +44,7 @@ for cloud restrictions and the frontend-independent game contract.
 ## Launcher
 
 - **Play:** install resources and launch a world or server.
-- **Mods:** import native Horizon packages using a direct HTTPS `.hmod` URL
+- **Mods:** import native Horizon packages using a direct HTTPS `.kmod` URL
   on 64-bit builds. New packages are disabled until enabled in Installed.
 - **Packs:** find and install resource packs with checksum verification.
 - **Installed:** enable, disable or remove installed additions.
