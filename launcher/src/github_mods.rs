@@ -146,7 +146,7 @@ pub struct Resolved {
     pub commit: String,
     /// The release's `.hnmod`, installed as it is when there is one.
     pub asset: Option<Asset>,
-    /// A release that ships only a content mod (`.hmod`): not supported here yet.
+    /// A release that ships only a content mod (`.kmod`): not supported here yet.
     pub content_only: Option<String>,
 }
 
@@ -236,7 +236,7 @@ fn default_head(api: Api, link: &Link) -> Result<String, String> {
     commit_of(api, link, branch)
 }
 
-/// The `.hnmod` of a release's JSON (and a lone `.hmod`, which is not installed here).
+/// The `.hnmod` of a release's JSON (and a lone `.kmod`, which is not installed here).
 fn assets(release: &serde_json::Value, link: &Link) -> (Option<Asset>, Option<String>) {
     let prefix = format!(
         "https://github.com/{}/{}/releases/download/",
@@ -264,10 +264,10 @@ fn assets(release: &serde_json::Value, link: &Link) -> (Option<Asset>, Option<St
                 .map(str::to_ascii_lowercase),
         })
     });
-    let hmod = named(".hmod")
+    let kmod = named(".kmod")
         .find_map(|a| a["name"].as_str().map(str::to_owned))
         .filter(|_| hnmod.is_none());
-    (hnmod, hmod)
+    (hnmod, kmod)
 }
 
 fn from_release(api: Api, link: &Link, release: &serde_json::Value) -> Result<Resolved, String> {
@@ -553,7 +553,7 @@ pub fn fetch(found: &Resolved) -> Result<Vec<Packed>, String> {
     if mods.is_empty() {
         return Err(match &found.content_only {
             Some(file) => format!(
-                "{} ships {file}, a content mod: installing .hmod files from GitHub is not supported yet.",
+                "{} ships {file}, a content mod: installing .kmod files from GitHub is not supported yet.",
                 found.label()
             ),
             None => format!(

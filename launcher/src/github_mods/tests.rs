@@ -84,7 +84,7 @@ fn a_repository_resolves_to_its_latest_releases_hnmod_and_commit() {
             release(
                 "v1",
                 json!([
-                    asset("zoom.hmod", None),
+                    asset("zoom.kmod", None),
                     asset("zoom-1.hnmod", Some(&digest))
                 ]),
             ),
@@ -107,13 +107,13 @@ fn a_release_with_no_hnmod_falls_back_to_its_commit_and_remembers_a_content_mod(
     let api = recorded(vec![
         (
             "repos/acme/zoom/releases/latest",
-            release("v1", json!([asset("zoom.hmod", None)])),
+            release("v1", json!([asset("zoom.kmod", None)])),
         ),
         ("repos/acme/zoom/commits/v1", json!({ "sha": SHA })),
     ]);
     let found = resolve(&link("https://github.com/acme/zoom"), &api).unwrap();
     assert_eq!(found.asset, None);
-    assert_eq!(found.content_only.as_deref(), Some("zoom.hmod"));
+    assert_eq!(found.content_only.as_deref(), Some("zoom.kmod"));
     assert_eq!(found.commit, SHA);
 }
 

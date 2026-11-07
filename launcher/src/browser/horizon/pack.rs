@@ -257,7 +257,7 @@ mod tests {
         let pack = install_in(&index, true, "cozy", &packs, &|_, _| {}).unwrap();
         assert_eq!(pack.mods, ["coords_hud 0.1.0"]);
         let home = home(&packs.join("cozy"));
-        assert!(home.join("horizon-mods/coords_hud.hmod").is_file());
+        assert!(home.join("horizon-mods/coords_hud.kmod").is_file());
         assert!(
             !java::is_enabled(&home, "coords_hud"),
             "the pack turns it off"
