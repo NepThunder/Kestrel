@@ -49,6 +49,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "beacons",
                 "-p",
+                "world-probe",
+                "-p",
                 "horizon-mods-test-guest",
                 "-p",
                 "horizon-mods-test-ui-guest",
@@ -73,6 +75,7 @@ fn mods_dir() -> &'static Path {
             ("predator_missile", example("predator-missile")),
             ("welcome", example("welcome")),
             ("beacons", example("beacons")),
+            ("world_probe", example("world-probe")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
         ];
@@ -241,7 +244,7 @@ id = "too_new"
 name = "Too New"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes"]
+capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world"]
 experimental = ["ui", "render", "input", "recipes"]
 "#;
     std::fs::write(dir.join("horizon-mod.toml"), manifest).unwrap();
@@ -255,8 +258,10 @@ experimental = ["ui", "render", "input", "recipes"]
         needed(imports(&wasm).unwrap().iter().map(String::as_str)).0
     };
     assert_eq!(level("coords_hud.hmod"), 0);
-    // The UI guest draws far terrain (`render.set-far-terrain`).
-    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), LEVEL);
+    // The UI guest draws far terrain (`render.set-far-terrain`, level 7).
+    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 7);
+    // The world probe reads blocks (`world.get-blocks`, level 8).
+    assert_eq!(level("world_probe.hmod"), LEVEL);
 }
 
 #[test]
@@ -888,6 +893,7 @@ fn the_examples_test_scripts_pass() {
         ("coords-hud", "coords_hud"),
         ("welcome", "welcome"),
         ("beacons", "beacons"),
+        ("world-probe", "world_probe"),
     ];
     for (example, hmod) in examples_and_files {
         for entry in std::fs::read_dir(examples.join(example).join("tests")).unwrap() {
@@ -900,7 +906,7 @@ fn the_examples_test_scripts_pass() {
             ran += 1;
         }
     }
-    assert_eq!(ran, 5);
+    assert_eq!(ran, 6);
 }
 
 /// Capability `world` without a world lent (the registry's trial run):
