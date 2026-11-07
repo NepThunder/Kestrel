@@ -123,9 +123,9 @@ jobs:
           out = Path('dist')
           out.mkdir()
           sha, abi = os.environ['GITHUB_SHA'], os.environ['ABI']
-          name = f'Horizon-Android-dev.{os.environ["GITHUB_RUN_NUMBER"]}.{sha[:12]}-{abi}.apk'
+          name = f'Kestrel-dev.{os.environ["GITHUB_RUN_NUMBER"]}.{sha[:12]}-{abi}.apk'
           apk = out / name
-          shutil.copyfile(Path('.local/android/apk') / abi / 'horizon-android-public.apk', apk)
+          shutil.copyfile(Path('.local/android/apk') / abi / 'kestrel-public.apk', apk)
           (out / 'SHA256SUMS.txt').write_text(f'{hashlib.sha256(apk.read_bytes()).hexdigest()}  {name}\n')
           for source, dest in [('LICENSE', 'LICENSE.txt'), ('THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.md')]:
               shutil.copyfile(source, out / dest)

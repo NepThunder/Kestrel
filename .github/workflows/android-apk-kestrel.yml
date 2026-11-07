@@ -88,9 +88,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ls -R apks
-          cp apks/apk-arm64-v8a/*.apk horizon-android-arm64-v8a.apk
+          cp apks/apk-arm64-v8a/*.apk kestrel-arm64-v8a.apk
           tag="kestrel-build-${{ github.run_number }}-attempt-${{ github.run_attempt }}"
           gh release create "$tag" --prerelease \
             --title "Kestrel build ${{ github.run_number }}" \
             --notes "Built from kestrel-rebrand commit ${{ github.sha }}. Debug build, not a stable release. arm64 only for now; Kestrel rebrand (app name, falcon icon, package com.kestrel.android)." \
-            horizon-android-arm64-v8a.apk
+            kestrel-arm64-v8a.apk

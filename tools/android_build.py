@@ -227,7 +227,7 @@ def main():
     dev_properties = (['-PappId=com.kestrel.android.dev', '-PdevBuild=' + args.dev_build,
                        '-PdevVersionCode=' + str(args.dev_version_code)] if args.dev_build else [])
     run([gradle, '--no-daemon', '-p', ROOT / 'packaging/android', '-Pabi=' + args.abi, '-PminSdk=' + str(min_sdk), *dev_properties, 'assemble' + variant.title()], cwd=ROOT, env=environment)
-    apk = output / ('horizon-android-public.apk' if args.public else 'horizon-android-release.apk' if args.release_candidate else 'horizon-android.apk')
+    apk = output / ('kestrel-public.apk' if args.public else 'kestrel-release.apk' if args.release_candidate else 'kestrel.apk')
     # Gradle names the output APK after rootProject.name in settings.gradle
     # (rebranded to 'Kestrel', was 'HorizonAndroid'); read it, don't hardcode it.
     settings = (ROOT / 'packaging/android/settings.gradle').read_text()

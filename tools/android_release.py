@@ -53,8 +53,8 @@ def main():
 
     check_source()
     stamp = output / 'BUILD_COMMIT.txt'
-    selected = {f'Horizon-Android-{version}-{abi}.apk' for abi in abis}
-    retained = [p for p in output.glob(f'Horizon-Android-{version}-*.apk') if p.name not in selected]
+    selected = {f'Kestrel-{version}-{abi}.apk' for abi in abis}
+    retained = [p for p in output.glob(f'Kestrel-{version}-*.apk') if p.name not in selected]
     if retained and (not stamp.is_file() or stamp.read_bytes() != revision):
         raise SystemExit('Other APKs in this release directory belong to an unverified commit. '
                          'Build all ABIs together or move the previous attachments first.')
@@ -75,15 +75,15 @@ def main():
         subprocess.run(command, cwd=ROOT, env=env, check=True)
         check_source()
         if not rust_only:
-            shutil.copy2(ROOT / '.local/android/apk' / abi / 'horizon-android-public.apk',
-                         output / f'Horizon-Android-{version}-{abi}.apk')
+            shutil.copy2(ROOT / '.local/android/apk' / abi / 'kestrel-public.apk',
+                         output / f'Kestrel-{version}-{abi}.apk')
 
     build_targets(abis, parallel, invoke)
     check_source()
     shutil.copy2(ROOT / 'LICENSE', output / 'LICENSE.txt')
     shutil.copy2(ROOT / 'THIRD_PARTY_NOTICES.md', output / 'THIRD_PARTY_NOTICES.md')
     sums = ''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n'
-                   for p in sorted(output.glob(f'Horizon-Android-{version}-*.apk')))
+                   for p in sorted(output.glob(f'Kestrel-{version}-*.apk')))
     (output / 'SHA256SUMS.txt').write_text(sums, encoding='utf-8')
     stamp.write_bytes(revision)
     print(f'Release attachments: {output}')
