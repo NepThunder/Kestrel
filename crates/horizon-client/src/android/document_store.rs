@@ -605,7 +605,7 @@ pub fn validate_entry_name(name: &str) -> Result<(), String> {
         return Err("Name cannot contain slashes or special path characters.".into());
     }
     if is_protected_system_name(trimmed) {
-        return Err("This name is reserved by the Horizon launcher.".into());
+        return Err("This name is reserved by the Kestrel launcher.".into());
     }
     Ok(())
 }
@@ -613,7 +613,7 @@ pub fn validate_entry_name(name: &str) -> Result<(), String> {
 fn verify_no_symlinks(home: &Path, target: &Path) -> Result<(), String> {
     let rel = target
         .strip_prefix(home)
-        .map_err(|_| "Path escapes the Horizon home directory.".to_owned())?;
+        .map_err(|_| "Path escapes the Kestrel home directory.".to_owned())?;
     let mut cur = home.to_path_buf();
     for part in rel.components() {
         use std::path::Component;
@@ -630,7 +630,7 @@ fn verify_no_symlinks(home: &Path, target: &Path) -> Result<(), String> {
         }
         match fs::symlink_metadata(&cur) {
             Ok(meta) if meta.file_type().is_symlink() => {
-                return Err("Symbolic links are not permitted in Horizon directories.".into());
+                return Err("Symbolic links are not permitted in Kestrel directories.".into());
             }
             Ok(_) => {}
             Err(e) if e.kind() == ErrorKind::NotFound => {}

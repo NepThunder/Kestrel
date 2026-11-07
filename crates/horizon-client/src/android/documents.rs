@@ -203,7 +203,7 @@ pub fn export_file(
     if file_name.to_ascii_lowercase().ends_with(".png") {
         let _ = crate::gallery::save(file_path);
         return Ok(format!(
-            "Exporting '{file_name}' to Pictures/HorizonAndroid..."
+            "Exporting '{file_name}' to Pictures/Kestrel..."
         ));
     }
     let rel_str = file_path
@@ -230,7 +230,7 @@ pub fn export_file(
         ))
     } else {
         Ok(format!(
-            "Ready to export '{file_name}' via system Files > Horizon Android."
+            "Ready to export '{file_name}' via system Files > Kestrel."
         ))
     }
 }

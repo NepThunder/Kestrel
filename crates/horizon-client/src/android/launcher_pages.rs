@@ -5938,7 +5938,7 @@ impl Launcher {
                 self.catalog.status = if crate::platform::open_documents(&id) {
                     "Opened in Files. Return here after copying files.".into()
                 } else {
-                    "Open the system Files app and choose Horizon Android.".into()
+                    "Open the system Files app and choose Kestrel.".into()
                 };
             }
             Some(Action::Import(kind)) => {
@@ -6274,7 +6274,7 @@ impl Launcher {
                 self.catalog.status = if crate::platform::open_documents("reports") {
                     "Opened Reports folder in system Files.".into()
                 } else {
-                    "Reports are saved under Horizon Android > Reports.".into()
+                    "Reports are saved under Kestrel > Reports.".into()
                 };
             }
             Some(Action::ToggleLauncherAnimations) => {
