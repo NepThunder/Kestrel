@@ -1,0 +1,9 @@
+id = "inventory_probe"
+name = "Inventory Probe"
+version = "0.1.0"
+description = "Prototype for client inventory reads: shows the held item's damage, armour, saturation and the open container each tick, and proves closing it clears the display."
+authors = ["Horizon"]
+api = "0.1"
+side = "client"
+capabilities = ["inventory", "chat"]
+experimental = ["inventory"]

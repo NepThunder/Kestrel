@@ -35,6 +35,9 @@ pub struct TestGame {
     /// script sets them with its `inventory` / `container` steps.
     pub inventory: PlayerInventory,
     pub open_container: Option<Container>,
+    /// The player is dead: the game reads no open container while the
+    /// death screen is up, so neither does the sandbox.
+    pub dead: bool,
     /// Capability `world`'s Overworld: the blocks a script set or the mod
     /// changed; every other block, and the other dimensions, are air. Every
     /// biome is the dimension's plainest: plains, nether wastes, the end.
@@ -132,6 +135,7 @@ impl TestGame {
                 carried: None,
             },
             open_container: None,
+            dead: false,
             world: Default::default(),
         };
         copy_mod(hmod, &copy)?;
@@ -163,7 +167,10 @@ impl TestGame {
             // The GUI of a 1280 x 720 window at scale 3, as the trial run's.
             gui_size: (427.0, 240.0),
             inventory: Some(self.inventory.clone()),
-            open_container: self.open_container.clone(),
+            // Dead: no open container, as the game's snapshot builder
+            // reads while the death screen is up. A script that revives
+            // the player must close the container itself, as respawn does.
+            open_container: (!self.dead).then(|| self.open_container.clone()).flatten(),
             ..Snapshot::default()
         });
     }
@@ -465,7 +472,7 @@ impl ContainerSet {
 
 /// One step. Its parts happen in this order: `reload`, `title-screen`,
 /// `blocks`, `join`, `player`, `clock`, `inventory`, `container`,
-/// `close-container`, `ticks`, `frames`, `chat`, `command`, `break`,
+/// `close-container`, `dead`, `ticks`, `frames`, `chat`, `command`, `break`,
 /// `place`, `leave`; then the blocks the mod set are made, and `expect`
 /// is checked against what the mod showed and changed during the step.
 /// For a server mod, `player`, `chat`, `command`, `break` and `place` are
@@ -487,6 +494,10 @@ pub struct Step {
     /// Close the open container (capability `inventory`).
     #[serde(default)]
     close_container: bool,
+    /// The player dies (capability `inventory`): the open container
+    /// reads as closed from this step on.
+    #[serde(default)]
+    dead: bool,
     #[serde(default)]
     ticks: u64,
     #[serde(default)]
@@ -606,6 +617,9 @@ impl Step {
         if self.close_container {
             parts.push("close container".to_string());
         }
+        if self.dead {
+            parts.push("dies".to_string());
+        }
         if self.ticks > 0 {
             parts.push(count(self.ticks, "tick"));
         }
@@ -691,6 +705,9 @@ impl Step {
             game.open_container = None;
         } else if let Some(set) = &self.container {
             game.open_container = Some(set.to_container());
+        }
+        if self.dead {
+            game.dead = true;
         }
         game.tick(self.ticks);
         game.frames(self.frames);
