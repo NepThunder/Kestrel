@@ -12,7 +12,7 @@ components. [Integration records](android-upstream.json) identify reviewed merge
 | Minecraft versions | Java 26.3 / protocol 777; other JAR versions are not launch targets |
 | Vanilla-compatible Java servers | Multiplayer client implemented; compatibility depends on server, proxy and anticheat |
 | Authenticated servers | Xbox/XSTS and Minecraft session handoff implemented; project-owned production app approval remains pending |
-| Native `.hmod` | Wasmtime components on 64-bit builds, subject to the versioned SDK and declared capabilities |
+| Native `.hmod` | Wasmtime components on all builds (Cranelift on 64-bit, Pulley interpreter on 32-bit), subject to the versioned SDK and declared capabilities |
 | Resource packs | Supported within the renderer's implemented formats |
 | Fabric/Forge/NeoForge and Mixins | Java code does not execute; native ports are required |
 | Java modpacks | Not exposed by the Android launcher |

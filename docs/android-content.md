@@ -48,7 +48,9 @@ refreshes its query. Changing tabs does not unpack installed `.hmod` WASM files.
 Supported files:
 
 - Mods: sandboxed `.hmod` archives; Java `.jar` mods are not accepted. Executing
-  `.hmod` mods requires a 64-bit APK, but the files can be managed on 32-bit builds.
+  `.hmod` mods runs under Cranelift on 64-bit APKs and under the Pulley
+  interpreter (about 10x slower) on 32-bit builds, which warn before enabling
+  a code mod.
 - Resource packs: ZIPs with valid `pack.mcmeta` at the archive root.
 - Shaders: native `.hshader` packs, native shader ZIPs with `horizon-shaders.toml`
   (stored as `.hshader`), or classic ZIPs with shader sources under `shaders/`.
