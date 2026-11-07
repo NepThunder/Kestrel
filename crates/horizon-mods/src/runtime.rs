@@ -792,10 +792,7 @@ impl Mods {
         run.store.data_mut().snapshot = self.snapshot.clone();
         run.store.data_mut().storage_budget = STORAGE_WRITE_BUDGET;
         let started = Instant::now();
-        let result = run
-            .store
-            .set_fuel(wall_fuel(fuel))
-            .and_then(|()| f(run));
+        let result = run.store.set_fuel(wall_fuel(fuel)).and_then(|()| f(run));
         // An average over about the last 64 calls.
         entry.cost = (entry.cost * 63 + started.elapsed()) / 64;
         let data = run.store.data_mut();
