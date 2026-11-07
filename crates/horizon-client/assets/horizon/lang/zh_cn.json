@@ -51,7 +51,7 @@
   "horizon.pages.open.horizon_graphics": "Horizon 图形…",
   "horizon.pages.open.controller_binds": "手柄按键绑定…",
   "horizon.pages.open.horizon_settings": "Horizon 设置…",
-  "horizon.mods.empty": "没有模组：请将 .hmod 文件放入 horizon-mods 文件夹",
+  "horizon.mods.empty": "没有模组：请将 .kmod 文件放入 horizon-mods 文件夹",
   "horizon.mods.stopped": "（已停止）",
   "horizon.mods.not_built": "（未构建）",
   "horizon.mods.dev": "（开发版）",

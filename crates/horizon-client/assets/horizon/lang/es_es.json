@@ -51,7 +51,7 @@
   "horizon.pages.open.horizon_graphics": "Gráficos de Horizon...",
   "horizon.pages.open.controller_binds": "Asignaciones del mando...",
   "horizon.pages.open.horizon_settings": "Ajustes de Horizon...",
-  "horizon.mods.empty": "No hay mods: pon archivos .hmod en la carpeta horizon-mods",
+  "horizon.mods.empty": "No hay mods: pon archivos .kmod en la carpeta horizon-mods",
   "horizon.mods.stopped": " (Detenido)",
   "horizon.mods.not_built": " (Sin compilar)",
   "horizon.mods.dev": " (Desarrollo)",

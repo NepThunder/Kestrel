@@ -34,7 +34,7 @@ pub const ANDROID_BUNDLED: [(&str, &str, &str); 4] = [
     ),
 ];
 
-/// The folder holding `.hmod` files, beside `options.txt`.
+/// The folder holding `.kmod` files, beside `options.txt`.
 pub const DIR: &str = "horizon-mods";
 /// Where the launcher installs native mods (`<id>.hnmod`), beside [`DIR`]. They run only in a
 /// game the launcher built with them.

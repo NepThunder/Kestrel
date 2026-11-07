@@ -164,7 +164,7 @@ fn row(home: &Path, id: &str) -> io::Result<Value> {
     } else {
         match doc.path.extension().and_then(|s| s.to_str()) {
             Some("jsonl") => "application/x-ndjson",
-            Some("zip" | "hmod" | "hshader") => "application/zip",
+            Some("zip" | "kmod" | "hshader") => "application/zip",
             Some("png") => "image/png",
             Some("json") => "application/json",
             Some("txt" | "wgsl" | "glsl" | "fsh" | "vsh" | "toml") => "text/plain",
@@ -412,13 +412,13 @@ mod tests {
         ] {
             assert!(resolve(&home, id).is_err(), "{id}");
         }
-        call(&home, "create", "p0/mods", "test.hmod").unwrap();
-        assert!(call(&home, "create", "p0/mods", "test.hmod").is_err());
-        fs::write(home.join("horizon-mods/test.hmod"), b"original").unwrap();
-        call(&home, "create", "p0/mods", "other.hmod").unwrap();
-        assert!(call(&home, "rename", "p0/mods/other.hmod", "test.hmod").is_err());
+        call(&home, "create", "p0/mods", "test.kmod").unwrap();
+        assert!(call(&home, "create", "p0/mods", "test.kmod").is_err());
+        fs::write(home.join("horizon-mods/test.kmod"), b"original").unwrap();
+        call(&home, "create", "p0/mods", "other.kmod").unwrap();
+        assert!(call(&home, "rename", "p0/mods/other.kmod", "test.kmod").is_err());
         assert_eq!(
-            fs::read(home.join("horizon-mods/test.hmod")).unwrap(),
+            fs::read(home.join("horizon-mods/test.kmod")).unwrap(),
             b"original"
         );
         assert!(call(&home, "delete", "p0/mods", "").is_err());
@@ -432,15 +432,15 @@ mod tests {
         assert!(open(&home, "reports/report.jsonl", "r").is_ok());
         assert!(open(&home, "reports/report.jsonl", "w").is_err());
         assert!(!is_child(&home, "p0/mods", "p0/packs/pack.zip"));
-        assert!(is_child(&home, ROOT, "p0/mods/test.hmod"));
+        assert!(is_child(&home, ROOT, "p0/mods/test.kmod"));
         assert_eq!(
-            call(&home, "path", "p0/mods/test.hmod", "").unwrap(),
-            json!(["horizon", "p0/mods", "p0/mods/test.hmod"])
+            call(&home, "path", "p0/mods/test.kmod", "").unwrap(),
+            json!(["horizon", "p0/mods", "p0/mods/test.kmod"])
         );
-        assert!(call(&home, "path", "p0/mods/test.hmod", "p0/packs").is_err());
+        assert!(call(&home, "path", "p0/mods/test.kmod", "p0/packs").is_err());
         fs::write(home.join("android-launcher.json"), br#"{"profile":7}"#).unwrap();
         assert_eq!(children(&home, ROOT).unwrap()[0]["document_id"], "p7/mods");
-        assert!(open(&home, "p0/mods/test.hmod", "r").is_ok());
+        assert!(open(&home, "p0/mods/test.kmod", "r").is_ok());
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(home.join("performance"), home.join("horizon-mods/link"))
@@ -687,7 +687,7 @@ pub fn classify_entry_kind(path: &Path, is_dir: bool) -> String {
         .map(|s| s.to_ascii_lowercase())
         .as_deref()
     {
-        Some("hmod") => "Horizon Mod (.hmod)".into(),
+        Some("kmod") => "Kestrel Mod (.kmod)".into(),
         Some("hnmod") => "Native Mod (.hnmod)".into(),
         Some("jar") => "Java Mod (.jar)".into(),
         Some("hshader") => "Horizon Shader (.hshader)".into(),

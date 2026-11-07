@@ -530,7 +530,7 @@ fn trust_label(trust: Trust) -> &'static str {
 /// The game folder path a registry project's file goes to.
 fn relative(kind: Kind, id: &str, file_name: &str) -> Result<String, String> {
     match kind {
-        Kind::Mod => Ok(format!("{}/{id}.hmod", java::MODS_DIR)),
+        Kind::Mod => Ok(format!("{}/{id}.kmod", java::MODS_DIR)),
         Kind::ResourcePack => Ok(format!("resourcepacks/{file_name}")),
         Kind::Shader => Ok(format!("shaderpacks/{file_name}")),
         Kind::Modpack => Err("A modpack installs as its own profile (pack::install).".into()),
@@ -540,7 +540,7 @@ fn relative(kind: Kind, id: &str, file_name: &str) -> Result<String, String> {
 
 /// Installs a registry project into the game folder `home`: its newest version for this game that
 /// the game the player runs can load, downloaded into `mod-browser/downloads/`, checked against
-/// the index, then moved into place. A mod is `horizon-mods/<id>.hmod`, turned on in
+/// the index, then moved into place. A mod is `horizon-mods/<id>.kmod`, turned on in
 /// `horizon-mods.txt`.
 pub fn install(
     project: &Project,
@@ -707,20 +707,20 @@ fn native_mods_dir() -> &'static str {
 }
 
 /// Whether an update to a native version keeps the old file `old`: a mod that turned native
-/// keeps its `.hmod` until the player builds the game with the new version. The game runs it
+/// keeps its `.kmod` until the player builds the game with the new version. The game runs it
 /// meanwhile and skips it once the native one is built in; removing the mod removes both.
 fn stays(native: bool, old: &str) -> bool {
-    native && old.ends_with(".hmod")
+    native && old.ends_with(".kmod")
 }
 
-/// The mod id of an installed mod (`horizon-mods/<id>`, `horizon-mods/<id>.hmod` or
+/// The mod id of an installed mod (`horizon-mods/<id>`, `horizon-mods/<id>.kmod` or
 /// `horizon-native-mods/<id>.hnmod`).
 pub fn mod_id(entry: &installed::Entry) -> Option<&str> {
     if let Some(rest) = entry.file.strip_prefix(native_mods_dir()) {
         return rest.strip_prefix('/')?.strip_suffix(".hnmod");
     }
     let rest = entry.file.strip_prefix(java::MODS_DIR)?.strip_prefix('/')?;
-    Some(rest.strip_suffix(".hmod").unwrap_or(rest))
+    Some(rest.strip_suffix(".kmod").unwrap_or(rest))
 }
 
 /// Turns the registry's files that were taken down off in the game folder `home`, and says

@@ -51,7 +51,7 @@
   "horizon.pages.open.horizon_graphics": "Графика Horizon...",
   "horizon.pages.open.controller_binds": "Назначения кнопок...",
   "horizon.pages.open.horizon_settings": "Настройки Horizon...",
-  "horizon.mods.empty": "Модов нет: положите файлы .hmod в папку horizon-mods",
+  "horizon.mods.empty": "Модов нет: положите файлы .kmod в папку horizon-mods",
   "horizon.mods.stopped": " (остановлен)",
   "horizon.mods.dev": " (разработка)",
   "horizon.mods.settings": "Настройки",

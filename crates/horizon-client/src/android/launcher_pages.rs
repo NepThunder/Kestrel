@@ -1524,7 +1524,7 @@ impl Launcher {
             let search_btn_w = 98.0;
             let field_w = (content_w - search_btn_w - 8.0).max(120.0);
             let search_hint = if page == Page::Mods {
-                "Search mods or paste .hmod HTTPS link..."
+                "Search mods or paste .kmod HTTPS link..."
             } else {
                 "Search catalog..."
             };
@@ -1545,7 +1545,7 @@ impl Launcher {
                 &mut self.targets,
                 [content_x + field_w + 8.0, search_y, search_btn_w, 36.0],
                 if page == Page::Mods && self.catalog.query.trim().starts_with("https://") {
-                    "Import .hmod"
+                    "Import .kmod"
                 } else {
                     "Search"
                 },
@@ -2279,7 +2279,7 @@ impl Launcher {
                     content_x + 74.0,
                     top + 42.0,
                     (content_w - 92.0).max(80.0),
-                    "Import .hmod/.jar mods, .zip resource packs, or shader packs — or browse files in File Manager.",
+                    "Import .kmod/.jar mods, .zip resource packs, or shader packs — or browse files in File Manager.",
                     my3_muted(),
                 );
                 let cta_y = top + card_h - 46.0;
@@ -2759,7 +2759,7 @@ impl Launcher {
 
             let entry_icon = if entry.is_dir {
                 Icon::Folder
-            } else if entry.name.ends_with(".hmod") || entry.name.ends_with(".jar") {
+            } else if entry.name.ends_with(".kmod") || entry.name.ends_with(".jar") {
                 Icon::Mods
             } else if entry.name.ends_with(".hshader") {
                 Icon::Shaders

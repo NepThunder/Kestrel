@@ -735,7 +735,7 @@ impl Catalog {
                         settings.horizon.shader_pack == name
                     }
                     horizon_client::content_files::Kind::Mods => name
-                        .strip_suffix(".hmod")
+                        .strip_suffix(".kmod")
                         .or_else(|| name.strip_suffix(".jar"))
                         .is_some_and(|id| on.enabled.contains(id)),
                 };
@@ -745,8 +745,8 @@ impl Catalog {
                     horizon_client::content_files::Kind::Packs => "PACK",
                     horizon_client::content_files::Kind::Shaders => "SHADER",
                 };
-                let ext_tag = if name.ends_with(".hmod") {
-                    "Horizon Mod (.hmod)"
+                let ext_tag = if name.ends_with(".kmod") {
+                    "Kestrel Mod (.kmod)"
                 } else if name.ends_with(".jar") {
                     "Java Mod (.jar)"
                 } else if name.ends_with(".hshader") {
@@ -758,7 +758,7 @@ impl Catalog {
                 };
                 let subtitle = format!("{ext_tag}  •  {}  •  {name}", format_file_size(size_bytes));
                 let clean_title = name
-                    .strip_suffix(".hmod")
+                    .strip_suffix(".kmod")
                     .or_else(|| name.strip_suffix(".jar"))
                     .or_else(|| name.strip_suffix(".hshader"))
                     .or_else(|| name.strip_suffix(".zip"))
@@ -796,7 +796,7 @@ impl Catalog {
                 .strip_prefix("horizon-native-mods/")
                 .unwrap_or(&file_name)
                 .strip_suffix(".hnmod")
-                .or_else(|| file_name.strip_suffix(".hmod"))
+                .or_else(|| file_name.strip_suffix(".kmod"))
                 .or_else(|| file_name.strip_suffix(".jar"))
                 .unwrap_or(&file_name);
             let full_path = game.join(&e.file);
@@ -817,7 +817,7 @@ impl Catalog {
                 subtitle,
             });
         }
-        // Also scan horizon-native-mods/ for any .hnmod or .hmod files on disk.
+        // Also scan horizon-native-mods/ for any .hnmod or .kmod files on disk.
         let native_dir = game.join("horizon-native-mods");
         if std::fs::symlink_metadata(&native_dir).is_ok_and(|m| !m.file_type().is_symlink()) {
             for entry in std::fs::read_dir(&native_dir)
@@ -831,7 +831,7 @@ impl Catalog {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if !horizon_client::content_files::plain_name(&name)
                     || (!name.ends_with(".hnmod")
-                        && !name.ends_with(".hmod")
+                        && !name.ends_with(".kmod")
                         && !name.ends_with(".jar"))
                 {
                     continue;
@@ -846,7 +846,7 @@ impl Catalog {
                 }
                 let mod_id = name
                     .strip_suffix(".hnmod")
-                    .or_else(|| name.strip_suffix(".hmod"))
+                    .or_else(|| name.strip_suffix(".kmod"))
                     .or_else(|| name.strip_suffix(".jar"))
                     .unwrap_or(&name);
                 let size_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
@@ -1144,7 +1144,7 @@ impl Catalog {
             || (project.kind == Kind::Mod
                 && self.local.iter().any(|item| {
                     item.kind == horizon_client::content_files::Kind::Mods
-                        && (item.file == format!("{}.hmod", project.id)
+                        && (item.file == format!("{}.kmod", project.id)
                             || item.file == format!("{}.jar", project.slug)
                             || item.file == format!("horizon-mods/{}", project.id)
                             || item.file == format!("horizon-mods/{}", project.slug)
@@ -1543,7 +1543,7 @@ impl Catalog {
                 self.import_native(home);
             } else {
                 self.results.clear();
-                self.status = "Press Import .hmod to download this HTTPS link".into();
+                self.status = "Press Import .kmod to download this HTTPS link".into();
             }
             return;
         }
@@ -1625,13 +1625,13 @@ impl Catalog {
         let url = self.query.trim().to_owned();
         let game = self.config.game_home(home);
         self.downloading = Some((browser::SourceId::Horizon, "https-import".into()));
-        self.downloading_title = "Custom .hmod Package".into();
+        self.downloading_title = "Custom .kmod Package".into();
         self.downloading_size_mib = 2.4;
         self.paused.store(false, Ordering::Relaxed);
         self.cancelled.store(false, Ordering::Relaxed);
         *self.progress.lock().unwrap_or_else(|e| e.into_inner()) = 0.15;
         let progress = self.progress.clone();
-        self.job("Downloading sandboxed .hmod over HTTPS...", move || {
+        self.job("Downloading sandboxed .kmod over HTTPS...", move || {
             use std::io::Read;
             let mut bytes = Vec::new();
             ureq::AgentBuilder::new()
@@ -1647,7 +1647,7 @@ impl Catalog {
                 .read_to_end(&mut bytes)
                 .map_err(|e| e.to_string())?;
             if bytes.len() > 32 * 1024 * 1024 {
-                return Err("Horizon mod exceeds 32 MiB".into());
+                return Err("Kestrel mod exceeds 32 MiB".into());
             }
             *progress.lock().unwrap_or_else(|e| e.into_inner()) = 0.85;
             let dir = game.join("horizon-mods");
@@ -1656,9 +1656,9 @@ impl Catalog {
             std::fs::write(&stage, bytes).map_err(|e| e.to_string())?;
             let result = (|| {
                 let package = horizon_mods::Package::read(&stage)?;
-                let destination = dir.join(format!("{}.hmod", package.manifest.id));
+                let destination = dir.join(format!("{}.kmod", package.manifest.id));
                 if destination.exists() {
-                    std::fs::copy(&destination, destination.with_extension("hmod.previous"))
+                    std::fs::copy(&destination, destination.with_extension("kmod.previous"))
                         .map_err(|e| e.to_string())?;
                 }
                 std::fs::rename(&stage, destination).map_err(|e| e.to_string())?;
@@ -1793,7 +1793,7 @@ impl Catalog {
                     .or_else(|| item.file.strip_prefix("horizon-mods/"))
                     .unwrap_or(&item.file);
                 let id = id
-                    .strip_suffix(".hmod")
+                    .strip_suffix(".kmod")
                     .or_else(|| id.strip_suffix(".hnmod"))
                     .or_else(|| id.strip_suffix(".jar"))
                     .unwrap_or(id);
@@ -1861,7 +1861,7 @@ impl Catalog {
                     .or_else(|| item.file.strip_prefix("horizon-mods/"))
                     .unwrap_or(&item.file);
                 let id = id
-                    .strip_suffix(".hmod")
+                    .strip_suffix(".kmod")
                     .or_else(|| id.strip_suffix(".hnmod"))
                     .or_else(|| id.strip_suffix(".jar"))
                     .unwrap_or(id);
@@ -1909,7 +1909,7 @@ impl Catalog {
                 let mut on = horizon_client::mod_list::ModList::load(&game);
                 if let Some(id) = item
                     .file
-                    .strip_suffix(".hmod")
+                    .strip_suffix(".kmod")
                     .or_else(|| item.file.strip_suffix(".jar"))
                 {
                     on.enabled.remove(id);

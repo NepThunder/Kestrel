@@ -5803,7 +5803,7 @@ mod tests {
         let en = crate::lang::Language::load(&[], "en_us");
         assert!(
             en.get("horizon.mods.empty")
-                .is_some_and(|line| line.contains(".hmod"))
+                .is_some_and(|line| line.contains(".kmod"))
         );
         let open_folder = empty
             .iter()

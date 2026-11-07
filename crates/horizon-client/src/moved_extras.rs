@@ -166,7 +166,7 @@ pub fn fetch_index() -> Result<Index, String> {
 /// player whose extras were `e`: its newest version for this game that
 /// wasn't taken down and that this Horizon's mod API level runs, checked
 /// against the index (size, SHA-256, signature, manifest), as
-/// `horizon-mods/<id>.hmod`, turned on, with the extra's settings in its
+/// `horizon-mods/<id>.kmod`, turned on, with the extra's settings in its
 /// storage unless the mod has its own already.
 pub fn install(index: &Index, m: &Moved, e: &Extras, dir: &Path) -> Result<(), String> {
     let project = index
@@ -181,12 +181,12 @@ pub fn install(index: &Index, m: &Moved, e: &Extras, dir: &Path) -> Result<(), S
         .ok_or_else(|| format!("{} has no version this Horizon can run", m.id))?;
     let mods = dir.join(crate::mod_list::DIR);
     fs::create_dir_all(&mods).map_err(|e| format!("{}: {e}", mods.display()))?;
-    let target = mods.join(format!("{}.hmod", m.id));
+    let target = mods.join(format!("{}.kmod", m.id));
     let current = index::sha256_file(&target).ok();
     if current.as_deref() != Some(version.file.sha256.as_str()) {
         let local = !location().starts_with("https://");
         let bytes = get(&version.file.url, local, index::MAX_FILE)?;
-        let partial: PathBuf = mods.join(format!(".{}.hmod.download", m.id));
+        let partial: PathBuf = mods.join(format!(".{}.kmod.download", m.id));
         fs::write(&partial, bytes).map_err(|e| format!("{}: {e}", partial.display()))?;
         if let Err(e) = index::check_file(index, project, version, &partial) {
             let _ = fs::remove_file(&partial);
