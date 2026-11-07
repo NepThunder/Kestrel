@@ -19,6 +19,8 @@ mod bindings {
     wasmtime::component::bindgen!({
         path: "../horizon-mod-sdk/wit",
         world: "horizon-mod",
+        // `Output::SetBlocks` derives `PartialEq` over `world::BlockChange`.
+        additional_derives: [PartialEq],
     });
 }
 /// The server mods' world: `log` and `storage` are the client world's.
@@ -30,6 +32,11 @@ mod server_bindings {
         with: {
             "horizon:mods/log": super::bindings::horizon::mods::log,
             "horizon:mods/storage": super::bindings::horizon::mods::storage,
+            // `world` is the client world's too now (client mods import it
+            // read-only): one generated module, one `Host` impl, and one
+            // `add_to_linker` defining it, or the linker sees `get-block`
+            // twice and no mod starts.
+            "horizon:mods/world": super::bindings::horizon::mods::world,
         },
     });
 }
@@ -427,6 +434,9 @@ struct State {
     storage_budget: u64,
     limits: StoreLimits,
     world: WorldSlot,
+    /// Whether this mod runs where the world is simulated: only a server
+    /// mod may change blocks (`world.set-blocks`); a client mod reads only.
+    server: bool,
 }
 
 /// The installed mods and the engine running them. `Mods::default()` is
@@ -540,8 +550,9 @@ impl Mods {
                 .map_err(|e| e.to_string())?;
             players::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
-            mod_world::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
+            // No `mod_world::add_to_linker` here: `horizon-mod` imports
+            // `world` too, so `HorizonMod::add_to_linker` already defined
+            // it; a second definition stops every mod from starting.
             UiHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             RenderHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
@@ -628,6 +639,7 @@ impl Mods {
                 .instances(16)
                 .build(),
             world,
+            server,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
@@ -1559,16 +1571,42 @@ impl chat::Host for State {
         });
     }
 }
-impl mod_world::Host for State {
-    fn get_block(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<String> {
+impl State {
+    /// One block read through the lent world: `None` where nothing is
+    /// lent or no chunk is loaded there.
+    fn view_block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String> {
         let view = self.world.lock().ok()?;
-        view.as_ref()?.block(&dimension, x, y, z)
+        view.as_ref()?.block(dimension, x, y, z)
     }
-    fn get_biome(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<String> {
+    /// One biome read, as [`State::view_block`].
+    fn view_biome(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String> {
         let view = self.world.lock().ok()?;
-        view.as_ref()?.biome(&dimension, x, y, z)
+        view.as_ref()?.biome(dimension, x, y, z)
     }
-    fn set_blocks(&mut self, dimension: String, blocks: Vec<BlockChange>) -> Result<(), String> {
+    /// The block states at `positions`, in order, through the lent world.
+    fn view_blocks(&self, dimension: &str, positions: &[(i32, i32, i32)]) -> Vec<Option<String>> {
+        let Ok(view) = self.world.lock() else {
+            return positions.iter().map(|_| None).collect();
+        };
+        let Some(view) = view.as_ref() else {
+            return positions.iter().map(|_| None).collect();
+        };
+        positions
+            .iter()
+            .map(|&(x, y, z)| view.block(dimension, x, y, z))
+            .collect()
+    }
+    /// `set-blocks`, shared by the client and server hosts: a client mod
+    /// is refused outright and queues nothing; a server mod's changes are
+    /// checked now and queued for the game to apply after the call.
+    fn set_blocks_checked(
+        &mut self,
+        dimension: String,
+        blocks: Vec<BlockChange>,
+    ) -> Result<(), String> {
+        if !self.server {
+            return Err("client mods cannot change blocks".into());
+        }
         if blocks.len() > BLOCKS_PER_CALL {
             return Err(format!(
                 "{} blocks: at most {BLOCKS_PER_CALL} per call",
@@ -1591,6 +1629,38 @@ impl mod_world::Host for State {
             });
         }
         Ok(())
+    }
+}
+
+impl mod_world::Host for State {
+    fn get_block(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<String> {
+        self.view_block(&dimension, x, y, z)
+    }
+    fn get_biome(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<String> {
+        self.view_biome(&dimension, x, y, z)
+    }
+    fn get_blocks(
+        &mut self,
+        dimension: String,
+        positions: Vec<mod_world::BlockPos>,
+    ) -> Vec<mod_world::BlockResult> {
+        if positions.len() > BLOCKS_PER_CALL {
+            return Vec::new();
+        }
+        let at: Vec<(i32, i32, i32)> = positions.iter().map(|p| (p.x, p.y, p.z)).collect();
+        self.view_blocks(&dimension, &at)
+            .into_iter()
+            .zip(positions)
+            .map(|(state, p)| mod_world::BlockResult {
+                x: p.x,
+                y: p.y,
+                z: p.z,
+                state,
+            })
+            .collect()
+    }
+    fn set_blocks(&mut self, dimension: String, blocks: Vec<BlockChange>) -> Result<(), String> {
+        self.set_blocks_checked(dimension, blocks)
     }
 }
 impl players::Host for State {
@@ -1968,4 +2038,71 @@ fn storage_key_ok(key: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b));
     chars_ok && key != "." && key != ".."
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A view that answers with its own name, so a test can tell which
+    /// view the slot holds.
+    struct NamedView(&'static str);
+    impl WorldView for NamedView {
+        fn block(&self, _dimension: &str, _x: i32, _y: i32, _z: i32) -> Option<String> {
+            Some(self.0.to_string())
+        }
+        fn biome(&self, _dimension: &str, _x: i32, _y: i32, _z: i32) -> Option<String> {
+            Some(self.0.to_string())
+        }
+        fn has_dimension(&self, _dimension: &str) -> bool {
+            true
+        }
+        fn check_state(&self, _state: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// The shared `WorldSlot` pairing the spike calls the biggest risk:
+    /// one slot, one view at a time, lent and taken back in strict pairs.
+    /// A client mod calling `world` during a server tick would read the
+    /// server's view — so the game must never have both lent at once, and
+    /// must take back what it lent before the other tick lends its own.
+    /// This test proves the slot's half of that: a take returns exactly
+    /// the view that was lent, and after the take the slot is empty.
+    /// The other half — that the game's ticks lend and return in that
+    /// order, on one thread — is an inspected invariant of `Game::tick`
+    /// (`tick_mods` then `tick_server_mods`, each paired), not a test:
+    /// in the default server-thread singleplayer the two ticks do not
+    /// even share a `Mods` instance.
+    #[test]
+    fn the_world_slot_holds_one_view_lent_and_taken_in_pairs() {
+        let mut mods = Mods::default();
+        assert!(mods.take_world().is_none(), "nothing lent yet");
+        mods.lend_world(Box::new(NamedView("client")));
+        let view = mods.take_world().expect("the lent client view");
+        let view: Box<dyn std::any::Any> = view;
+        assert_eq!(view.downcast::<NamedView>().unwrap().0, "client");
+        assert!(mods.take_world().is_none(), "taken back: the slot is empty");
+        // The server tick lends its own view next, and takes it back the same way.
+        mods.lend_world(Box::new(NamedView("server")));
+        let view = mods.take_world().expect("the lent server view");
+        let view: Box<dyn std::any::Any> = view;
+        assert_eq!(view.downcast::<NamedView>().unwrap().0, "server");
+        assert!(mods.take_world().is_none());
+    }
+
+    /// Lending twice without a take in between replaces the first view:
+    /// the game must pair every lend with a take before the next lend, or
+    /// the first view is dropped — for the server's view, its chunk maps
+    /// with it. The client lend guards this with `client_world_lent`.
+    #[test]
+    fn lending_twice_without_a_take_replaces_the_first_view() {
+        let mut mods = Mods::default();
+        mods.lend_world(Box::new(NamedView("first")));
+        mods.lend_world(Box::new(NamedView("second")));
+        let view = mods.take_world().expect("a view");
+        let view: Box<dyn std::any::Any> = view;
+        assert_eq!(view.downcast::<NamedView>().unwrap().0, "second");
+        assert!(mods.take_world().is_none());
+    }
 }
