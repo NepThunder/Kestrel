@@ -343,9 +343,7 @@ pub(crate) fn display_modes_probe_line() -> String {
             let height = env
                 .call_method(&mode, "getPhysicalHeight", "()I", &[])?
                 .i()?;
-            let rate = env
-                .call_method(&mode, "getRefreshRate", "()F", &[])?
-                .f()?;
+            let rate = env.call_method(&mode, "getRefreshRate", "()F", &[])?.f()?;
             list.push(format!("{}x{}@{}Hz", width, height, rate.round() as i32));
             env.delete_local_ref(mode)?;
         }
@@ -453,6 +451,75 @@ pub fn open_url(url: &str) -> bool {
     })
     .is_some()
 }
+
+/// The app's own package name (e.g. `com.kestrel.android`, or
+/// `com.kestrel.android.dev` for a dev build).
+pub fn package_name() -> Option<String> {
+    with_context(|env, activity| {
+        let name = env
+            .call_method(activity, "getPackageName", "()Ljava/lang/String;", &[])?
+            .l()?;
+        let name: String = env.get_string((&name).into())?.into();
+        Ok(name)
+    })
+}
+
+/// Hand an APK file to the Android system installer: an ACTION_VIEW intent
+/// for the APK, served by the app's own provider. Android always asks the
+/// player to confirm the install; this never installs silently. Only the
+/// update APK from the app's cache dir is ever handed over. Returns false
+/// when the installer could not be opened.
+pub fn install_apk(path: &std::path::Path) -> bool {
+    let Some(package) = package_name() else {
+        return false;
+    };
+    let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if file != crate::app_update::APK_FILE {
+        return false;
+    }
+    let uri_text = format!("content://{package}.apk/{file}");
+    with_context(|env, activity| {
+        let address = JObject::from(env.new_string(uri_text)?);
+        let uri = env
+            .call_static_method(
+                "android/net/Uri",
+                "parse",
+                "(Ljava/lang/String;)Landroid/net/Uri;",
+                &[JValue::Object(&address)],
+            )?
+            .l()?;
+        let action = JObject::from(env.new_string("android.intent.action.VIEW")?);
+        let intent = env.new_object(
+            "android/content/Intent",
+            "(Ljava/lang/String;Landroid/net/Uri;)V",
+            &[JValue::Object(&action), JValue::Object(&uri)],
+        )?;
+        let mime = JObject::from(env.new_string("application/vnd.android.package-archive")?);
+        env.call_method(
+            &intent,
+            "setDataAndType",
+            "(Landroid/net/Uri;Ljava/lang/String;)Landroid/content/Intent;",
+            &[JValue::Object(&uri), JValue::Object(&mime)],
+        )?;
+        // FLAG_GRANT_READ_URI_PERMISSION | FLAG_ACTIVITY_NEW_TASK: the
+        // installer reads the APK through the provider, from a new task.
+        env.call_method(
+            &intent,
+            "addFlags",
+            "(I)V",
+            &[JValue::Int(0x0000_0001 | 0x1000_0000)],
+        )?;
+        env.call_method(
+            activity,
+            "startActivity",
+            "(Landroid/content/Intent;)V",
+            &[JValue::Object(&intent)],
+        )?;
+        Ok(())
+    })
+    .is_some()
+}
+
 /// Public Android power/thermal status; no device identifiers or sysfs access.
 pub fn performance_power() -> serde_json::Value {
     with_context(|env, activity| {

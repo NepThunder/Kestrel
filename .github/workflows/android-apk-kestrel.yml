@@ -81,6 +81,10 @@ jobs:
           distribution: temurin
           java-version: "17"
       - name: Build debug APK (${{ matrix.abi }})
+        env:
+          # The build number the app compares against the latest release tag
+          # (kestrel-build-<run number>-attempt-<attempt>) for its update check.
+          KESTREL_BUILD_NUMBER: ${{ github.run_number }}
         run: python3 tools/android_build.py --abi ${{ matrix.abi }} --sdk "$ANDROID_HOME" --java-home "$JAVA_HOME" --gradle "$GITHUB_WORKSPACE/gradle-8.14/bin/gradle"
       - name: Upload APK
         uses: actions/upload-artifact@v4

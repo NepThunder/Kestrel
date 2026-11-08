@@ -245,6 +245,9 @@ pub(super) enum Action {
     CloseProjectModal,
     SelectModalVersion(usize),
     InstallModalProject,
+    AppUpdateDownload,
+    AppUpdateInstall,
+    AppUpdateDismiss,
     Import(horizon_client::content_files::Kind),
     OpenFolder(horizon_client::content_files::Kind),
     ToggleSection(usize),
@@ -1740,10 +1743,11 @@ impl Launcher {
             for (row, (i, p)) in catalog_rows.into_iter().enumerate() {
                 let y = top + (row + bundled.len()) as f32 * row_h - self.catalog.scroll;
                 let download = self.catalog.download_label(p);
+                let update = self.catalog.update_available(p);
                 let card_rect = [content_x, y, content_w - 118.0, 64.0];
                 let btn_rect = [content_x + content_w - 112.0, y + 13.0, 100.0, 38.0];
                 self.list_targets.push((card_rect, Action::OpenProject(i)));
-                if download.is_none() {
+                if download.is_none() || update {
                     self.list_targets.push((btn_rect, Action::Install(i)));
                 }
                 if y + 64.0 < top || y > bottom {
@@ -1790,7 +1794,9 @@ impl Launcher {
                 let rich_summary = if crate::catalog::source_only_mod(p) {
                     "Native .hnmod temporarily unsupported on Android; built-in mods are available."
                 } else {
-                    self.catalog.enriched_summaries.get(&p.id)
+                    self.catalog
+                        .enriched_summaries
+                        .get(&p.id)
                         .map_or(p.summary.as_str(), String::as_str)
                 };
                 let summary = ui.fit_text(Face::Regular, 12.5, rich_summary, text_max);
@@ -1836,31 +1842,42 @@ impl Launcher {
                 }
 
                 if let Some(state) = download {
-                    ui.rounded(
-                        btn_rect[0],
-                        btn_rect[1],
-                        btn_rect[2],
-                        btn_rect[3],
-                        19.0,
-                        my3_surface_high(),
-                    );
-                    ui.icon(
-                        Icon::Check,
-                        btn_rect[0] + 10.0,
-                        btn_rect[1] + 11.0,
-                        15.0,
-                        my3_accent(),
-                    );
-                    ui.text(
-                        Face::Medium,
-                        13.0,
-                        btn_rect[0] + 28.0,
-                        btn_rect[1] + 9.0,
-                        my3_text(),
-                        &state,
-                    );
-                    if let Some(c) = ui.clip_rect(btn_rect) {
-                        self.targets.push((c, Action::OpenProject(i)));
+                    if update {
+                        button(
+                            &mut ui,
+                            &mut self.targets,
+                            btn_rect,
+                            "Update",
+                            Action::Install(i),
+                            true,
+                        );
+                    } else {
+                        ui.rounded(
+                            btn_rect[0],
+                            btn_rect[1],
+                            btn_rect[2],
+                            btn_rect[3],
+                            19.0,
+                            my3_surface_high(),
+                        );
+                        ui.icon(
+                            Icon::Check,
+                            btn_rect[0] + 10.0,
+                            btn_rect[1] + 11.0,
+                            15.0,
+                            my3_accent(),
+                        );
+                        ui.text(
+                            Face::Medium,
+                            13.0,
+                            btn_rect[0] + 28.0,
+                            btn_rect[1] + 9.0,
+                            my3_text(),
+                            &state,
+                        );
+                        if let Some(c) = ui.clip_rect(btn_rect) {
+                            self.targets.push((c, Action::OpenProject(i)));
+                        }
                     }
                 } else {
                     button(
@@ -1973,6 +1990,15 @@ impl Launcher {
         }
         if self.diagnostics_modal_open {
             self.draw_diagnostics_summary_modal(&mut ui, w, h);
+        }
+        if matches!(
+            self.app_update.state(),
+            crate::app_update::State::Available
+                | crate::app_update::State::Downloading
+                | crate::app_update::State::Ready
+                | crate::app_update::State::Failed
+        ) {
+            self.draw_app_update_modal(&mut ui, w, h);
         }
         if self.exit_confirmation {
             self.targets.clear();
@@ -3470,6 +3496,125 @@ impl Launcher {
             Action::InstallModalProject,
             true,
         );
+    }
+
+    fn draw_app_update_modal(&mut self, ui: &mut Ui, w: f32, h: f32) {
+        use crate::app_update::State;
+        let state = self.app_update.state();
+        let Some(info) = self.app_update.release().cloned() else {
+            return;
+        };
+        let own = crate::app_update::own_build_number().unwrap_or(0);
+        let (title, body, primary_label, primary_action) = match state {
+            State::Available => {
+                let size = if info.apk_size > 0 {
+                    format!(" {:.1} MB", info.apk_size as f32 / 1_048_576.0)
+                } else {
+                    String::new()
+                };
+                (
+                    "Kestrel update available".to_owned(),
+                    format!(
+                        "Build {} is available (you have build {own}).{size}",
+                        info.build
+                    ),
+                    "Download",
+                    Action::AppUpdateDownload,
+                )
+            }
+            State::Downloading => (
+                format!("Downloading build {}", info.build),
+                format!("{:.0}%", self.app_update.progress() * 100.0),
+                "Cancel",
+                Action::AppUpdateDismiss,
+            ),
+            State::Ready => (
+                "Download complete".to_owned(),
+                format!(
+                    "Build {} is ready to install. Android will ask you to confirm the install.",
+                    info.build
+                ),
+                "Install",
+                Action::AppUpdateInstall,
+            ),
+            State::Failed => (
+                "Download failed".to_owned(),
+                self.app_update
+                    .error()
+                    .unwrap_or("The download failed.")
+                    .to_owned(),
+                "Retry",
+                Action::AppUpdateDownload,
+            ),
+            State::Idle | State::Checking | State::Dismissed => return,
+        };
+        // A blocking prompt (like the exit confirmation): nothing behind it
+        // is tappable until the player chooses.
+        self.targets.clear();
+        self.list_targets.clear();
+        self.list_view = None;
+        let modal_t = self.anim.modal_anim.clamp(0.2, 1.0);
+        ui.rounded(
+            0.0,
+            0.0,
+            w,
+            h,
+            0.0,
+            horizon_client::hud::rgba(0, 0, 0, (180.0 * modal_t) as u8),
+        );
+        let scale_in = 0.94 + 0.06 * modal_t;
+        let width = (w - 32.0).min(400.0) * scale_in;
+        let x = (w - width) * 0.5;
+        let height = 210.0;
+        let y = (h - height) * 0.5 + (1.0 - modal_t) * 8.0;
+        ui.rounded(x, y, width, height, 20.0, my3_surface());
+        ui.border(x, y, width, height, 20.0, my3_border());
+        ui.text(Face::SemiBold, 20.0, x + 22.0, y + 24.0, my3_text(), &title);
+        let body_fitted = ui.fit_text(Face::Regular, 14.0, &body, width - 44.0);
+        ui.text(
+            Face::Regular,
+            14.0,
+            x + 22.0,
+            y + 58.0,
+            my3_muted(),
+            &body_fitted,
+        );
+        if matches!(state, State::Downloading) {
+            let bar_y = y + 96.0;
+            let bar_w = width - 44.0;
+            ui.rounded(x + 22.0, bar_y, bar_w, 12.0, 6.0, my3_track());
+            let frac = self.app_update.progress().clamp(0.0, 1.0);
+            if frac > 0.0 {
+                let fill_w = (bar_w * frac).max(12.0).min(bar_w);
+                ui.rounded(x + 22.0, bar_y, fill_w, 12.0, 6.0, my3_accent());
+            }
+            button(
+                ui,
+                &mut self.targets,
+                [x + 20.0, y + height - 62.0, width - 40.0, 42.0],
+                primary_label,
+                primary_action,
+                true,
+            );
+        } else {
+            let bw = (width - 52.0) * 0.5;
+            button(
+                ui,
+                &mut self.targets,
+                [x + 20.0, y + height - 62.0, bw, 42.0],
+                "Later",
+                Action::AppUpdateDismiss,
+                false,
+            );
+            button(
+                ui,
+                &mut self.targets,
+                [x + 32.0 + bw, y + height - 62.0, bw, 42.0],
+                primary_label,
+                primary_action,
+                true,
+            );
+        }
     }
 
     fn draw_diagnostics_summary_modal(&mut self, ui: &mut Ui, w: f32, h: f32) {
@@ -5366,6 +5511,9 @@ impl Launcher {
                         | Action::CancelCatalogDownload
                         | Action::Page(_)
                         | Action::Account
+                        | Action::AppUpdateDownload
+                        | Action::AppUpdateInstall
+                        | Action::AppUpdateDismiss
                 )
             )
         {
@@ -5466,6 +5614,21 @@ impl Launcher {
                         self.catalog.install(&self.home, idx);
                     }
                 }
+            }
+            Some(Action::AppUpdateDownload) => {
+                if let Some(cache) = crate::platform::cache_dir() {
+                    self.app_update.start_download(&cache);
+                }
+            }
+            Some(Action::AppUpdateInstall) => {
+                if let Some(path) = self.app_update.downloaded().cloned()
+                    && crate::platform::install_apk(&path)
+                {
+                    self.app_update.dismiss();
+                }
+            }
+            Some(Action::AppUpdateDismiss) => {
+                self.app_update.dismiss();
             }
             Some(Action::UiScale) => self.open_chooser(chooser::Kind::UiScale),
             Some(Action::ChooseUiScale(pct)) => {

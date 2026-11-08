@@ -69,6 +69,18 @@ pub fn is_native_mod(id: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The newest version of a registry project `id` the running build can install, by the index
+/// already read (never the network); None when no index was read or no version qualifies. This
+/// is the same selection [`install`] makes, so a catalog "Update" offer and the install that
+/// follows it agree on the version.
+pub fn newest_known_version(id: &str) -> Option<String> {
+    let index = known_index()?;
+    let p = index.project(id)?;
+    newest(&index, p, crate::backend::game_mod_api_level())
+        .ok()
+        .map(|v| v.version.clone())
+}
+
 /// The index: the one fetched in the last ten minutes, else fetched again (and kept in the game
 /// folder), else the copy kept last time.
 #[allow(clippy::collapsible_if)] // Shared with the edition-2021 desktop launcher.

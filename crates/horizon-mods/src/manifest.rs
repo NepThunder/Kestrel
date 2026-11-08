@@ -277,9 +277,7 @@ impl Manifest {
         // `world` is both: server mods read and change blocks, client mods
         // read them (singleplayer in v1); `storage` is shared the same way.
         if let Some(c) = m.capabilities.iter().find(|c| {
-            c.on_server() != server
-                && **c != Capability::Storage
-                && **c != Capability::World
+            c.on_server() != server && **c != Capability::Storage && **c != Capability::World
         }) {
             let side = if server { "client" } else { "server" };
             return Err(format!("{MANIFEST}: capability {c} is for {side} mods"));
@@ -388,6 +386,26 @@ impl Package {
             ));
         }
         Ok(Package { manifest, wasm })
+    }
+    /// Only the manifest of a `.kmod` (or a folder holding one), without
+    /// reading the (up to 32 MiB) wasm: for listing an installed mod's
+    /// version without loading it.
+    pub fn read_manifest(path: &Path) -> Result<Manifest, String> {
+        use std::io::Read;
+        let toml = if path.is_dir() {
+            std::fs::read_to_string(path.join(MANIFEST)).map_err(|e| format!("{MANIFEST}: {e}"))?
+        } else {
+            let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+            let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+            let mut entry = zip.by_name(MANIFEST).map_err(|e| match e {
+                zip::result::ZipError::FileNotFound => format!("{MANIFEST}: missing"),
+                e => format!("{MANIFEST}: {e}"),
+            })?;
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+            String::from_utf8(bytes).map_err(|_| format!("{MANIFEST}: not UTF-8"))?
+        };
+        Manifest::parse(&toml)
     }
     /// The `.kmod` bytes for `manifest_text` and a component.
     pub fn write(manifest_text: &str, wasm: &[u8]) -> Result<Vec<u8>, String> {
@@ -586,5 +604,25 @@ capabilities = ["game-read", "hud"]
             "{base}capabilities = [\"hud\"]\nexperimental = [\"hud\"]\n"
         ))
         .unwrap();
+    }
+
+    #[test]
+    fn read_manifest_reads_only_the_manifest() {
+        let dir = std::env::temp_dir().join("kestrel-read-manifest-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A folder holding the manifest.
+        std::fs::write(dir.join(MANIFEST), EXAMPLE).unwrap();
+        let m = Package::read_manifest(&dir).unwrap();
+        assert_eq!(m.id, "coords_hud");
+        assert_eq!(m.version, "0.1.0");
+        // The same manifest inside a `.kmod` zip, without a wasm to load.
+        let bytes = Package::write(EXAMPLE, &[]).unwrap();
+        let path = dir.join("coords_hud.kmod");
+        std::fs::write(&path, &bytes).unwrap();
+        let m = Package::read_manifest(&path).unwrap();
+        assert_eq!(m.id, "coords_hud");
+        assert_eq!(m.version, "0.1.0");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

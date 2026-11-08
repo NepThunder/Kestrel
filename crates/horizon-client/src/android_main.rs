@@ -21,6 +21,8 @@ mod account;
 mod browser;
 #[path = "android/dns.rs"]
 mod android_dns;
+#[path = "android/app_update.rs"]
+mod app_update;
 #[path = "android/catalog.rs"]
 mod catalog;
 #[path = "android/device_preferences.rs"]

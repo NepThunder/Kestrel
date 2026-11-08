@@ -2,6 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
     <uses-feature android:name="android.hardware.vulkan.level" android:version="1" android:required="false" />
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
@@ -13,6 +14,9 @@
                 <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
             </intent-filter>
         </provider>
+        <!-- Serves the downloaded update APK to the system installer only; not exported, the
+             installer reads it through the granted URI. -->
+        <provider android:name="com.kestrel.android.KestrelApkProvider" android:authorities="${applicationId}.apk" android:exported="false" android:grantUriPermissions="true" />
         <activity android:name="com.kestrel.android.HorizonActivity" android:exported="false" android:screenOrientation="sensorLandscape" android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation|density|screenLayout" android:windowSoftInputMode="adjustResize" android:theme="@style/HorizonGameTheme">
             <meta-data android:name="android.app.lib_name" android:value="horizon_android" />
         </activity>
