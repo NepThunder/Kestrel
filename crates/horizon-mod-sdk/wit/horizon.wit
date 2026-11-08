@@ -469,6 +469,36 @@ interface render {
     /// Distance setting, when on, wins. One far terrain shows at a time: the
     /// first loaded mod's.
     set-far-terrain: func(far-terrain: option<far-terrain>);
+    /// The brightness the renderer is applying right now, as a gamma value:
+    /// the strongest gamma any running mod set, or the player's own
+    /// Brightness setting when no mod sets one. 0.5 is the vanilla default,
+    /// 1.0 the brightest the options screen allows. Values above 1.0 come
+    /// only from a mod.
+    get-gamma: func() -> f32;
+    /// Sets this mod's gamma until the next call: 0.0 is the darkest the
+    /// lightmap goes, 1.0 is the brightest the options screen allows, and
+    /// values above 1.0 brighten further with diminishing returns — the
+    /// lightmap saturates toward white, so colours wash out as the value
+    /// grows. 10.0 is the 1000% Fullbright mods use. Values are clamped to
+    /// 0.0..=10.0; a non-finite value reads as 1.0. The strongest gamma any
+    /// running mod sets wins; when no running mod sets one, the player's own
+    /// Brightness setting applies again. The player's stored setting is never
+    /// changed. Only while playing: at the title screen there is no renderer
+    /// to brighten, and the value is the stored setting.
+    set-gamma: func(value: f32);
+    /// Whether distance fog is drawn right now: false while any running mod
+    /// turned it off, otherwise the player's own Fog setting. Distance fog is
+    /// the atmospheric and render-distance fog, including the Nether's; the
+    /// fog of water, lava and powder snow, blindness, darkness and a boss's
+    /// world fog are never removed by this.
+    get-fog: func() -> bool;
+    /// Sets this mod's distance-fog flag until the next call: false removes
+    /// distance fog (the same removal the Fog setting in the graphics options
+    /// does), true leaves the player's setting alone. Any running mod turning
+    /// fog off turns it off; when no running mod turns it off, the player's
+    /// own Fog setting applies again. The player's stored setting is never
+    /// changed. Only while playing.
+    set-fog: func(enabled: bool);
 }
 
 /// What the game calls. Only the hooks `init` asks for are ever called.

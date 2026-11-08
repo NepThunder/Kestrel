@@ -102,6 +102,23 @@ shapes store but nothing draws them.
 box round the nearest mob and a line from the player to the mob under the
 crosshair.
 
+The same capability brightens the screen and turns off distance fog
+(`render.get-gamma`, `set-gamma`, `get-fog`, `set-fog`, API level 13).
+`set-gamma` takes this mod's gamma, 0.0 the darkest the lightmap goes and
+10.0 the 1000% Fullbright value (clamped host-side; a non-finite value
+reads as 1.0), and the strongest gamma any running mod sets wins; `get-gamma`
+reads the effective value, or the player's own Brightness setting when no
+mod sets one. `set-fog(false)` removes distance fog — the atmospheric and
+render-distance fog, including the Nether's — while any running mod holds
+it off; water, lava and powder-snow fog, blindness, darkness and a boss's
+world fog stay. Both work in multiplayer, as the Extras fullbright and the
+Fog graphics option already do, and neither ever writes the player's
+stored settings: unloading or disabling the mod restores them within a
+frame. The Brightness slider goes dead while a mod holds gamma — the
+setting still writes, but the screen does not change until the mod releases.
+`crates/horizon-mod-sdk/examples/gamma-probe` is a probe mod that shows the
+effective gamma and fog flag each tick.
+
 ## Making a content mod
 
 ```sh

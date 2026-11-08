@@ -148,7 +148,8 @@ const STORAGE_MAX_KEYS: usize = 64;
 const STORAGE_WRITE_BUDGET: u64 = 1 << 20;
 
 /// What mods may read of the game, copied once per tick by the game.
-#[derive(Clone, Debug, Default)]
+/// The default is the vanilla one: brightness 0.5, fog on.
+#[derive(Clone, Debug)]
 pub struct Snapshot {
     pub player: Option<Player>,
     pub clock: Option<Clock>,
@@ -199,6 +200,38 @@ pub struct Snapshot {
     /// eye (capability `entity`); None when nothing is hit, on the title
     /// screen, or while no mod reads it.
     pub targeted: Option<Target>,
+    /// The player's stored Brightness setting (`render.get-gamma`'s
+    /// fallback when no running mod sets one).
+    pub gamma: f32,
+    /// The player's stored Fog setting (`render.get-fog`'s fallback).
+    pub fog: bool,
+}
+
+impl Default for Snapshot {
+    fn default() -> Self {
+        Self {
+            player: None,
+            clock: None,
+            gui_size: (0.0, 0.0),
+            held: None,
+            frame: (0, 0, 0),
+            mappings: Vec::new(),
+            cps: (0, 0),
+            font_widths: Arc::from([]),
+            players: Vec::new(),
+            view_hit: None,
+            recipes: None,
+            known_recipes: Arc::from([]),
+            placing: false,
+            creative: false,
+            inventory: None,
+            open_container: None,
+            entities: Vec::new(),
+            targeted: None,
+            gamma: 0.5,
+            fog: true,
+        }
+    }
 }
 
 /// Capability `recipes`'s tables: `items` in the registry's order, which
@@ -473,6 +506,16 @@ struct State {
     minimap: Option<ModMinimap>,
     /// Capability `render`'s far terrain, when the mod draws one.
     far_terrain: Option<ModFarTerrain>,
+    /// Capability `render`'s gamma, when the mod sets one.
+    gamma: Option<f32>,
+    /// Capability `render`'s distance-fog flag, when the mod sets one.
+    fog: Option<bool>,
+    /// The strongest gamma / fog-off the other running mods asked for
+    /// when this mod's current call started, so `get-gamma` / `get-fog`
+    /// read the effective value, not just this mod's own (`Mods::call`
+    /// refreshes them before every call).
+    aggregate_gamma: Option<f32>,
+    aggregate_fog_off: bool,
     input: InputState,
     browser: BrowserState,
     /// Capability `storage`'s folder; made on first `set`.
@@ -681,6 +724,10 @@ impl Mods {
             zoom: None,
             minimap: None,
             far_terrain: None,
+            gamma: None,
+            fog: None,
+            aggregate_gamma: None,
+            aggregate_fog_off: false,
             input: InputState::default(),
             browser: BrowserState::default(),
             data_dir,
@@ -828,9 +875,15 @@ impl Mods {
         fuel: u64,
         f: impl FnOnce(&mut Running) -> wasmtime::Result<R>,
     ) -> Option<R> {
+        // The aggregate as the call starts, from the other running mods,
+        // so the mod's getters read the effective value even before it
+        // sets anything of its own.
+        let (aggregate_gamma, aggregate_fog_off) = (self.gamma_except(i), self.fog_off_except(i));
         let entry = &mut self.entries[i];
         let run = entry.run.as_mut()?;
         run.store.data_mut().snapshot = self.snapshot.clone();
+        run.store.data_mut().aggregate_gamma = aggregate_gamma;
+        run.store.data_mut().aggregate_fog_off = aggregate_fog_off;
         run.store.data_mut().storage_budget = STORAGE_WRITE_BUDGET;
         let started = Instant::now();
         let result = run.store.set_fuel(fuel).and_then(|()| f(run));
@@ -1282,6 +1335,39 @@ impl Mods {
         self.entries
             .iter()
             .find_map(|e| e.run.as_ref()?.store.data().far_terrain)
+    }
+    /// The strongest gamma a running mod asks for (capability `render`).
+    pub fn gamma(&self) -> Option<f32> {
+        strongest_gamma(self.gamma_values(None))
+    }
+    /// The strongest gamma a running mod other than `skip` asks for: what
+    /// that mod's `get-gamma` reads beside its own value, so a mod that
+    /// lowers its own gamma after setting it high does not keep reading
+    /// its old value back.
+    fn gamma_except(&self, skip: usize) -> Option<f32> {
+        strongest_gamma(self.gamma_values(Some(skip)))
+    }
+    fn gamma_values(&self, skip: Option<usize>) -> impl Iterator<Item = f32> + '_ {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(move |(i, _)| Some(*i) != skip)
+            .filter_map(|(_, e)| e.run.as_ref()?.store.data().gamma)
+    }
+    /// Whether any running mod turned distance fog off (capability `render`).
+    pub fn fog_off(&self) -> bool {
+        any_fog_off(self.fog_values(None))
+    }
+    /// Whether any running mod other than `skip` turned distance fog off.
+    fn fog_off_except(&self, skip: usize) -> bool {
+        any_fog_off(self.fog_values(Some(skip)))
+    }
+    fn fog_values(&self, skip: Option<usize>) -> impl Iterator<Item = bool> + '_ {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(move |(i, _)| Some(*i) != skip)
+            .filter_map(|(_, e)| e.run.as_ref()?.store.data().fog)
     }
     fn inputs(&self) -> impl Iterator<Item = &InputState> {
         self.entries
@@ -2015,6 +2101,25 @@ const TURN_MIN: f32 = 0.05;
 /// `set-minimap`'s side in GUI pixels and its blocks per map pixel.
 const MINIMAP_SIZE: (f32, f32) = (16.0, 256.0);
 const MINIMAP_SCALE: (f32, f32) = (0.5, 4.0);
+/// `render.set-gamma`'s limits: 0.0 the darkest the lightmap goes, 10.0
+/// the 1000% Fullbright value. A non-finite value reads as 1.0, not 0.0,
+/// which would black the screen on a NaN.
+const GAMMA_MAX: f32 = 10.0;
+fn clamp_gamma(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, GAMMA_MAX)
+    } else {
+        1.0
+    }
+}
+/// The strongest of the gammas running mods set, if any.
+fn strongest_gamma(values: impl Iterator<Item = f32>) -> Option<f32> {
+    values.max_by(|a, b| a.total_cmp(b))
+}
+/// Whether any running mod turned distance fog off.
+fn any_fog_off(mut values: impl Iterator<Item = bool>) -> bool {
+    values.any(|fog| !fog)
+}
 /// `set-far-terrain`'s distance in chunks, as the LOD Distance setting's.
 const FAR_TERRAIN_DISTANCE: (u32, u32) = (64, 1024);
 
@@ -2212,6 +2317,25 @@ impl render::Host for State {
                 .clamp(FAR_TERRAIN_DISTANCE.0, FAR_TERRAIN_DISTANCE.1),
             ..f
         });
+    }
+    fn get_gamma(&mut self) -> f32 {
+        // The effective value: the strongest any running mod set (this
+        // mod's own, if it set one after the call started, included), else
+        // the player's stored Brightness.
+        [self.aggregate_gamma, self.gamma]
+            .into_iter()
+            .flatten()
+            .max_by(|a, b| a.total_cmp(b))
+            .unwrap_or(self.snapshot.gamma)
+    }
+    fn set_gamma(&mut self, value: f32) {
+        self.gamma = Some(clamp_gamma(value));
+    }
+    fn get_fog(&mut self) -> bool {
+        self.snapshot.fog && !self.aggregate_fog_off && self.fog != Some(false)
+    }
+    fn set_fog(&mut self, enabled: bool) {
+        self.fog = Some(enabled);
     }
     fn frame_stats(&mut self) -> FrameRate {
         let (fps, min, low) = self.snapshot.frame;
@@ -2575,5 +2699,35 @@ mod tests {
                 .iter()
                 .all(|(_, _, color, width)| *color == 0xFFFF_0000 && *width == 2.0)
         );
+    }
+
+    /// `set-gamma` clamps to 0.0..=10.0, and a non-finite value reads as
+    /// 1.0 — not 0.0, which would black the screen on a NaN.
+    #[test]
+    fn set_gamma_clamps_and_reads_non_finite_as_one() {
+        assert_eq!(clamp_gamma(11.0), 10.0);
+        assert_eq!(clamp_gamma(-1.0), 0.0);
+        assert_eq!(clamp_gamma(f32::NAN), 1.0);
+        assert_eq!(clamp_gamma(f32::INFINITY), 1.0);
+        assert_eq!(clamp_gamma(f32::NEG_INFINITY), 1.0);
+        assert_eq!(clamp_gamma(0.5), 0.5);
+    }
+
+    /// The gamma aggregate is the strongest any running mod sets; with
+    /// none set there is no aggregate, and the stored setting applies.
+    #[test]
+    fn the_gamma_aggregate_is_the_strongest_set() {
+        assert_eq!(strongest_gamma([2.0, 5.0].into_iter()), Some(5.0));
+        assert_eq!(strongest_gamma([2.0].into_iter()), Some(2.0));
+        assert_eq!(strongest_gamma([].into_iter()), None);
+    }
+
+    /// The fog aggregate is off when any running mod turns it off; a mod
+    /// leaving fog on does not re-enable it while another holds it off.
+    #[test]
+    fn the_fog_aggregate_is_off_when_any_mod_turns_it_off() {
+        assert!(any_fog_off([true, false].into_iter()));
+        assert!(!any_fog_off([true, true].into_iter()));
+        assert!(!any_fog_off([].into_iter()));
     }
 }

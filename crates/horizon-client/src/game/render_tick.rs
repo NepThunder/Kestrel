@@ -137,7 +137,7 @@ impl Game<'_> {
             night_vision: self.fog_night_vision(),
         };
         let mut fog = horizon_client::fog::setup_fog(tables, &self.fog, &input);
-        if !self.settings.horizon.fog {
+        if !self.settings.horizon.fog || self.mod_fog_off() {
             horizon_client::fog::clear_distance_fog(&mut fog, &input);
         }
         fog

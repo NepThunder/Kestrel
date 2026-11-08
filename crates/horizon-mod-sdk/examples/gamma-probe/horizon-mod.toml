@@ -1,0 +1,9 @@
+id = "gamma_probe"
+name = "Gamma Probe"
+version = "0.1.0"
+description = "Prototype for mod gamma and fog: shows the effective gamma and the distance-fog flag each tick, and proves set-gamma clamps to 0.0..=10.0 and a non-finite gamma reads back as 1.0."
+authors = ["Horizon"]
+api = "0.1"
+side = "client"
+capabilities = ["game-read", "chat", "command", "render"]
+experimental = ["render"]

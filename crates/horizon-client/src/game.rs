@@ -14727,6 +14727,13 @@ impl Game<'_> {
         if self.renderer.as_mut().is_some_and(|r| r.display_changed()) {
             self.apply_ui_settings();
         }
+        // A mod's gamma override is re-applied every frame: the settings
+        // path writes the stored value, so a one-shot write would be lost
+        // on the next options change or world load.
+        let gamma = self.effective_gamma();
+        if let Some(r) = self.renderer.as_mut() {
+            r.gamma = gamma;
+        }
         // Minecraft.doWorldLoad: the LevelLoadingScreen while single player's
         // server starts, with the server's chunk map and progress.
         if let Some(starting) = &self.integrated_starting {

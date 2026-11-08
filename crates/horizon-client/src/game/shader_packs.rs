@@ -547,7 +547,7 @@ impl Game<'_> {
             blindness: f32::from(u8::from(self.potions.effects.get("blindness").is_some())),
             eye_light: [i32::from(light & 15), i32::from(light >> 4)],
             hide_gui: self.ui.hide_gui,
-            brightness: self.settings.gamma,
+            brightness: self.effective_gamma(),
             biome: biome.map_or(-1, i32::from),
             biome_known: biome.is_some(),
             biome_category: info.map_or(0, |b| horizon_shaders::biome_category(&b.name)),
