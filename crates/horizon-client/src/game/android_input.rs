@@ -294,15 +294,31 @@ impl Game<'_> {
             }
             return;
         }
-        if name == "mouse.scroll.up" || name == "mouse.scroll.down" {
+        if let Some(steps) = horizon_client::mouse::scroll_wheel_steps(name) {
             if down {
-                let delta = if name == "mouse.scroll.up" { 8.0 } else { 1.0 };
-                let next = horizon_client::mouse::ScrollWheelHandler::next_selection(
-                    delta,
-                    self.selected as i32,
-                    9,
-                );
-                self.selected = next as usize;
+                // One tap is one wheel step: the same sign and size a mouse
+                // wheel notch sends while playing (scroll up is positive,
+                // and the zoom mod multiplies by 1.1 per positive step), so
+                // Scroll Up zooms in and Scroll Down zooms out. While
+                // playing with no screen over the game, a mod holding the
+                // wheel hears the steps and the hotbar stays put — the same
+                // gate the real mouse wheel uses. Anywhere else, or with no
+                // claim, the tap still switches hotbar slots exactly as
+                // before.
+                let playing = self.screen == Screen::Playing
+                    && !self.screen_over_playing()
+                    && self.sleeping.is_none()
+                    && self.player.is_some()
+                    && !self.pause;
+                if !playing || !self.mod_wheel(steps) {
+                    let delta = if steps > 0.0 { 8.0 } else { 1.0 };
+                    let next = horizon_client::mouse::ScrollWheelHandler::next_selection(
+                        delta,
+                        self.selected as i32,
+                        9,
+                    );
+                    self.selected = next as usize;
+                }
             }
             return;
         }

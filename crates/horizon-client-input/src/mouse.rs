@@ -80,6 +80,18 @@ impl ScrollWheelHandler {
     }
 }
 
+/// Wheel steps one tap of a touch scroll token sends: scroll up is one step
+/// up, scroll down one step down — the same sign and size a mouse wheel
+/// notch sends while playing (positive is up, and a mod like Classic Zoom
+/// multiplies by 1.1 per positive step). Anything else is not a scroll token.
+pub fn scroll_wheel_steps(token: &str) -> Option<f32> {
+    match token {
+        "mouse.scroll.up" => Some(1.0),
+        "mouse.scroll.down" => Some(-1.0),
+        _ => None,
+    }
+}
+
 /// `MouseHandler.onScroll` with the spectator menu closed. Only vertical whole
 /// wheel steps adjust `Abilities.flyingSpeed`; horizontal scrolling does not.
 pub fn spectator_flying_speed(speed: f32, vertical_steps: i32) -> f32 {
@@ -564,5 +576,17 @@ mod tests {
         // The next left click is its own.
         assert!(!e.is_right_click(true, false, true));
         assert!(!e.is_right_click(false, false, true));
+    }
+
+    /// Scroll Up zooms in and Scroll Down zooms out: the sign is the
+    /// contract a mod reads (Classic Zoom multiplies by 1.1 per positive
+    /// step), and one tap is one step, like one mouse wheel notch.
+    #[test]
+    fn scroll_tokens_map_to_one_signed_wheel_step() {
+        assert_eq!(scroll_wheel_steps("mouse.scroll.up"), Some(1.0));
+        assert_eq!(scroll_wheel_steps("mouse.scroll.down"), Some(-1.0));
+        assert_eq!(scroll_wheel_steps("key.keyboard.v"), None);
+        assert_eq!(scroll_wheel_steps("mouse.scroll.left"), None);
+        assert_eq!(scroll_wheel_steps(""), None);
     }
 }
