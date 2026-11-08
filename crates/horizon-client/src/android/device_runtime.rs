@@ -81,6 +81,10 @@ pub fn frame(enabled: bool, hz: u16, active: bool) -> Frame {
             if let Some(w) = app.borrow().as_ref().and_then(|a| a.native_window()) {
                 let ptr = w.ptr().as_ptr() as usize;
                 let requested = if active { hz } else { 0 };
+                // An explicit rate is a fixed-rate game (FIXED_SOURCE): with the
+                // default compatibility Android accepts the request and then keeps
+                // the display at 60 Hz. System default / unfocused stays a hint.
+                let compatibility: i8 = if requested > 0 { 1 } else { 0 };
                 if r.window != ptr || r.hz != requested {
                     unsafe {
                         let p = r.symbol(c"ANativeWindow_setFrameRate");
@@ -89,7 +93,7 @@ pub fn frame(enabled: bool, hz: u16, active: bool) -> Frame {
                         } else {
                             let f: unsafe extern "C" fn(*mut c_void, f32, i8) -> i32 =
                                 std::mem::transmute(p);
-                            f(ptr as *mut c_void, f32::from(requested), 0)
+                            f(ptr as *mut c_void, f32::from(requested), compatibility)
                         };
                     }
                     r.window = ptr;
