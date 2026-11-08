@@ -740,11 +740,28 @@ Capability `world` (manifest `api = "0.3"`, experimental, for server mods; read-
 | `z` | `s32` |  |
 | `state` | `option<string>` | None where no chunk is loaded there. |
 
+### record `light-value`
+
+| Field | Type | |
+| --- | --- | --- |
+| `block` | `u8` | Light from blocks (torches, lava, glowstone, ...), 0 to 15. |
+| `sky` | `u8` | Light from the sky, as stored, 0 to 15; 0 in dimensions without skylight (the Nether). |
+
+### record `light-result`
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `s32` |  |
+| `y` | `s32` |  |
+| `z` | `s32` |  |
+| `light` | `option<light-value>` | None where no chunk is loaded there, where the chunk's light has not been computed yet, or outside the column's build range. Never a guessed value: an unlit chunk would read as full sky light, so it reads as None instead. |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `get-block` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<string>` | The block state at a position in a dimension (`minecraft:overworld`, ...), as `minecraft:oak_log[axis=y]`, as of this call: none where the server has no chunk loaded there. |
 | `get-biome` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<string>` | The biome at a position (`minecraft:plains`, ...), as the server stores it (one per 4 x 4 x 4 cell): none where no chunk is loaded. |
 | `get-blocks` | `func(dimension: string, positions: list<block-pos>) -> list<block-result>` | The block states at `positions`, in the same order, as of this call. At most 4096 positions per call; a call over the cap returns no results. None per position where no chunk is loaded there. This is the only bulk read: do not loop get-block. |
+| `get-lights` | `func(dimension: string, positions: list<block-pos>) -> list<light-result>` | The light at `positions`, in the same order, as of the last completed light job. At most 4096 positions per call; a call over the cap returns no results. None per position where no chunk is loaded there or its light is not computed yet. This is the only bulk light read: do not loop a single read. Tick-only, like `get-blocks`: a frame, chat or command hook reads None. |
 | `set-blocks` | `func(dimension: string, blocks: list<block-change>) -> result<_, string>` | Sets blocks as `/setblock` does: the old block entity removed, neighbours and shapes updated, light, and every player told. Every state is checked now (an error queues nothing); the changes are made in order after this call returns, before that dimension's next tick; one in a chunk not loaded then is skipped. At most 4096 per call. |
 
 ## `inventory`
