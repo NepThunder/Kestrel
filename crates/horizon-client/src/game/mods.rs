@@ -148,6 +148,11 @@ struct ModScreen {
     scrolls: Vec<ui::Scroll>,
     /// A key row waiting for the key to bind: the mod key's name.
     binding: Option<String>,
+    /// The key picker is open for the waiting key row: tapping a row in
+    /// it binds that key, so a phone can rebind without a keyboard.
+    picker: bool,
+    /// Which page of the picker's raw-keys list is showing.
+    picker_page: usize,
 }
 impl ModsState {
     /// The chat's command tree: vanilla's, plus the running mods' commands.
@@ -1060,17 +1065,87 @@ impl Game<'_> {
         }
     }
     /// A key row's label as Key Binds shows one, "Zoom: Z", marked
-    /// "> Zoom: Z <" in yellow while it waits for the new key.
-    fn mod_key_label(k: &ModKey, waiting: bool) -> Text {
+    /// "> Zoom: Z <" in yellow while it waits for the new key, and
+    /// "Zoom: Z - Also used by <mod>" in yellow when another mod has the
+    /// same key.
+    fn mod_key_label(k: &ModKey, waiting: bool, duplicates: &[&str]) -> Text {
         let value = format!("{}: {}", k.label, keybinds::display_name(&k.key).plain());
         if waiting {
             Text::literal(format!("> {value} <")).with_color(text::YELLOW)
+        } else if !duplicates.is_empty() {
+            Text::literal(format!("{value} - Also used by {}", duplicates.join(", ")))
+                .with_color(text::YELLOW)
         } else {
             Text::literal(value)
         }
     }
+    /// The other mods sharing `key`, by name: unbound keys never collide.
+    fn duplicate_users<'a>(key: &str, others: &[(&'a str, &'a ModKey)]) -> Vec<&'a str> {
+        if key == "key.keyboard.unknown" {
+            return Vec::new();
+        }
+        others
+            .iter()
+            .filter(|(_, k)| k.key == key)
+            .map(|(name, _)| *name)
+            .collect()
+    }
+    /// The keys the picker offers, by index: Unbound, the mouse buttons,
+    /// then every raw keyboard key (`keybinds::available_keys()`, the
+    /// touch editor's raw-keys list). None past the end.
+    fn picker_entry(i: usize) -> Option<(String, String)> {
+        if i == 0 {
+            return Some(("key.keyboard.unknown".to_owned(), "Unbound".to_owned()));
+        }
+        const MOUSE: [&str; 5] = [
+            "key.mouse.left",
+            "key.mouse.right",
+            "key.mouse.middle",
+            "key.mouse.4",
+            "key.mouse.5",
+        ];
+        if let Some(token) = MOUSE.get(i - 1) {
+            return Some((token.to_string(), keybinds::display_name(token).plain()));
+        }
+        let (token, _) = keybinds::available_keys().get(i - 1 - MOUSE.len())?;
+        Some((token.to_string(), keybinds::display_name(token).plain()))
+    }
+    /// How many keys the picker offers.
+    fn picker_entry_count() -> usize {
+        1 + 5 + keybinds::available_keys().len()
+    }
+    /// The picker's pages, at eight rows a page.
+    fn picker_pages() -> usize {
+        Self::picker_entry_count().div_ceil(MOD_UI_PICKER_ROWS)
+    }
+    /// The picker's panel on a screen `w` by `h`: centred, with a title
+    /// row, eight key rows, a prev/next row and a Cancel row.
+    fn picker_geometry(w: f32, h: f32) -> (f32, f32, f32, f32) {
+        let ph = MOD_UI_PICKER_TITLE_H
+            + MOD_UI_PICKER_ROWS as f32 * MOD_UI_PICKER_ROW_H
+            + MOD_UI_PICKER_GAP
+            + MOD_UI_PICKER_ROW_H
+            + MOD_UI_PICKER_GAP
+            + MOD_UI_PICKER_ROW_H;
+        let px = ((w - MOD_UI_PICKER_W) / 2.0).floor();
+        let py = ((h - ph) / 2.0).floor();
+        (px, py, MOD_UI_PICKER_W, ph)
+    }
+    /// The y of the picker's key row `i` in a panel at `py`.
+    fn picker_row_y(py: f32, i: usize) -> f32 {
+        py + MOD_UI_PICKER_TITLE_H + i as f32 * MOD_UI_PICKER_ROW_H
+    }
+    /// The y of the picker's prev/next row in a panel at `py`.
+    fn picker_nav_y(py: f32) -> f32 {
+        Self::picker_row_y(py, MOD_UI_PICKER_ROWS) + MOD_UI_PICKER_GAP
+    }
+    /// The y of the picker's Cancel row in a panel at `py`.
+    fn picker_cancel_y(py: f32) -> f32 {
+        Self::picker_nav_y(py) + MOD_UI_PICKER_ROW_H + MOD_UI_PICKER_GAP
+    }
     /// The player bound the key row that waited to `key`: the mod's key
-    /// follows it now and at the next start (`horizon-mods.txt`).
+    /// follows it now and at the next start (`horizon-mods.txt`). The
+    /// picker closes with it, however the key was picked.
     fn bind_mod_key(&mut self, key: String) {
         let Some(ms) = self.mods.screen.as_mut() else {
             return;
@@ -1078,6 +1153,8 @@ impl Game<'_> {
         let Some(name) = ms.binding.take() else {
             return;
         };
+        ms.picker = false;
+        ms.picker_page = 0;
         let owner = ms.owner;
         if !self.mods.mods.rebind(owner, &name, &key) {
             return;
@@ -1101,7 +1178,9 @@ impl Game<'_> {
         self.settings.save(&Self::options_path());
     }
     /// A key while a mod screen is up: true when a key row waited for
-    /// it (Key Binds: Escape binds none).
+    /// it (Key Binds: Escape binds none). This is the press-to-capture
+    /// path the picker leaves in place: a keyboard can still just press
+    /// the key while the picker is open.
     pub(super) fn mod_screen_key(&mut self, key: KeyCode) -> bool {
         if self
             .mods
@@ -1117,6 +1196,93 @@ impl Game<'_> {
         };
         self.bind_mod_key(value.unwrap_or("key.keyboard.unknown").to_owned());
         true
+    }
+    /// The reset-keybinds button: this mod's keys back to the defaults
+    /// they registered, live and saved — `settings.mods.keys` forgets
+    /// the mod, so the next start loads the defaults too.
+    fn reset_mod_keys(&mut self) {
+        let Some(ms) = self.mods.screen.as_ref() else {
+            return;
+        };
+        let owner = ms.owner;
+        let id = self
+            .mods
+            .mods
+            .entries()
+            .get(owner)
+            .and_then(|e| e.manifest.as_ref())
+            .map(|m| m.id.clone());
+        if !self.mods.mods.reset_keys(owner) {
+            return;
+        }
+        if let Some(id) = id {
+            self.settings.mods.keys.remove(&id);
+        }
+        self.settings.save(&Self::options_path());
+    }
+    /// Close the key picker without changing the key.
+    fn cancel_mod_picker(&mut self) {
+        if let Some(ms) = self.mods.screen.as_mut() {
+            ms.binding = None;
+            ms.picker = false;
+            ms.picker_page = 0;
+        }
+    }
+    /// A click while the key picker is open: a key row binds that key, the
+    /// prev/next buttons page, Cancel (or anywhere outside the panel)
+    /// closes without changing the key. A tap never binds a mouse button
+    /// here: on a phone a tap *is* the left button.
+    fn mod_picker_click(&mut self) {
+        let (w, h) = self.gui_size();
+        let cursor = self.cursor;
+        let page = self.mods.screen.as_ref().map_or(0, |ms| ms.picker_page);
+        let (px, py, pw, _) = Self::picker_geometry(w, h);
+        let start = page * MOD_UI_PICKER_ROWS;
+        for i in 0..MOD_UI_PICKER_ROWS {
+            let Some((token, _)) = Self::picker_entry(start + i) else {
+                continue;
+            };
+            let ry = Self::picker_row_y(py, i);
+            if ui::hovered(cursor, px + 4.0, ry, pw - 8.0, MOD_UI_PICKER_ROW_H) {
+                self.audio.play_button_click();
+                self.bind_mod_key(token);
+                return;
+            }
+        }
+        let nav_y = Self::picker_nav_y(py);
+        let half = (pw - 8.0) / 2.0;
+        if ui::hovered(cursor, px + 4.0, nav_y, half - 2.0, MOD_UI_PICKER_ROW_H) {
+            if let Some(ms) = self.mods.screen.as_mut() {
+                ms.picker_page = ms.picker_page.saturating_sub(1);
+            }
+            self.audio.play_button_click();
+            return;
+        }
+        if ui::hovered(
+            cursor,
+            px + 4.0 + half + 2.0,
+            nav_y,
+            half - 2.0,
+            MOD_UI_PICKER_ROW_H,
+        ) {
+            if let Some(ms) = self.mods.screen.as_mut()
+                && ms.picker_page + 1 < Self::picker_pages()
+            {
+                ms.picker_page += 1;
+            }
+            self.audio.play_button_click();
+            return;
+        }
+        let cancel_y = Self::picker_cancel_y(py);
+        if ui::hovered(cursor, px + 4.0, cancel_y, pw - 8.0, MOD_UI_PICKER_ROW_H) {
+            self.audio.play_button_click();
+        }
+        self.cancel_mod_picker();
+    }
+    /// The y where a settings page's widgets start: the key rows, then
+    /// the reset-keybinds button when the mod has keys.
+    fn mod_page_top(keys: usize) -> f32 {
+        MOD_UI_TOP + keys as f32 * MOD_UI_KEY_ROW + if keys > 0 { MOD_UI_KEY_ROW } else { 0.0 }
     }
     /// The layout the mod screen's widgets get at `h`: (widget, top,
     /// height), the column being `COLUMN` wide down the middle.
@@ -1160,6 +1326,8 @@ impl Game<'_> {
             under: self.screen,
             scrolls: Vec::new(),
             binding: None,
+            picker: false,
+            picker_page: 0,
         });
         self.screen = Screen::Mod;
         if self.player.is_some() {
@@ -1222,12 +1390,16 @@ impl Game<'_> {
         let cx = (batch.width / 2.0).floor();
         let x = cx - MOD_UI_COLUMN / 2.0;
         // A settings page starts with the mod's keys, as Key Binds rows.
+        // A row warns when another mod has the same key: both mods fire
+        // on it, and the player may not know.
         let keys = Self::mod_page_keys(&self.mods.mods, ms);
+        let others: Vec<(&str, &ModKey)> = self.mods.mods.other_mod_keys(ms.owner).collect();
         for (i, k) in keys.iter().enumerate() {
             let wy = MOD_UI_TOP + i as f32 * MOD_UI_KEY_ROW;
             let hover = ui::hovered(self.cursor, x, wy, MOD_UI_COLUMN, 20.0);
             let waiting = ms.binding.as_deref() == Some(k.name.as_str());
-            let label = Self::mod_key_label(k, waiting);
+            let duplicates = Self::duplicate_users(&k.key, &others);
+            let label = Self::mod_key_label(k, waiting, &duplicates);
             ui::button(
                 batch,
                 atlas,
@@ -1240,7 +1412,27 @@ impl Game<'_> {
                 hover,
             );
         }
-        let top = MOD_UI_TOP + keys.len() as f32 * MOD_UI_KEY_ROW;
+        // The reset button, below the key rows: every key back to the
+        // default its mod registered.
+        if !keys.is_empty() {
+            let ry = MOD_UI_TOP + keys.len() as f32 * MOD_UI_KEY_ROW;
+            let hover = ui::hovered(self.cursor, x, ry, MOD_UI_COLUMN, 20.0);
+            ui::button(
+                batch,
+                atlas,
+                x,
+                ry,
+                MOD_UI_COLUMN,
+                20.0,
+                &Text::literal("Reset keybinds to defaults"),
+                true,
+                hover,
+            );
+        }
+        let top = Self::mod_page_top(keys.len());
+        // The picker state, read before the item icons draw: drawing them
+        // needs `&mut self`, which would end `ms`'s borrow.
+        let (picker_open, picker_page) = (ms.picker, ms.picker_page);
         let layout = Self::mod_ui_layout(batch.height, top, widgets);
         let mut list_i = 0usize;
         for (w, &(wy, wh)) in widgets.iter().zip(&layout) {
@@ -1347,10 +1539,125 @@ impl Game<'_> {
             let stack = ItemStack::new(id.as_str(), 1);
             self.draw_item(batch, &stack, ix, iy);
         }
+        // The key picker draws over the page, dimming the rest.
+        if picker_open {
+            self.draw_mod_key_picker(batch, picker_page);
+        }
+    }
+    /// The key picker over the mod's page: a dimmed screen, a panel with
+    /// eight keys a page, prev/next and Cancel.
+    fn draw_mod_key_picker(&mut self, batch: &mut HudBatch, page: usize) {
+        let atlas = &self.gui.atlas;
+        let (px, py, pw, ph) = Self::picker_geometry(batch.width, batch.height);
+        batch.fill(atlas, 0.0, 0.0, batch.width, batch.height, 0x8000_0000);
+        batch.fill(atlas, px, py, pw, ph, 0xFF202020);
+        for (x, y, w, h) in [
+            (px, py, pw, 1.0),
+            (px, py + ph - 1.0, pw, 1.0),
+            (px, py, 1.0, ph),
+            (px + pw - 1.0, py, 1.0, ph),
+        ] {
+            batch.fill(atlas, x, y, w, h, 0xFF505050);
+        }
+        let title = format!("Choose a key ({}/{})", page + 1, Self::picker_pages());
+        ui::centered_text(
+            batch,
+            atlas,
+            &Text::literal(title),
+            px,
+            py + 7.0,
+            pw,
+            u32::MAX,
+        );
+        let start = page * MOD_UI_PICKER_ROWS;
+        for i in 0..MOD_UI_PICKER_ROWS {
+            let Some((_, name)) = Self::picker_entry(start + i) else {
+                continue;
+            };
+            let ry = Self::picker_row_y(py, i);
+            if ui::hovered(self.cursor, px + 4.0, ry, pw - 8.0, MOD_UI_PICKER_ROW_H) {
+                batch.fill(
+                    atlas,
+                    px + 4.0,
+                    ry,
+                    pw - 8.0,
+                    MOD_UI_PICKER_ROW_H,
+                    0x40FFFFFF,
+                );
+            }
+            batch.text_styled(
+                atlas,
+                &Text::literal(name),
+                px + 10.0,
+                ry + 6.0,
+                u32::MAX,
+                true,
+            );
+        }
+        let nav_y = Self::picker_nav_y(py);
+        let half = (pw - 8.0) / 2.0;
+        ui::button(
+            batch,
+            atlas,
+            px + 4.0,
+            nav_y,
+            half - 2.0,
+            MOD_UI_PICKER_ROW_H,
+            &Text::literal("< Prev"),
+            page > 0,
+            ui::hovered(
+                self.cursor,
+                px + 4.0,
+                nav_y,
+                half - 2.0,
+                MOD_UI_PICKER_ROW_H,
+            ),
+        );
+        ui::button(
+            batch,
+            atlas,
+            px + 4.0 + half + 2.0,
+            nav_y,
+            half - 2.0,
+            MOD_UI_PICKER_ROW_H,
+            &Text::literal("Next >"),
+            page + 1 < Self::picker_pages(),
+            ui::hovered(
+                self.cursor,
+                px + 4.0 + half + 2.0,
+                nav_y,
+                half - 2.0,
+                MOD_UI_PICKER_ROW_H,
+            ),
+        );
+        let cancel_y = Self::picker_cancel_y(py);
+        ui::button(
+            batch,
+            atlas,
+            px + 4.0,
+            cancel_y,
+            pw - 8.0,
+            MOD_UI_PICKER_ROW_H,
+            &Text::literal("Cancel"),
+            true,
+            ui::hovered(
+                self.cursor,
+                px + 4.0,
+                cancel_y,
+                pw - 8.0,
+                MOD_UI_PICKER_ROW_H,
+            ),
+        );
     }
     /// A click on the mod screen: Done leaves it, a `list` row is the mod's
     /// `ui-events::select`.
     pub(super) fn mod_screen_click(&mut self, button: MouseButton) {
+        // The key picker is open: taps pick a key, page, or cancel — never
+        // a mouse-button bind (a tap is the left button on a phone).
+        if self.mods.screen.as_ref().is_some_and(|ms| ms.picker) {
+            self.mod_picker_click();
+            return;
+        }
         // Key Binds: a mouse button pressed while waiting binds it.
         if self
             .mods
@@ -1379,7 +1686,7 @@ impl Game<'_> {
         };
         let owner = ms.owner;
         let x = (w / 2.0).floor() - MOD_UI_COLUMN / 2.0;
-        // A key row waits for the key to bind.
+        // A key row opens the key picker for the key to bind.
         let keys = Self::mod_page_keys(&self.mods.mods, ms);
         let picked = (0..keys.len()).find(|&i| {
             let wy = MOD_UI_TOP + i as f32 * MOD_UI_KEY_ROW;
@@ -1390,10 +1697,21 @@ impl Game<'_> {
             self.audio.play_button_click();
             if let Some(ms) = self.mods.screen.as_mut() {
                 ms.binding = Some(name);
+                ms.picker = true;
+                ms.picker_page = 0;
             }
             return;
         }
-        let top = MOD_UI_TOP + keys.len() as f32 * MOD_UI_KEY_ROW;
+        // The reset-keybinds button, below the key rows.
+        if !keys.is_empty() {
+            let ry = MOD_UI_TOP + keys.len() as f32 * MOD_UI_KEY_ROW;
+            if ui::hovered(cursor, x, ry, MOD_UI_COLUMN, 20.0) {
+                self.audio.play_button_click();
+                self.reset_mod_keys();
+                return;
+            }
+        }
+        let top = Self::mod_page_top(keys.len());
         let layout = Self::mod_ui_layout(h, top, widgets);
         let mut list_i = 0usize;
         // The `ui_select` call needs `&mut`: find the pick first.
@@ -1427,8 +1745,19 @@ impl Game<'_> {
             self.show_mod_output();
         }
     }
-    /// The wheel over a `list` scrolls it.
+    /// The wheel over a `list` scrolls it — or pages the key picker
+    /// while it is open.
     pub(super) fn mod_screen_scroll(&mut self, delta: f32) {
+        if self.mods.screen.as_ref().is_some_and(|ms| ms.picker) {
+            if let Some(ms) = self.mods.screen.as_mut() {
+                if delta > 0.0 {
+                    ms.picker_page = ms.picker_page.saturating_sub(1);
+                } else if delta < 0.0 && ms.picker_page + 1 < Self::picker_pages() {
+                    ms.picker_page += 1;
+                }
+            }
+            return;
+        }
         let (w, h) = self.gui_size();
         let cursor = self.cursor;
         let Some(ms) = self.mods.screen.as_mut() else {
@@ -1438,8 +1767,7 @@ impl Game<'_> {
             return;
         };
         let x = (w / 2.0).floor() - MOD_UI_COLUMN / 2.0;
-        let top =
-            MOD_UI_TOP + Self::mod_page_keys(&self.mods.mods, ms).len() as f32 * MOD_UI_KEY_ROW;
+        let top = Self::mod_page_top(Self::mod_page_keys(&self.mods.mods, ms).len());
         let layout = Self::mod_ui_layout(h, top, widgets);
         let mut list_i = 0usize;
         for (w, &(wy, wh)) in widgets.iter().zip(&layout) {
@@ -1508,6 +1836,22 @@ const MOD_UI_COLUMN: f32 = 200.0;
 /// A key row's height with its gap, as the widgets below it space out.
 #[cfg(feature = "mods")]
 const MOD_UI_KEY_ROW: f32 = 26.0;
+/// The key picker's title row, above its key rows.
+#[cfg(feature = "mods")]
+const MOD_UI_PICKER_TITLE_H: f32 = 24.0;
+/// The key picker's rows per page, as the touch editor's key picker shows.
+#[cfg(feature = "mods")]
+const MOD_UI_PICKER_ROWS: usize = 8;
+/// A key picker row's height.
+#[cfg(feature = "mods")]
+const MOD_UI_PICKER_ROW_H: f32 = 20.0;
+/// The gap between the picker's key rows, its prev/next row and Cancel.
+#[cfg(feature = "mods")]
+const MOD_UI_PICKER_GAP: f32 = 6.0;
+/// The key picker's width: a little wider than the key column, so key
+/// names fit.
+#[cfg(feature = "mods")]
+const MOD_UI_PICKER_W: f32 = 220.0;
 
 #[cfg(all(test, feature = "mods"))]
 mod tests {
@@ -1547,6 +1891,84 @@ mod tests {
                 wy + 1.0,
                 wy + wh - 1.0
             );
+        }
+    }
+
+    /// A mod key as `register-key` leaves it: the key is its own default.
+    fn mod_key(name: &str, label: &str, key: &str, default: &str) -> ModKey {
+        ModKey {
+            name: name.to_owned(),
+            label: label.to_owned(),
+            key: key.to_owned(),
+            default: default.to_owned(),
+        }
+    }
+
+    /// Two mods on one key warn by name — but an unbound key is not a
+    /// collision, and a key nobody else has is not one either. (The row's
+    /// own mod never warns against itself: `other_mod_keys` skips the
+    /// owner, so this helper only ever sees other mods.)
+    #[test]
+    fn duplicate_keys_name_the_other_mod_but_not_unbound_ones() {
+        let recipes = mod_key(
+            "recipes",
+            "Show recipes",
+            "key.keyboard.v",
+            "key.keyboard.r",
+        );
+        let uses = mod_key(
+            "uses",
+            "Show uses",
+            "key.keyboard.unknown",
+            "key.keyboard.u",
+        );
+        let others = [("JEI for Horizon", &recipes), ("Armor HUD", &uses)];
+        assert_eq!(
+            Game::duplicate_users("key.keyboard.v", &others),
+            vec!["JEI for Horizon"]
+        );
+        assert!(Game::duplicate_users("key.keyboard.unknown", &others).is_empty());
+        assert!(Game::duplicate_users("key.keyboard.k", &others).is_empty());
+    }
+
+    /// The picker offers Unbound, the mouse buttons, then every raw
+    /// keyboard key — including the defaults the ported mods registered
+    /// (Zoom V, JEI R/U, Armor HUD K) — so any of them can be picked by
+    /// touch.
+    #[test]
+    fn the_picker_lists_unbound_then_mouse_then_every_raw_key() {
+        assert_eq!(
+            Game::picker_entry(0).map(|(t, _)| t),
+            Some("key.keyboard.unknown".to_owned())
+        );
+        assert_eq!(
+            Game::picker_entry(1).map(|(t, _)| t),
+            Some("key.mouse.left".to_owned())
+        );
+        assert_eq!(
+            Game::picker_entry(5).map(|(t, _)| t),
+            Some("key.mouse.5".to_owned())
+        );
+        // The raw-keys list starts with A, as `keybinds::available_keys` does.
+        assert_eq!(
+            Game::picker_entry(6).map(|(t, _)| t),
+            Some("key.keyboard.a".to_owned())
+        );
+        assert_eq!(
+            Game::picker_entry_count(),
+            6 + keybinds::available_keys().len()
+        );
+        assert_eq!(Game::picker_entry(Game::picker_entry_count()), None);
+        let tokens: Vec<String> = (0..Game::picker_entry_count())
+            .filter_map(|i| Game::picker_entry(i).map(|(t, _)| t))
+            .collect();
+        for key in [
+            "key.keyboard.v",
+            "key.keyboard.r",
+            "key.keyboard.u",
+            "key.keyboard.k",
+        ] {
+            assert!(tokens.contains(&key.to_owned()), "{key} is pickable");
         }
     }
 }
