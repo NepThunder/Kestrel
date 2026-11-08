@@ -14,7 +14,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `command` | [`command`](#command) | run commands as you, with your permissions |
 | `registries` | data files (`assets/`, `data/`), no interface | add blocks, items, mob effects and entity types to your worlds |
 | `ui` | [`ui`](#ui) | show its own screens and a settings page |
-| `render` | [`render`](#render) | draw on your screen, shake and zoom the camera |
+| `render` | [`render`](#render) | draw on your screen and in the world, shake and zoom the camera |
 | `input` | [`input`](#input) | see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys |
 | `players` | [`players`](#players) | see who is on the server and message them |
 | `world` | [`world`](#world) | read the world's blocks, and change them where the game runs the world |
