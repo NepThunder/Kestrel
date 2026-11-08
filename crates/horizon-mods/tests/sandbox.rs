@@ -503,7 +503,10 @@ fn hook_overhead() {
 fn ui_screens_settings_and_events() {
     let mut mods = load("horizon_mods_test_ui_guest.kmod");
     assert_eq!(mods.entries()[0].status, Status::Running);
-    assert!(!mods.entries()[0].has_ui_settings());
+    // The guest declares the `ui` capability, so its row gains a Settings
+    // button from load — before it pushes any widgets.
+    assert!(mods.entries()[0].has_ui_settings());
+    assert!(mods.settings_widgets(0).is_empty());
     // `/ui_screen` pushes the screen; the host clips nothing of this one.
     assert!(mods.command("ui_screen"));
     assert_eq!(mods.drain(), [Output::OpenScreen { owner: 0 }]);
@@ -526,7 +529,8 @@ fn ui_screens_settings_and_events() {
             },
         ]
     );
-    // The settings page: empty until the mod fills it, refreshed on open.
+    // The widgets themselves: empty until the mod fills them, refreshed
+    // on open.
     assert!(mods.command("ui_settings"));
     assert_eq!(mods.settings_widgets(0).len(), 3);
     assert!(mods.entries()[0].has_ui_settings());
@@ -536,6 +540,22 @@ fn ui_screens_settings_and_events() {
     assert!(mods.command("ui_close"));
     assert!(mods.drain().contains(&Output::CloseScreen { owner: 0 }));
     assert!(mods.screen(0).is_none());
+}
+
+#[test]
+fn settings_button_follows_the_ui_capability() {
+    // A running keyless mod that declares the `ui` capability gets its
+    // Settings button before it pushes any widgets: it only fills the
+    // page in `ui_settings_opened`, which fires when the page opens.
+    let mods = load("horizon_mods_test_ui_guest.kmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert!(mods.settings_widgets(0).is_empty());
+    assert!(mods.entries()[0].has_ui_settings());
+    // A running mod without the capability, keys or widgets gets none:
+    // Coordinates HUD is a pure HUD mod.
+    let hud = load("coords_hud.kmod");
+    assert_eq!(hud.entries()[0].status, Status::Running);
+    assert!(!hud.entries()[0].has_ui_settings());
 }
 
 #[test]

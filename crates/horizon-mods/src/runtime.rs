@@ -1,5 +1,5 @@
 //! Loading and calling mods with wasmtime's component model.
-use crate::manifest::{Manifest, Package, Side};
+use crate::manifest::{Capability, Manifest, Package, Side};
 use server_bindings::{
     HorizonServerMod,
     exports::horizon::mods::server_events::Registration as ServerRegistration,
@@ -332,10 +332,21 @@ impl Entry {
     /// The running mod has a settings page (capability `ui` set widgets
     /// with `ui.set-settings`, or `input` registered keys the player may
     /// bind there): its row in Options > Mods gains a button.
+    ///
+    /// Declaring the `ui` capability counts from load: a mod only pushes
+    /// its widgets in `ui_settings_opened`, which fires when the page
+    /// opens, so waiting for widgets first would hide the button forever.
+    /// A mod with no `ui` capability, no keys and no widgets still has
+    /// none; opening the page still bails when it stays empty.
     pub fn has_ui_settings(&self) -> bool {
         self.run.as_ref().is_some_and(|r| {
             let d = r.store.data();
-            !d.ui.settings.is_empty() || !d.input.keys.is_empty()
+            !d.ui.settings.is_empty()
+                || !d.input.keys.is_empty()
+                || self
+                    .manifest
+                    .as_ref()
+                    .is_some_and(|m| m.capabilities.contains(&Capability::Ui))
         })
     }
 }
