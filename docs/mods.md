@@ -59,6 +59,23 @@ offers are not exposed. `crates/horizon-mod-sdk/examples/inventory-probe`
 is a probe mod that shows the held item's damage, the armour worn and the
 open container.
 
+A code mod with capability `entity` (experimental) reads the living mobs
+around the player and the mob under the crosshair (`entity.entities`,
+`entity.targeted`, API level 10). It is read-only — there is no function
+that damages, moves, spawns or interacts with an entity — and a mod reads
+the entities as of the last tick. `entities()` lists the living mobs
+within 128 blocks, nearest first, at most 256; other players are never
+listed, and in multiplayer in v1 the list is empty. `targeted(distance)`
+names the nearest pickable mob along the player's view within that many
+blocks (at most 128), before any block: a wall between the two hides the
+mob. It works in singleplayer and multiplayer alike, and may name a
+player under the crosshair. Health is the server's truth in singleplayer
+and reads there; in multiplayer it is missing, and for another player it
+is always missing — a mod must not present a missing health as a number.
+Before a world loads the list is empty and there is no target.
+`crates/horizon-mod-sdk/examples/entity-probe` is a probe mod that shows
+the mobs around the player, nearest first, and the crosshair target.
+
 ## Making a content mod
 
 ```sh
