@@ -432,10 +432,44 @@ impl Game<'_> {
         }
         if let Some(w) = self.window.clone() {
             let monitor = w.current_monitor().or_else(|| w.primary_monitor());
+            // Display-cap probe (Kestrel): log the modes winit reports, once
+            // per launch, before the first setFrameRate call in render() — so
+            // the list shows what the system allows, not what the game already
+            // asked for. Compare the list with the system on Standard vs High
+            // to decide whether the cap can come from the modes list. Remove
+            // once the cap source is settled.
+            let current_hz = monitor
+                .as_ref()
+                .and_then(|m| m.refresh_rate_millihertz())
+                .map(|r| r.div_ceil(1000));
             if let Some(modes) = self
                 .video_modes
                 .refresh(monitor, horizon_client::window::monitor_video_modes)
             {
+                let list = modes
+                    .iter()
+                    .map(|m| {
+                        format!(
+                            "{}x{}@{}Hz",
+                            m.width,
+                            m.height,
+                            m.refresh_rate.round() as i32
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                #[cfg(target_os = "android")]
+                let launcher_hz = crate::device_runtime::preferences().display_hz;
+                #[cfg(not(target_os = "android"))]
+                let launcher_hz = 0u16;
+                log::info!(
+                    "display-cap-probe: launcher_hz={} current_hz={} modes=[{}]",
+                    launcher_hz,
+                    current_hz
+                        .map(|h| h.to_string())
+                        .unwrap_or_else(|| "unknown".into()),
+                    list
+                );
                 self.settings.video_modes = modes;
             }
             let in_video_screen = self.screen == Screen::Options
