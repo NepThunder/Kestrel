@@ -7434,6 +7434,11 @@ impl Game<'_> {
     /// key. A mapping rebound away from its modifier is left alone too: the
     /// modifier says nothing about it.
     ///
+    /// The reverse also holds: a touch or pad latch still on whose mapping a
+    /// screen, focus loss or suspend cleared is re-asserted in the toggle
+    /// loop below, so a latched Sprint button keeps sprinting after any menu
+    /// instead of staying pink and dead.
+    ///
     /// Only `physical_keys` is cleared directly here; the logical `self.keys`
     /// entries for sneak and sprint are left to the toggle loop below, because
     /// they stand for the mapping and not the physical Shift or Control.
@@ -7490,7 +7495,26 @@ impl Game<'_> {
             // OS modifier bits describe physical keys, not an independently
             // held controller/touch action. Its release is delivered by pad_action.
             let held = held || self.pad.holds_action(&self.settings.controller, mapping);
-            if !held {
+            if held {
+                // The other direction: a touch button (or pad toggle) still
+                // latched on whose mapping a screen, focus loss or suspend
+                // released — the button still shows on, but the game-side
+                // toggle is off, so sneak/sprint is dead until the button is
+                // tapped off and on again. Re-assert it. `set_down(true, …)`
+                // from not-down lands on down either way (a plain set when
+                // the option is off, a flip when it is on), and the guard
+                // keeps a keyboard toggle's own press/release semantics
+                // untouched: an already-down toggle is never flipped off.
+                // Only while playing: behind a screen or dialog the keys
+                // stay dropped, as `drop_held_behind_dialog` intends, and
+                // the latch is re-asserted on the first frame back in
+                // gameplay (`track_toggle_screens` runs just above this
+                // call, so `was_playing` is fresh).
+                if self.was_playing && !self.toggles.is_down(slot) {
+                    self.toggles.0[slot].set_down(true, needs_toggle);
+                    self.sync_toggle(slot);
+                }
+            } else {
                 self.toggles.0[slot].set_down(false, needs_toggle);
                 self.sync_toggle(slot);
             }

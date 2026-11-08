@@ -232,6 +232,35 @@ mod tests {
         k.set_down(true, true);
         assert!(!k.is_down);
     }
+    /// A touch latch re-asserts a toggle a screen released: the touch
+    /// dispatch drives the mapping with `set_down(down, false)`, a screen's
+    /// `release` clears it, and with the vanilla option off nothing is
+    /// remembered, so the screen close restores nothing — the mapping stays
+    /// down until `heal_hold_latches` sets it down again while the latch is
+    /// held. `set_down(true, …)` from not-down lands on down either way (a
+    /// plain set with the option off, a flip with it on), which is what the
+    /// heal relies on.
+    #[test]
+    fn latched_toggle_is_reasserted_after_a_screen() {
+        for option in [false, true] {
+            let mut keys = ToggleKeys::default();
+            // Touch button tap: dispatch calls set_down(true, false).
+            keys.0[SPRINT].set_down(true, false);
+            assert!(keys.is_down(SPRINT));
+            // A screen opens while the option is off: release clears it and
+            // nothing is remembered, so the close restores nothing.
+            keys.screen_opened([false, false, false, false]);
+            assert!(!keys.is_down(SPRINT));
+            keys.screen_closed([false, false, false, false]);
+            assert!(!keys.is_down(SPRINT));
+            // The heal: latch still held, mapping not down -> set it down.
+            keys.0[SPRINT].set_down(true, option);
+            assert!(keys.is_down(SPRINT), "re-asserted with option {option}");
+            // Tapping the button off still ends it.
+            keys.0[SPRINT].set_down(false, false);
+            assert!(!keys.is_down(SPRINT));
+        }
+    }
     #[test]
     fn screens_block_presses_but_not_releases() {
         let mut keys = ToggleKeys::default();
