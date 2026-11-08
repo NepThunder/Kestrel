@@ -784,6 +784,65 @@ interface %inventory {
     open-container: func() -> option<container>;
 }
 
+/// Capability `entity` (manifest `api = "0.1"`, experimental): the living
+/// mobs around the player and the entity under the crosshair. Read-only:
+/// nothing here can damage, move, spawn, ride or interact with an entity,
+/// and it cannot see another player's inventory or health. The snapshot is
+/// copied once per tick, so a mod reads the entities as of the last tick,
+/// not as of its call.
+interface %entity {
+    /// One living mob, as the game holds it this tick.
+    record entity {
+        /// The entity id the server tracks it by.
+        id: u32,
+        /// `minecraft:zombie`, `minecraft:cow`, `minecraft:player`, ...
+        kind: string,
+        /// The name as the game shows it: the custom name when set, else
+        /// the type's translated display name (a player's profile name
+        /// for `minecraft:player`).
+        name: string,
+        /// Feet position, in blocks.
+        x: f64,
+        y: f64,
+        z: f64,
+        /// Blocks per second.
+        vx: f64,
+        vy: f64,
+        vz: f64,
+        /// Degrees, movement facing.
+        yaw: f32,
+        /// Hit points as vanilla counts them, or none where the client
+        /// cannot vouch for it (multiplayer in v1). `max-health` is the
+        /// type's maximum.
+        health: option<f32>,
+        max-health: f32,
+        /// Hitbox size, in blocks (from the type).
+        width: f32,
+        height: f32,
+        /// The mob stands on a block.
+        on-ground: bool,
+        /// The plain-text custom name, if the mob has one.
+        custom-name: option<string>,
+        /// A baby variant (animals, zombies, piglins...).
+        baby: bool,
+    }
+    /// The entity under the crosshair, if any.
+    record target {
+        entity: entity,
+        /// Blocks from the eye to the hit point.
+        distance: f32,
+    }
+    /// The living mobs within 128 blocks, nearest first, at most 256.
+    /// Other players are not listed. Empty on the title screen and, in
+    /// v1, in multiplayer.
+    entities: func() -> list<entity>;
+    /// The nearest pickable living mob along the player's view within
+    /// `distance` blocks (at most 128), before any block: a wall between
+    /// the two hides the mob. None when nothing is hit, and on the title
+    /// screen. Works in singleplayer and multiplayer.
+    targeted: func(distance: f32) -> option<target>;
+}
+
 /// What the server calls in a server mod (manifest `api = "0.3"`,
 /// experimental). Only the hooks `init` asks for are ever called. The player
 /// in each event is as the server saw them when it happened.
@@ -890,6 +949,9 @@ world horizon-mod {
     /// Read-only: the player's own inventory and the open container's
     /// contents, as of this tick; nothing here writes.
     import %inventory;
+    /// Read-only: the living mobs around the player and the entity under
+    /// the crosshair, as of this tick; nothing here writes.
+    import %entity;
     export events;
 }
 
