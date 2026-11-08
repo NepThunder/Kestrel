@@ -30,13 +30,22 @@ the reason in the log.
 Benchmarks (`--benchmark`) never load mods.
 
 A code mod with capability `world` reads the blocks around the player
-(`world.get-block`, `get-biome`, `get-blocks`, API level 8). In v1 it is
+(`world.get-block`, `get-biome`, `get-blocks`, API level 8) and the light
+at them (`world.get-lights`, API level 12: block and sky light, each 0 to
+15, `None` where no chunk is loaded, its light is not computed yet, or the
+position is outside the column's build range). In v1 it is
 read-only — `set-blocks` is refused — and singleplayer only: on a
 multiplayer server, and before a world loads, every read is empty. Bulk
 reads go through `get-blocks` (at most 4096 positions per call); the mod
 reads only the dimension the player is in and only chunks the game has
 loaded, and only on its tick hook. `crates/horizon-mod-sdk/examples/world-probe`
-is a probe mod that shows the blocks at the player's feet.
+is a probe mod that shows the blocks at the player's feet, and
+`crates/horizon-mod-sdk/examples/light-probe` one that shows the light
+there. The light is as of the last completed light job, so it lags a block
+edit by a few ticks after the block read already shows it; the sky value
+is the stored sky light, not darkened by the time of day — at night the
+sky above open ground still reads 15, and a mod that wants the
+spawn-relevant value computes `max(block, sky - 11)` for the night case.
 
 A code mod with capability `inventory` (experimental) reads the player's own
 inventory and the open container (`inventory.inventory`,

@@ -2573,6 +2573,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "light-probe"
+version = "0.1.0"
+dependencies = [
+ "horizon-mod-sdk",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"

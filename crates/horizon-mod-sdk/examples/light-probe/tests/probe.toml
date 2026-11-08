@@ -1,0 +1,30 @@
+# Client light reads: the block/sky light at the player's feet, and the
+# 4096-position cap. The player stands at 0.5 64 0.5, so the feet are
+# 0 64 0 and below is 0 63 0; the far position is unloaded in this harness
+# (the game itself reads None where no chunk is loaded), and y 400 is
+# above the Overworld's build range, so both read None.
+
+[[step]]
+blocks = [
+  { x = 0, y = 64, z = 0, state = "minecraft:grass_block" },
+  { x = 0, y = 63, z = 0, state = "minecraft:dirt" },
+]
+lights = [
+  { x = 0, y = 64, z = 0, block = 14, sky = 15 },
+  { x = 0, y = 63, z = 0, block = 13, sky = 15 },
+]
+ticks = 1
+expect.chat = ["probe light feet=14/15 below=13/15 far=none high=none"]
+
+# Under a roof the sky light at the feet drops to 0; the block light
+# stays what the fixture says (a torch under the roof).
+[[step]]
+lights = [
+  { x = 0, y = 64, z = 0, block = 12, sky = 0 },
+]
+ticks = 1
+expect.chat = ["probe light feet=12/0 below=13/15 far=none high=none"]
+
+[[step]]
+command = "probe-cap"
+expect.feedback = "probe cap: 0 results"
