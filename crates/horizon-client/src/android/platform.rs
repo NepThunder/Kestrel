@@ -295,6 +295,88 @@ pub fn cache_dir() -> Option<std::path::PathBuf> {
 pub fn open_repository() -> bool {
     open_url("https://github.com/Vasysik/horizon-android")
 }
+
+/// Display-cap probe (Kestrel, temporary): dump the raw Android Display
+/// modes via JNI — `Display.getSupportedModes()` plus the current
+/// `Display.getMode()` — so the refresh-rate cap source can be settled.
+/// The winit modes list does not move with the OnePlus Standard/High
+/// setting (build-15 probe), so the same question is asked of the raw
+/// Display object. `getDefaultDisplay()` is deprecated since API 30 but
+/// still functional, and it works back to the app's minimum API, unlike
+/// `Activity.getDisplay()` (API 30+). Returns the full log line, or an
+/// `unavailable` line if the JNI call fails — never panics, never breaks
+/// startup. Remove once the cap source is settled.
+pub(crate) fn display_modes_probe_line() -> String {
+    match with_context(|env, activity| {
+        let window_manager = env
+            .call_method(
+                activity,
+                "getWindowManager",
+                "()Landroid/view/WindowManager;",
+                &[],
+            )?
+            .l()?;
+        let display = env
+            .call_method(
+                &window_manager,
+                "getDefaultDisplay",
+                "()Landroid/view/Display;",
+                &[],
+            )?
+            .l()?;
+        let modes = env
+            .call_method(
+                &display,
+                "getSupportedModes",
+                "()[Landroid/view/Display$Mode;",
+                &[],
+            )?
+            .l()?;
+        let modes = jni::objects::JObjectArray::from(modes);
+        let count = env.get_array_length(&modes)?;
+        let mut list = Vec::new();
+        for i in 0..count {
+            let mode = env.get_object_array_element(&modes, i)?;
+            let width = env
+                .call_method(&mode, "getPhysicalWidth", "()I", &[])?
+                .i()?;
+            let height = env
+                .call_method(&mode, "getPhysicalHeight", "()I", &[])?
+                .i()?;
+            let rate = env
+                .call_method(&mode, "getRefreshRate", "()F", &[])?
+                .f()?;
+            list.push(format!("{}x{}@{}Hz", width, height, rate.round() as i32));
+            env.delete_local_ref(mode)?;
+        }
+        let current = env
+            .call_method(&display, "getMode", "()Landroid/view/Display$Mode;", &[])?
+            .l()?;
+        let current = if current.is_null() {
+            "unknown".to_string()
+        } else {
+            let width = env
+                .call_method(&current, "getPhysicalWidth", "()I", &[])?
+                .i()?;
+            let height = env
+                .call_method(&current, "getPhysicalHeight", "()I", &[])?
+                .i()?;
+            let rate = env
+                .call_method(&current, "getRefreshRate", "()F", &[])?
+                .f()?;
+            format!("{}x{}@{}Hz", width, height, rate.round() as i32)
+        };
+        Ok(format!(
+            "display-cap-probe-jni: supported=[{}] current={}",
+            list.join(", "),
+            current
+        ))
+    }) {
+        Some(line) => line,
+        // with_context already logged the JNI error as a warning, if any.
+        None => "display-cap-probe-jni: unavailable: JNI call failed".to_string(),
+    }
+}
 /// Browse our SAF directory through the system file manager, never a private path.
 pub fn open_documents(id: &str) -> bool {
     with_context(|env, activity| {

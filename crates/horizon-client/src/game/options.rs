@@ -470,6 +470,15 @@ impl Game<'_> {
                         .unwrap_or_else(|| "unknown".into()),
                     list
                 );
+                // Display-cap probe, JNI half (Kestrel): the winit list
+                // above does not move with the system Standard/High
+                // setting (build-15 probe), so ask the raw Android
+                // Display the same question via
+                // Display.getSupportedModes()/getMode(). Compare with the
+                // system on Standard vs High. Remove once the cap source
+                // is settled.
+                #[cfg(target_os = "android")]
+                log::info!("{}", crate::platform::display_modes_probe_line());
                 self.settings.video_modes = modes;
             }
             let in_video_screen = self.screen == Screen::Options
