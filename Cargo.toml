@@ -41,6 +41,8 @@ members = [
     "crates/horizon-mod-sdk/examples/world-probe",
     "crates/horizon-mod-sdk/examples/inventory-probe",
     "crates/horizon-mod-sdk/examples/entity-probe",
+    "crates/horizon-mod-sdk/examples/draw-probe",
+    "crates/horizon-mod-sdk/examples/light-probe",
     "crates/horizon-mod-sdk/examples/predator-missile",
     "crates/horizon-mod-sdk/examples/welcome",
     "crates/horizon-mod-sdk/examples/beacons",

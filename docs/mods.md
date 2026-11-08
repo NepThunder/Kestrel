@@ -30,13 +30,22 @@ the reason in the log.
 Benchmarks (`--benchmark`) never load mods.
 
 A code mod with capability `world` reads the blocks around the player
-(`world.get-block`, `get-biome`, `get-blocks`, API level 8). In v1 it is
+(`world.get-block`, `get-biome`, `get-blocks`, API level 8) and the light
+at them (`world.get-lights`, API level 12: block and sky light, each 0 to
+15, `None` where no chunk is loaded, its light is not computed yet, or the
+position is outside the column's build range). In v1 it is
 read-only — `set-blocks` is refused — and singleplayer only: on a
 multiplayer server, and before a world loads, every read is empty. Bulk
 reads go through `get-blocks` (at most 4096 positions per call); the mod
 reads only the dimension the player is in and only chunks the game has
 loaded, and only on its tick hook. `crates/horizon-mod-sdk/examples/world-probe`
-is a probe mod that shows the blocks at the player's feet.
+is a probe mod that shows the blocks at the player's feet, and
+`crates/horizon-mod-sdk/examples/light-probe` one that shows the light
+there. The light is as of the last completed light job, so it lags a block
+edit by a few ticks after the block read already shows it; the sky value
+is the stored sky light, not darkened by the time of day — at night the
+sky above open ground still reads 15, and a mod that wants the
+spawn-relevant value computes `max(block, sky - 11)` for the night case.
 
 A code mod with capability `inventory` (experimental) reads the player's own
 inventory and the open container (`inventory.inventory`,
@@ -75,6 +84,23 @@ is always missing — a mod must not present a missing health as a number.
 Before a world loads the list is empty and there is no target.
 `crates/horizon-mod-sdk/examples/entity-probe` is a probe mod that shows
 the mobs around the player, nearest first, and the crosshair target.
+
+A code mod with capability `render` (experimental) draws lines and boxes
+in the world (`render.set-world`, API level 11). It is draw-only — a box
+does not select, protect or change a block or an entity — and a mod
+submits on its tick hook: the shapes draw every frame until replaced, an
+empty list clearing them. At most 1024 lines per mod, a box counting as
+its twelve edges; widths are 0.5 to 8 pixels. The lines are depth-tested,
+so a wall hides them like the game's own hitbox boxes, and they hide
+with the HUD (F1). Nothing here is ever drawn on top of everything, and
+there are no filled boxes, no world text and no custom shaders in v1.
+What a mod draws comes from what it may read: boxes from `entity.entities`
+draw in singleplayer, while in multiplayer only the crosshair target (or
+a `game.raycast` hit) is there to draw round. Before a world loads the
+shapes store but nothing draws them.
+`crates/horizon-mod-sdk/examples/draw-probe` is a probe mod that draws a
+box round the nearest mob and a line from the player to the mob under the
+crosshair.
 
 ## Making a content mod
 

@@ -1,0 +1,8 @@
+id = "light_probe"
+name = "Light Probe"
+version = "0.1.0"
+description = "Prototype for client light reads: shows the block and sky light at the player's feet each tick, and proves a call over the 4096-position cap returns no results."
+authors = ["Horizon"]
+api = "0.1"
+side = "client"
+capabilities = ["game-read", "world", "chat"]

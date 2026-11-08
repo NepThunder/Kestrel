@@ -14,7 +14,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `command` | [`command`](#command) | run commands as you, with your permissions |
 | `registries` | data files (`assets/`, `data/`), no interface | add blocks, items, mob effects and entity types to your worlds |
 | `ui` | [`ui`](#ui) | show its own screens and a settings page |
-| `render` | [`render`](#render) | draw on your screen, shake and zoom the camera |
+| `render` | [`render`](#render) | draw on your screen and in the world, shake and zoom the camera |
 | `input` | [`input`](#input) | see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys |
 | `players` | [`players`](#players) | see who is on the server and message them |
 | `world` | [`world`](#world) | read the world's blocks, and change them where the game runs the world |
@@ -411,6 +411,45 @@ Any four-cornered shape (a wheel's segment, an arrow): the corners in order roun
 | `item` | `item-shape` |  |
 | `text` | `text-shape` |  |
 
+### record `world-point`
+
+A point in the world, in blocks.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+
+### record `world-line`
+
+One world-space line: the two ends, a 0xAARRGGBB colour, and a width in pixels (0.5 to 8, as the game's gizmos use 1 to 4).
+
+| Field | Type | |
+| --- | --- | --- |
+| `start` | `world-point` |  |
+| `end` | `world-point` |  |
+| `color` | `u32` | 0xAARRGGBB. |
+| `width` | `f32` | Pixels wide, 0.5 to 8. |
+
+### record `world-box`
+
+One world-space box: the two opposite corners, a 0xAARRGGBB colour, and a width in pixels. Drawn as its twelve edges, in `CuboidGizmo.emit`'s order.
+
+| Field | Type | |
+| --- | --- | --- |
+| `min` | `world-point` |  |
+| `max` | `world-point` |  |
+| `color` | `u32` | 0xAARRGGBB. |
+| `width` | `f32` | Pixels wide, 0.5 to 8. |
+
+### variant `world-shape`
+
+| Case | Payload | |
+| --- | --- | --- |
+| `line` | `world-line` |  |
+| `box` | `world-box` |  |
+
 ### record `frame-rate`
 
 | Field | Type | |
@@ -451,6 +490,7 @@ Any four-cornered shape (a wheel's segment, an arrow): the corners in order roun
 | `shake` | `func(strength: f32, seconds: f32)` | Shakes the camera: a jolt of `strength` (0 to 1, 1 the hardest) that fades out over `seconds` (at most 10). Jolts add up to 1. The view turns, the player doesn't, and the player's Distortion Effects option scales it (0 turns it off). |
 | `set-corner` | `func(corner: corner, width: f32, height: f32, shapes: list<shape>)` | Replaces the mod's corner panel: shapes in GUI pixels from the top left of a `width` × `height` box that the game places in `corner`, stacked with the game's overlays and the other mods' panels (under the status effects at the top right), as `hud`'s panels are. |
 | `clear-corner` | `func()` | Removes the mod's corner panel. |
+| `set-world` | `func(shapes: list<world-shape>)` | Replaces the mod's world shapes: up to 1024 lines (a box counts as 12), drawn every frame in order over the world, depth-tested so walls hide them, hidden with the HUD (F1). An empty list removes them. Nothing here is ever drawn on top of everything. |
 | `text-width` | `func(text: string) -> f32` | The width of one line of text in GUI pixels, in the HUD's font: exact for Latin letters (U+0000 to U+024F), 6 per other character. |
 | `frame-stats` | `func() -> frame-rate` | The game's frame counter, recomputed twice a second. |
 | `set-zoom` | `func(zoom: zoom)` | Zooms the camera until the next call (`factor` 1 ends it), only while playing: a screen opening or the spyglass's own view (which wins) leave the camera vanilla's. With several mods, the strongest zoom counts. |
@@ -700,11 +740,28 @@ Capability `world` (manifest `api = "0.3"`, experimental, for server mods; read-
 | `z` | `s32` |  |
 | `state` | `option<string>` | None where no chunk is loaded there. |
 
+### record `light-value`
+
+| Field | Type | |
+| --- | --- | --- |
+| `block` | `u8` | Light from blocks (torches, lava, glowstone, ...), 0 to 15. |
+| `sky` | `u8` | Light from the sky, as stored, 0 to 15; 0 in dimensions without skylight (the Nether). |
+
+### record `light-result`
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `s32` |  |
+| `y` | `s32` |  |
+| `z` | `s32` |  |
+| `light` | `option<light-value>` | None where no chunk is loaded there, where the chunk's light has not been computed yet, or outside the column's build range. Never a guessed value: an unlit chunk would read as full sky light, so it reads as None instead. |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `get-block` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<string>` | The block state at a position in a dimension (`minecraft:overworld`, ...), as `minecraft:oak_log[axis=y]`, as of this call: none where the server has no chunk loaded there. |
 | `get-biome` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<string>` | The biome at a position (`minecraft:plains`, ...), as the server stores it (one per 4 x 4 x 4 cell): none where no chunk is loaded. |
 | `get-blocks` | `func(dimension: string, positions: list<block-pos>) -> list<block-result>` | The block states at `positions`, in the same order, as of this call. At most 4096 positions per call; a call over the cap returns no results. None per position where no chunk is loaded there. This is the only bulk read: do not loop get-block. |
+| `get-lights` | `func(dimension: string, positions: list<block-pos>) -> list<light-result>` | The light at `positions`, in the same order, as of the last completed light job. At most 4096 positions per call; a call over the cap returns no results. None per position where no chunk is loaded there or its light is not computed yet. This is the only bulk light read: do not loop a single read. Tick-only, like `get-blocks`: a frame, chat or command hook reads None. |
 | `set-blocks` | `func(dimension: string, blocks: list<block-change>) -> result<_, string>` | Sets blocks as `/setblock` does: the old block entity removed, neighbours and shapes updated, light, and every player told. Every state is checked now (an error queues nothing); the changes are made in order after this call returns, before that dimension's next tick; one in a chunk not loaded then is skipped. At most 4096 per call. |
 
 ## `inventory`

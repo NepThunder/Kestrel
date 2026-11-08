@@ -25,7 +25,9 @@
 //! `world` — read-only for a client mod, singleplayer in v1; `inventory` —
 //! read-only, the player's own inventory and the open container; `entity` —
 //! read-only, the living mobs around the player and the entity under the
-//! crosshair; a server mod `storage` and `players`). Server mods: [`server`].
+//! crosshair; `render` — its HUD shapes and world lines and boxes
+//! (depth-tested, API level 11); a server mod `storage` and `players`).
+//! Server mods: [`server`].
 //!
 //! Widgets (capability `ui`): a mod shows a screen it owns with
 //! [`ui::open_screen`] and a page in Options > Mods with

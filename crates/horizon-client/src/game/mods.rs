@@ -347,6 +347,7 @@ impl Game<'_> {
     pub(super) fn sync_mods(&mut self) {}
     pub(super) fn tick_mods(&mut self) {}
     pub(super) fn mods_frame(&mut self, _elapsed: Duration) {}
+    pub(super) fn mod_world_lines(&self, _lines: &mut Vec<horizon_client::gizmos::Line>) {}
     pub(super) fn mod_command(&mut self, _command: &str) -> bool {
         false
     }
@@ -430,6 +431,20 @@ impl WorldView for LentClientWorld {
         }
         let chunk = self.columns.get(&(x >> 4, z >> 4))?;
         Some(self.biomes.get(chunk.biome(x, y, z)).name.clone())
+    }
+    fn light(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<(u8, u8)> {
+        if dimension != self.dimension {
+            return None;
+        }
+        let chunk = self.columns.get(&(x >> 4, z >> 4))?;
+        // An unlit column reads as full sky light through every
+        // accessor, and y outside the column reads 0 below / 0xF0
+        // above: neither is stored light, so both read None.
+        if !chunk.lit || y < chunk.min_y() || y >= chunk.max_y() {
+            return None;
+        }
+        let packed = chunk.light(x & 15, y, z & 15);
+        Some((packed & 15, packed >> 4))
     }
     fn has_dimension(&self, dimension: &str) -> bool {
         dimension == self.dimension

@@ -89,7 +89,7 @@ pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, I
 pub use render_bindings::horizon::mods::render::{
     Corner as RenderCorner, FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape,
     Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, Shape, SpriteShape,
-    TextShape, Zoom as ModZoom,
+    TextShape, WorldBox, WorldLine, WorldPoint, WorldShape, Zoom as ModZoom,
 };
 use render_bindings::{RenderHost, horizon::mods::render};
 /// Capability `recipes`'s imports (docs/mods.md): the game's recipes and items.
@@ -289,6 +289,12 @@ pub trait WorldView: std::any::Any + Send {
     fn block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String>;
     /// The biome at a position, `minecraft:plains`; `None` as for blocks.
     fn biome(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String>;
+    /// The light at a position, `(block, sky)`, each 0 to 15; `None`
+    /// where no chunk of that dimension is loaded, its light has not
+    /// been computed yet, or the position is outside the column's
+    /// build range. Never a guessed value: an unlit chunk would read
+    /// as full sky light, so it reads as `None` instead.
+    fn light(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<(u8, u8)>;
     /// Whether `dimension` is one the server has.
     fn has_dimension(&self, dimension: &str) -> bool;
     /// `Err` (why) for a state string that names no block state.
@@ -365,6 +371,8 @@ struct Running {
     reads_inventory: bool,
     /// It imports capability `entity`.
     reads_entities: bool,
+    /// It imports `render.set-world`.
+    reads_world_shapes: bool,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -455,6 +463,8 @@ struct State {
     ui: UiState,
     /// Capability `render`'s HUD shapes, drawn until replaced.
     shapes: Vec<Shape>,
+    /// Capability `render`'s world shapes, drawn until replaced.
+    world_shapes: Vec<WorldShape>,
     /// Capability `render`'s corner panel.
     corner: Option<CornerPanel>,
     /// Capability `render`'s zoom, when the mod zooms.
@@ -666,6 +676,7 @@ impl Mods {
             panel: None,
             ui: UiState::default(),
             shapes: Vec::new(),
+            world_shapes: Vec::new(),
             corner: None,
             zoom: None,
             minimap: None,
@@ -738,6 +749,7 @@ impl Mods {
             reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
             reads_inventory: functions.iter().any(|f| f.starts_with("inventory.")),
             reads_entities: functions.iter().any(|f| f.starts_with("entity.")),
+            reads_world_shapes: functions.iter().any(|f| f == "render.set-world"),
         }))
     }
 
@@ -1292,6 +1304,33 @@ impl Mods {
             .filter_map(|e| e.run.as_ref())
             .flat_map(|r| &r.store.data().shapes)
     }
+    /// Some running mod draws world shapes (`render.set-world`): the game
+    /// drains them into the frame's depth-tested lines. Any mod importing
+    /// `render` sets this — [`api_level::imports`] lists every function
+    /// of an imported interface — so the gate saves work only while no
+    /// render mod runs at all.
+    pub fn wants_world_shapes(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.reads_world_shapes))
+    }
+    /// The running mods' world shapes (capability `render`), each mod's
+    /// in its own order, mods in load order.
+    pub fn world_shapes(&self) -> impl Iterator<Item = &WorldShape> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .flat_map(|r| &r.store.data().world_shapes)
+    }
+    /// The running mods' world shapes as depth-tested lines, in the same
+    /// order: one line per line, a box's twelve edges.
+    pub fn world_lines(&self) -> Vec<WorldDrawLine> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .flat_map(|r| world_shape_lines(&r.store.data().world_shapes))
+            .collect()
+    }
     /// The screen mod `i` last pushed with `ui.open-screen`, while it is up.
     pub fn screen(&self, i: usize) -> Option<&UiScreen> {
         self.entries
@@ -1706,6 +1745,19 @@ impl State {
             .map(|&(x, y, z)| view.block(dimension, x, y, z))
             .collect()
     }
+    /// The light at `positions`, in order, as [`State::view_blocks`].
+    fn view_lights(&self, dimension: &str, positions: &[(i32, i32, i32)]) -> Vec<Option<(u8, u8)>> {
+        let Ok(view) = self.world.lock() else {
+            return positions.iter().map(|_| None).collect();
+        };
+        let Some(view) = view.as_ref() else {
+            return positions.iter().map(|_| None).collect();
+        };
+        positions
+            .iter()
+            .map(|&(x, y, z)| view.light(dimension, x, y, z))
+            .collect()
+    }
     /// `set-blocks`, shared by the client and server hosts: a client mod
     /// is refused outright and queues nothing; a server mod's changes are
     /// checked now and queued for the game to apply after the call.
@@ -1766,6 +1818,26 @@ impl mod_world::Host for State {
                 y: p.y,
                 z: p.z,
                 state,
+            })
+            .collect()
+    }
+    fn get_lights(
+        &mut self,
+        dimension: String,
+        positions: Vec<mod_world::BlockPos>,
+    ) -> Vec<mod_world::LightResult> {
+        if positions.len() > BLOCKS_PER_CALL {
+            return Vec::new();
+        }
+        let at: Vec<(i32, i32, i32)> = positions.iter().map(|p| (p.x, p.y, p.z)).collect();
+        self.view_lights(&dimension, &at)
+            .into_iter()
+            .zip(positions)
+            .map(|(light, p)| mod_world::LightResult {
+                x: p.x,
+                y: p.y,
+                z: p.z,
+                light: light.map(|(block, sky)| mod_world::LightValue { block, sky }),
             })
             .collect()
     }
@@ -1925,6 +1997,15 @@ impl input::Host for State {
 
 /// HUD shapes one mod may keep (capability `render`).
 const SHAPES: usize = 1024;
+/// World-shape lines one mod may keep (capability `render`): a box
+/// counts as its twelve edges.
+pub const WORLD_SHAPE_LINES: usize = 1024;
+/// A world line's width in pixels.
+pub const WORLD_LINE_WIDTH: (f32, f32) = (0.5, 8.0);
+
+/// One depth-tested world line, as the game's gizmos draw it: the ends
+/// in blocks, a 0xAARRGGBB colour, a width in pixels.
+pub type WorldDrawLine = ([f64; 3], [f64; 3], u32, f32);
 /// The longest jolt `render.shake` makes, in seconds.
 const SHAKE_SECONDS: f32 = 10.0;
 /// `render.set-zoom`'s limits: `Camera.tickFov` keeps the modifier at 0.1
@@ -1975,9 +2056,108 @@ fn clip_shapes(shapes: Vec<Shape>) -> Vec<Shape> {
         .collect()
 }
 
+/// The twelve edges of a world box, in `CuboidGizmo.emit`'s order — the
+/// same order `horizon_client::gizmos::Gizmos::cuboid` draws them.
+fn box_edges(min: [f64; 3], max: [f64; 3]) -> [([f64; 3], [f64; 3]); 12] {
+    let [x0, y0, z0] = min;
+    let [x1, y1, z1] = max;
+    [
+        ([x0, y0, z0], [x1, y0, z0]),
+        ([x0, y0, z0], [x0, y1, z0]),
+        ([x0, y0, z0], [x0, y0, z1]),
+        ([x1, y0, z0], [x1, y1, z0]),
+        ([x1, y1, z0], [x0, y1, z0]),
+        ([x0, y1, z0], [x0, y1, z1]),
+        ([x0, y1, z1], [x0, y0, z1]),
+        ([x0, y0, z1], [x1, y0, z1]),
+        ([x1, y0, z1], [x1, y0, z0]),
+        ([x0, y1, z1], [x1, y1, z1]),
+        ([x1, y0, z1], [x1, y1, z1]),
+        ([x1, y1, z0], [x1, y1, z1]),
+    ]
+}
+
+/// Clips a `render.set-world` submission to the line budget (a box
+/// counts 12): shapes past the budget are dropped, not rejected, and a
+/// shape that does not fit is skipped while a later cheaper one still
+/// fits. Non-finite coordinates drop the shape (a NaN end would poison
+/// the vertex buffer); widths clamp to [`WORLD_LINE_WIDTH`], a
+/// non-finite one reading 1.
+fn clip_world_shapes(shapes: Vec<WorldShape>) -> Vec<WorldShape> {
+    let mut budget = WORLD_SHAPE_LINES;
+    let mut out = Vec::new();
+    let width = |w: f32| {
+        if w.is_finite() {
+            w.clamp(WORLD_LINE_WIDTH.0, WORLD_LINE_WIDTH.1)
+        } else {
+            1.0
+        }
+    };
+    let point_ok = |p: &WorldPoint| p.x.is_finite() && p.y.is_finite() && p.z.is_finite();
+    for shape in shapes {
+        let cost = match &shape {
+            WorldShape::Line(_) => 1,
+            WorldShape::Box(_) => 12,
+        };
+        if cost > budget {
+            continue;
+        }
+        let shape = match shape {
+            WorldShape::Line(mut l) => {
+                if !point_ok(&l.start) || !point_ok(&l.end) {
+                    continue;
+                }
+                l.width = width(l.width);
+                WorldShape::Line(l)
+            }
+            WorldShape::Box(mut b) => {
+                if !point_ok(&b.min) || !point_ok(&b.max) {
+                    continue;
+                }
+                b.width = width(b.width);
+                WorldShape::Box(b)
+            }
+        };
+        budget -= cost;
+        out.push(shape);
+    }
+    out
+}
+
+/// A mod's world shapes as depth-tested lines: one line per line, a
+/// box's twelve edges in [`box_edges`] order. This is the expansion the
+/// game drains into the frame's lines, so the sandbox's edge-order
+/// check covers the real drain.
+pub fn world_shape_lines(shapes: &[WorldShape]) -> Vec<WorldDrawLine> {
+    let mut out = Vec::new();
+    for shape in shapes {
+        match shape {
+            WorldShape::Line(l) => out.push((
+                [l.start.x, l.start.y, l.start.z],
+                [l.end.x, l.end.y, l.end.z],
+                l.color,
+                l.width,
+            )),
+            WorldShape::Box(b) => {
+                let min = [b.min.x, b.min.y, b.min.z];
+                let max = [b.max.x, b.max.y, b.max.z];
+                out.extend(
+                    box_edges(min, max)
+                        .iter()
+                        .map(|&(start, end)| (start, end, b.color, b.width)),
+                );
+            }
+        }
+    }
+    out
+}
+
 impl render::Host for State {
     fn set_hud(&mut self, shapes: Vec<Shape>) {
         self.shapes = clip_shapes(shapes);
+    }
+    fn set_world(&mut self, shapes: Vec<WorldShape>) {
+        self.world_shapes = clip_world_shapes(shapes);
     }
     fn set_corner(&mut self, corner: RenderCorner, width: f32, height: f32, shapes: Vec<Shape>) {
         let size = |v: f32| {
@@ -2186,6 +2366,9 @@ mod tests {
         fn biome(&self, _dimension: &str, _x: i32, _y: i32, _z: i32) -> Option<String> {
             Some(self.0.to_string())
         }
+        fn light(&self, _dimension: &str, _x: i32, _y: i32, _z: i32) -> Option<(u8, u8)> {
+            Some((0, 0))
+        }
         fn has_dimension(&self, _dimension: &str) -> bool {
             true
         }
@@ -2294,5 +2477,103 @@ mod tests {
     fn reset_keys_of_a_mod_that_isnt_running_is_false() {
         let mut mods = Mods::default();
         assert!(!mods.reset_keys(0));
+    }
+
+    fn world_point(x: f64, y: f64, z: f64) -> WorldPoint {
+        WorldPoint { x, y, z }
+    }
+    fn world_line(width: f32) -> WorldShape {
+        WorldShape::Line(WorldLine {
+            start: world_point(0.0, 64.0, 0.0),
+            end: world_point(1.0, 64.0, 0.0),
+            color: 0xFF00_FF00,
+            width,
+        })
+    }
+    fn world_box(width: f32) -> WorldShape {
+        WorldShape::Box(WorldBox {
+            min: world_point(0.0, 64.0, 0.0),
+            max: world_point(1.0, 65.0, 1.0),
+            color: 0xFFFF_0000,
+            width,
+        })
+    }
+
+    /// A `set-world` submission clips to the line budget (a box counts
+    /// 12), dropping past it rather than refusing it, while a cheaper
+    /// shape after the cut still fits: 200 boxes leave 85 (1020 lines)
+    /// and the line after them makes 1021.
+    #[test]
+    fn world_shapes_clip_to_the_line_budget() {
+        let mut shapes: Vec<WorldShape> = (0..200).map(|_| world_box(1.0)).collect();
+        shapes.push(world_line(1.0));
+        let clipped = clip_world_shapes(shapes);
+        assert_eq!(clipped.len(), 86);
+        assert_eq!(world_shape_lines(&clipped).len(), 1021);
+    }
+
+    /// Widths clamp to 0.5–8, a non-finite one reading 1, and a shape
+    /// with a non-finite coordinate is dropped, not drawn.
+    #[test]
+    fn world_shapes_clamp_widths_and_drop_non_finite_coordinates() {
+        let clipped = clip_world_shapes(vec![
+            world_line(0.1),
+            world_line(99.0),
+            world_line(f32::NAN),
+        ]);
+        let widths: Vec<f32> = clipped
+            .iter()
+            .map(|s| match s {
+                WorldShape::Line(l) => l.width,
+                WorldShape::Box(_) => unreachable!(),
+            })
+            .collect();
+        assert_eq!(widths, vec![0.5, 8.0, 1.0]);
+        let nan = WorldShape::Line(WorldLine {
+            start: world_point(f64::NAN, 64.0, 0.0),
+            end: world_point(1.0, 64.0, 0.0),
+            color: 0xFF00_FF00,
+            width: 1.0,
+        });
+        assert!(clip_world_shapes(vec![nan]).is_empty());
+    }
+
+    /// A box expands to its twelve edges in `CuboidGizmo.emit`'s order:
+    /// the three from the min corner, then round the box.
+    #[test]
+    fn a_world_box_expands_to_its_twelve_edges_in_cuboid_order() {
+        let boxed = WorldShape::Box(WorldBox {
+            min: world_point(0.0, 0.0, 0.0),
+            max: world_point(1.0, 2.0, 3.0),
+            color: 0xFFFF_0000,
+            width: 2.0,
+        });
+        let lines = world_shape_lines(std::slice::from_ref(&boxed));
+        let edges: Vec<([f64; 3], [f64; 3])> = lines
+            .iter()
+            .map(|(start, end, _, _)| (*start, *end))
+            .collect();
+        assert_eq!(
+            edges,
+            vec![
+                ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+                ([0.0, 0.0, 0.0], [0.0, 2.0, 0.0]),
+                ([0.0, 0.0, 0.0], [0.0, 0.0, 3.0]),
+                ([1.0, 0.0, 0.0], [1.0, 2.0, 0.0]),
+                ([1.0, 2.0, 0.0], [0.0, 2.0, 0.0]),
+                ([0.0, 2.0, 0.0], [0.0, 2.0, 3.0]),
+                ([0.0, 2.0, 3.0], [0.0, 0.0, 3.0]),
+                ([0.0, 0.0, 3.0], [1.0, 0.0, 3.0]),
+                ([1.0, 0.0, 3.0], [1.0, 0.0, 0.0]),
+                ([0.0, 2.0, 3.0], [1.0, 2.0, 3.0]),
+                ([1.0, 0.0, 3.0], [1.0, 2.0, 3.0]),
+                ([1.0, 2.0, 0.0], [1.0, 2.0, 3.0]),
+            ]
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|(_, _, color, width)| *color == 0xFFFF_0000 && *width == 2.0)
+        );
     }
 }

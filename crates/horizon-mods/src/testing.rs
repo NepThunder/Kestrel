@@ -9,7 +9,7 @@
 //! saying what happens and what the mod must have shown by then.
 use crate::{
     BlockPos, Clock, Container, Corner, Entity, GameMode, InvStack, Mods, Output, Panel, Player,
-    PlayerInventory, ServerPlayer, Snapshot, Status, Target,
+    PlayerInventory, ServerPlayer, Snapshot, Status, Target, WorldDrawLine,
 };
 use serde::Deserialize;
 use std::{
@@ -54,15 +54,23 @@ pub struct TestGame {
     /// changed; every other block, and the other dimensions, are air. Every
     /// biome is the dimension's plainest: plains, nether wastes, the end.
     pub world: std::collections::BTreeMap<(i32, i32, i32), String>,
+    /// Capability `world`'s Overworld light: the `(block, sky)` a script
+    /// set, each 0 to 15; every other position reads `None` — unloaded,
+    /// unlit, or outside the build range — as the game reads it.
+    pub lights: std::collections::BTreeMap<(i32, i32, i32), (u8, u8)>,
 }
 
-/// The world a script's mod reads: [`TestGame::world`], copied for a step.
-struct ScriptWorld(std::collections::BTreeMap<(i32, i32, i32), String>);
+/// The world a script's mod reads: [`TestGame::world`] and
+/// [`TestGame::lights`], copied for a step.
+struct ScriptWorld {
+    blocks: std::collections::BTreeMap<(i32, i32, i32), String>,
+    lights: std::collections::BTreeMap<(i32, i32, i32), (u8, u8)>,
+}
 
 impl crate::WorldView for ScriptWorld {
     fn block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String> {
         let here = (dimension == "minecraft:overworld")
-            .then(|| self.0.get(&(x, y, z)).cloned())
+            .then(|| self.blocks.get(&(x, y, z)).cloned())
             .flatten();
         Some(here.unwrap_or_else(|| "minecraft:air".into()))
     }
@@ -74,6 +82,15 @@ impl crate::WorldView for ScriptWorld {
             _ => return None,
         };
         Some(biome.into())
+    }
+    fn light(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<(u8, u8)> {
+        // Only the lent Overworld answers, and only inside its build
+        // range (-64..320); a position with no fixture light is
+        // unloaded or unlit, and reads None like the game's.
+        if dimension != "minecraft:overworld" || !(-64..320).contains(&y) {
+            return None;
+        }
+        self.lights.get(&(x, y, z)).copied()
     }
     fn has_dimension(&self, dimension: &str) -> bool {
         matches!(
@@ -151,6 +168,7 @@ impl TestGame {
             multiplayer: false,
             dead: false,
             world: Default::default(),
+            lights: Default::default(),
         };
         copy_mod(kmod, &copy)?;
         game.start()?;
@@ -394,6 +412,11 @@ impl TestGame {
     pub fn panel(&self) -> Option<&Panel> {
         self.mods.panels().next()
     }
+    /// The running mod's world shapes as depth-tested lines (capability
+    /// `render`): what the game would draw this frame.
+    pub fn world_lines(&self) -> Vec<WorldDrawLine> {
+        self.mods.world_lines()
+    }
     pub fn status(&self) -> &Status {
         &self.mods.entries()[0].status
     }
@@ -482,6 +505,17 @@ pub struct BlockSet {
     y: i32,
     z: i32,
     state: String,
+}
+
+/// One position's light, as a step sets it (capability `world`).
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct LightSet {
+    x: i32,
+    y: i32,
+    z: i32,
+    block: u8,
+    sky: u8,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -647,7 +681,7 @@ impl EntitySet {
 }
 
 /// One step. Its parts happen in this order: `reload`, `title-screen`,
-/// `blocks`, `join`, `player`, `clock`, `inventory`, `container`,
+/// `blocks`, `lights`, `join`, `player`, `clock`, `inventory`, `container`,
 /// `close-container`, `dead`, `entities`, `multiplayer`, `ticks`,
 /// `frames`, `chat`, `command`, `break`, `place`, `leave`; then the blocks the mod set are made, and `expect`
 /// is checked against what the mod showed and changed during the step.
@@ -701,6 +735,10 @@ pub struct Step {
     /// `world`); every other block is air.
     #[serde(default)]
     blocks: Vec<BlockSet>,
+    /// Light of the Overworld before the rest of the step (capability
+    /// `world`); every other position reads `None`.
+    #[serde(default)]
+    lights: Vec<LightSet>,
     #[serde(default)]
     expect: Expect,
 }
@@ -723,6 +761,10 @@ pub struct Expect {
     /// The panel's lines (`[]`: no panel) and its corner.
     panel: Option<Vec<String>>,
     corner: Option<String>,
+    /// The mod's world shapes as depth-tested lines (`render.set-world`),
+    /// each as (start x, y, z, end x, y, z, colour, width): a box is its
+    /// twelve edges, in `CuboidGizmo.emit`'s order.
+    world_lines: Option<Vec<(f64, f64, f64, f64, f64, f64, u32, f32)>>,
     /// Blocks of the Overworld after the step, the mod's changes made
     /// (capability `world`).
     blocks: Option<Vec<BlockSet>>,
@@ -851,8 +893,13 @@ impl Step {
         for b in &self.blocks {
             game.world.insert((b.x, b.y, b.z), b.state.clone());
         }
-        game.mods
-            .lend_world(Box::new(ScriptWorld(game.world.clone())));
+        for l in &self.lights {
+            game.lights.insert((l.x, l.y, l.z), (l.block, l.sky));
+        }
+        game.mods.lend_world(Box::new(ScriptWorld {
+            blocks: game.world.clone(),
+            lights: game.lights.clone(),
+        }));
         if let Some(name) = &self.join {
             game.join(name);
         }
@@ -1029,6 +1076,14 @@ impl Step {
                 .map(|p| p.lines.iter().map(|l| l.text.clone()).collect())
                 .unwrap_or_default();
             same("panel", want, &got)?;
+        }
+        if let Some(want) = &e.world_lines {
+            let got: Vec<(f64, f64, f64, f64, f64, f64, u32, f32)> = game
+                .world_lines()
+                .into_iter()
+                .map(|(s, e, c, w)| (s[0], s[1], s[2], e[0], e[1], e[2], c, w))
+                .collect();
+            same("world-lines", want, &got)?;
         }
         if let Some(want) = &e.blocks {
             for b in want {

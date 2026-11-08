@@ -191,6 +191,8 @@ mod mod_inventory;
 #[cfg(feature = "mods")]
 mod mod_panel;
 mod mod_render;
+#[cfg(feature = "mods")]
+mod mod_world_shapes;
 mod mods;
 mod mount_menu;
 mod mounts;
@@ -14997,6 +14999,9 @@ impl Game<'_> {
         let mut lines = self.fishing_line(alpha, size);
         let g = self.debug_gizmos(alpha as f32, camera.to_array());
         lines.extend(g.lines);
+        // Capability `render`'s world shapes (`render.set-world`): the
+        // mods' lines and boxes, depth-tested, hidden with the HUD.
+        self.mod_world_lines(&mut lines);
         let on_top = g.on_top;
         let colored_lights = if self.title.is_none() {
             self.native_frame_visuals(camera, &mut lines)
