@@ -1550,7 +1550,7 @@ impl Catalog {
         self.scroll = 0.0;
         let source = match self.page {
             Page::Packs => browser::SourceId::Modrinth,
-            Page::Shaders => self.config.shader_source.source(),
+            Page::Shaders => self.effective_shader_source().source(),
             Page::Mods => self.config.mod_source.source(),
             _ => browser::SourceId::Horizon,
         };
@@ -1564,10 +1564,19 @@ impl Catalog {
         }
         self.start_search();
     }
+    /// The shader source actually searched on the Shaders page. Modrinth
+    /// only, while the Horizon shaders tab is hidden (the registry index
+    /// is Kestrel's, mods only, so Horizon lists no shaders). Restore
+    /// `self.config.shader_source` here when the Horizon shaders are
+    /// ported to Android/Kestrel.
+    pub(crate) fn effective_shader_source(&self) -> crate::shader_catalog::Origin {
+        crate::shader_catalog::Origin::Modrinth
+    }
+
     fn show_results(&mut self, items: Vec<Project>) {
         self.status = if self.page == Page::Shaders
             && items.is_empty()
-            && self.config.shader_source == crate::shader_catalog::Origin::Horizon
+            && self.effective_shader_source() == crate::shader_catalog::Origin::Horizon
         {
             "No Horizon shader packs match this search. Try another query or import a .hshader."
                 .into()

@@ -1496,23 +1496,34 @@ impl Launcher {
             if matches!(page, Page::Shaders | Page::Mods) {
                 use crate::shader_catalog::Origin;
                 let seg_w = 100.0;
-                for (i, origin) in [Origin::Horizon, Origin::Modrinth].into_iter().enumerate() {
-                    let rx = content_x + content_w - (2 - i) as f32 * (seg_w + 6.0) + 6.0;
+                // The Horizon shaders tab is hidden for now: the registry
+                // index is Kestrel's (mods only), so Horizon lists no
+                // shaders; Modrinth covers shaders until the Horizon
+                // shaders are ported to Android/Kestrel. Restore
+                // Origin::Horizon here to show the tab again.
+                let origins: &[Origin] = if page == Page::Shaders {
+                    &[Origin::Modrinth]
+                } else {
+                    &[Origin::Horizon, Origin::Modrinth]
+                };
+                let n = origins.len();
+                for (i, origin) in origins.iter().enumerate() {
+                    let rx = content_x + content_w - (n - i) as f32 * (seg_w + 6.0) + 6.0;
                     let rect = [rx, header_y - 2.0, seg_w, 30.0];
                     let active = (if page == Page::Mods {
                         self.catalog.config.mod_source
                     } else {
-                        self.catalog.config.shader_source
-                    }) == origin;
+                        self.catalog.effective_shader_source()
+                    }) == *origin;
                     button(
                         &mut ui,
                         &mut self.targets,
                         rect,
                         origin.source().label(),
                         if page == Page::Mods {
-                            Action::ModSource(origin)
+                            Action::ModSource(*origin)
                         } else {
-                            Action::ShaderSource(origin)
+                            Action::ShaderSource(*origin)
                         },
                         active,
                     );
