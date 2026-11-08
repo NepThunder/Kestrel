@@ -88,6 +88,17 @@ mod run {
             let chunk = chunks.get(&(x >> 4, z >> 4))?;
             Some(self.biomes.get(chunk.biome(x, y, z)).name.clone())
         }
+        fn light(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<(u8, u8)> {
+            let (_, chunks) = self.dims.iter().find(|(d, _)| *d == dimension)?;
+            let chunk = chunks.get(&(x >> 4, z >> 4))?;
+            // As the client's view: unlit columns and y outside the
+            // column read None, never the phantom full-sky value.
+            if !chunk.lit || y < chunk.min_y() || y >= chunk.max_y() {
+                return None;
+            }
+            let packed = chunk.light(x & 15, y, z & 15);
+            Some((packed & 15, packed >> 4))
+        }
         fn has_dimension(&self, dimension: &str) -> bool {
             matches!(
                 dimension,
