@@ -83,7 +83,7 @@ impl Kind {
 pub enum SourceId {
     Modrinth,
     CurseForge,
-    /// Horizon's own registry of reviewed mods, modpacks and resource packs ([`horizon`]).
+    /// Kestrel's own registry of reviewed mods ([`horizon`]).
     Horizon,
 }
 
@@ -92,7 +92,7 @@ impl SourceId {
         match self {
             SourceId::Modrinth => "Modrinth",
             SourceId::CurseForge => "CurseForge",
-            SourceId::Horizon => "Horizon",
+            SourceId::Horizon => "Kestrel",
         }
     }
 }

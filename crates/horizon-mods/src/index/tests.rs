@@ -1,5 +1,5 @@
 //! The sample index (`tests/index/index-v1.json`, the one docs/api/mod-index.md
-//! shows) and its files: `coords_hud-0.1.0.hmod`, signed with the throwaway
+//! shows) and its files: `coords_hud-0.1.0.kmod`, signed with the throwaway
 //! key `test.pub` by minisign 0.12 (its secret key was deleted),
 //! `cozy-1.0.0.hpack`, unsigned, and `glow-1.0.0.hshader`, unsigned
 //! (`horizon-shader new --template post`, then `horizon-shader pack`).
@@ -47,7 +47,7 @@ fn reads_the_sample_and_keeps_unknown_kinds() {
 #[test]
 fn files_pass_against_their_entries() {
     let index = sample();
-    let hmod = fixtures().join("coords_hud-0.1.0.hmod");
+    let hmod = fixtures().join("coords_hud-0.1.0.kmod");
     assert_eq!(check(&index, "coords_hud", &hmod), Ok(Trust::Verified));
     let hpack = fixtures().join("cozy-1.0.0.hpack");
     assert_eq!(check(&index, "cozy", &hpack), Ok(Trust::Unsigned));
@@ -63,11 +63,11 @@ fn a_changed_file_key_or_manifest_is_refused() {
     let index = sample();
     let dir = std::env::temp_dir().join(format!("horizon-index-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let hmod = fixtures().join("coords_hud-0.1.0.hmod");
+    let hmod = fixtures().join("coords_hud-0.1.0.kmod");
     let mut bytes = std::fs::read(&hmod).unwrap();
     let last = bytes.len() - 1;
     bytes[last] ^= 1;
-    let tampered = dir.join("coords_hud-0.1.0.hmod");
+    let tampered = dir.join("coords_hud-0.1.0.kmod");
     std::fs::write(&tampered, &bytes).unwrap();
     let e = check(&index, "coords_hud", &tampered).unwrap_err();
     assert!(e.contains("SHA-256"), "{e}");

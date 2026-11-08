@@ -1297,7 +1297,7 @@ impl Catalog {
         self.start_search();
     }
     fn fetch_icons(&mut self, home: &Path) {
-        // Collect both direct icon URLs and Horizon/bundled items that need a Modrinth name search
+        // Collect both direct icon URLs and Kestrel/bundled items that need a Modrinth name search
         // for their PFP and description.
         let mut tasks: Vec<(String, String, Option<String>, Kind)> = Vec::new();
         if self.page == Page::Mods
@@ -1432,7 +1432,7 @@ impl Catalog {
                 }
             }
 
-            // For Horizon list items (or bundled mods), search Modrinth by the project's name
+            // For Kestrel list items (or bundled mods), search Modrinth by the project's name
             // to enrich with Modrinth's full description, PFP icon, and gallery screenshots!
             if project.source == browser::SourceId::Horizon
                 || gallery.is_empty()
@@ -1580,7 +1580,7 @@ impl Catalog {
             )
         } else if self.page == Page::Mods {
             format!(
-                "{} Horizon mods available (playhorizon.dev/mods) - select Install to download",
+                "{} Kestrel mods available (github.com/NepThunder/Kestrel-mods) - select Install to download",
                 items.len()
             )
         } else {

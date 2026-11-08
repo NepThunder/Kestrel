@@ -353,8 +353,8 @@ pub fn project(entry: &Entry, src: &Sources) -> Result<Project, Vec<String>> {
     let mut versions = Vec::new();
     for v in &entry.versions {
         match version(entry, v, src) {
-            // A mod that turned native keeps its `.hmod` versions published, but the index offers
-            // only its native ones: a launcher never installs a `.hmod` as a native mod.
+            // A mod that turned native keeps its `.kmod` versions published, but the index offers
+            // only its native ones: a launcher never installs a `.kmod` as a native mod.
             Ok(_) if file_kind(entry, v) != entry.kind => {}
             Ok(v) => versions.push(v),
             Err(e) => errors.push(format!("{id} {}: {e}", v.version)),
@@ -384,11 +384,11 @@ pub fn project(entry: &Entry, src: &Sources) -> Result<Project, Vec<String>> {
     })
 }
 
-/// The kind of a version's file: the project's, but a `.hmod` of a mod that turned native
+/// The kind of a version's file: the project's, but a `.kmod` of a mod that turned native
 /// (`review`) is a WebAssembly mod's.
 fn file_kind(entry: &Entry, v: &EntryVersion) -> Kind {
     match entry.kind {
-        Kind::NativeMod if v.file.ends_with(".hmod") => Kind::Mod,
+        Kind::NativeMod if v.file.ends_with(".kmod") => Kind::Mod,
         _ => entry.kind.clone(),
     }
 }
@@ -622,7 +622,7 @@ pub fn review(base: &[Entry], head: &[Entry], author: &str) -> Review {
         }
         if (&old.kind, &new.kind) == (&Kind::Mod, &Kind::NativeMod) {
             r.notes.push(format!(
-                "{}: turns native; its .hmod versions stay published, and launchers keep the installed copies",
+                "{}: turns native; its .kmod versions stay published, and launchers keep the installed copies",
                 old.id
             ));
         } else if new.kind != old.kind {

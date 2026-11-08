@@ -32,8 +32,8 @@
           "api_level": 0,
           "game": "26.3",
           "file": {
-            "name": "coords_hud-0.1.0.hmod",
-            "url": "https://github.com/horizon-rust/horizon-mods/releases/download/coords_hud-0.1.0/coords_hud-0.1.0.hmod",
+            "name": "coords_hud-0.1.0.kmod",
+            "url": "https://github.com/horizon-rust/horizon-mods/releases/download/coords_hud-0.1.0/coords_hud-0.1.0.kmod",
             "size": 438,
             "sha256": "e1135345692f6dd8fd4c51920151944b82333e17049c9bb7d756f27b8deefc53",
             "signature": "untrusted comment: signature from minisign secret key\nRUTVtuGb/GRXcIa5yCyCHFGFt55tj3T/FLUDv3ecNLVNNiQqQu7xyBrfc3wsvMHmudsEq6yr+QF21XN3+hnr/Ged3ULr5rv3zgE=\ntrusted comment: coords_hud 0.1.0\nIESQkJdTzLOvWegcGFxOMrQbnwJp2OKSSxoCKAxdfwyRb+9atdF+Q5/OpbdYurMnrNN1X1ybb43AszPVecdiCw==\n"

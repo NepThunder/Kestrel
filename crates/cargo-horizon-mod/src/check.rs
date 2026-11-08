@@ -323,9 +323,9 @@ mod tests {
                 .contains("cozy 1.0.0 (modpack, format 1, for 26.3)")
         );
         // The fixture mod's code is a stand-in: its manifest reads, its run fails.
-        let hmod = fixture("coords_hud-0.1.0.hmod");
+        let hmod = fixture("coords_hud-0.1.0.kmod");
         let key = std::fs::read_to_string(fixture("test.pub")).unwrap();
-        let sig = std::fs::read_to_string(fixture("coords_hud-0.1.0.hmod.minisig")).unwrap();
+        let sig = std::fs::read_to_string(fixture("coords_hud-0.1.0.kmod.minisig")).unwrap();
         let key = key.lines().last().unwrap();
         let e = check(&hmod, Kind::Mod, Some(key), Some(&sig))
             .err()

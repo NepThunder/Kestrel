@@ -1,5 +1,5 @@
-//! Horizon's own registry (docs/api/mod-index.md): mods, modpacks and resource packs made for
-//! Horizon, reviewed as pull requests in horizon-rust/horizon-mods. One file lists them all,
+//! Kestrel's own registry (docs/api/mod-index.md): mods made for
+//! Kestrel, listed in NepThunder/Kestrel-mods. One file lists them all,
 //! `index.json`; every download is checked against it before it reaches the game folder
 //! (`horizon_mods::index::check_file`: size, SHA-256, the author's signature, the file's own
 //! manifest), and files the index says were taken down are refused and turned off.
@@ -15,12 +15,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Where the registry publishes its index (GitHub Pages of horizon-rust/horizon-mods).
-pub const INDEX_URL: &str = "https://horizon-rust.github.io/horizon-mods/index.json";
-/// The registry's pages on the website, `<SITE>/<id>`.
-const SITE: &str = "https://playhorizon.dev/mods";
+/// Where the registry publishes its index (the raw `index.json` of NepThunder/Kestrel-mods).
+pub const INDEX_URL: &str = "https://raw.githubusercontent.com/NepThunder/Kestrel-mods/main/index.json";
+/// The registry's repository, where each project's release page lives.
+const SITE: &str = "https://github.com/NepThunder/Kestrel-mods";
 /// The report form of a project.
-const REPORT: &str = "https://github.com/horizon-rust/horizon-mods/issues/new?template=report.yml";
+const REPORT: &str = "https://github.com/NepThunder/Kestrel-mods/issues/new";
 /// The loader name the browser gives registry versions, so `support` and `pick` know them.
 pub const LOADER: &str = "horizon";
 /// How long a fetched index is used before it is fetched again.
@@ -226,13 +226,13 @@ fn kind_of(kind: &index::Kind) -> Option<Kind> {
     }
 }
 
-/// Where the registry's mod policy is: who owns and answers for a project, takedowns.
-pub const POLICY: &str = "https://playhorizon.dev/mods/policy";
+/// Where the registry lives: who owns and answers for a project, takedowns.
+pub const POLICY: &str = "https://github.com/NepThunder/Kestrel-mods";
 
-/// Whether the Horizon project made `p` (the mod policy's "Official": author Horizon, source in
-/// the horizon-rust organisation).
+/// Whether the Kestrel project made `p` (the mod policy's "Official": author NepThunder, source in
+/// the NepThunder account).
 pub fn official(p: &index::Project) -> bool {
-    p.authors == ["Horizon"] && p.source.starts_with("https://github.com/horizon-rust/")
+    p.authors == ["NepThunder"] && p.source.starts_with("https://github.com/NepThunder/")
 }
 
 /// What the player reads about a registry project before installing it: who made it, whether its
@@ -246,10 +246,10 @@ pub fn trust_and_capabilities(id: &str) -> Vec<String> {
         return Vec::new();
     };
     let mut lines = vec![if official(p) {
-        "Made by Horizon".to_owned()
+        "Made by Kestrel".to_owned()
     } else {
         format!(
-            "Made by {}. Not made or endorsed by the Horizon project ({POLICY})",
+            "Made by {}. Not made or endorsed by Kestrel ({POLICY})",
             p.authors.join(", ")
         )
     }];
@@ -293,7 +293,10 @@ fn project_of(p: &index::Project) -> Option<Project> {
         summary: p.summary.clone(),
         author: p.authors.join(", "),
         downloads: p.downloads,
-        page: format!("{SITE}/{}", p.id),
+        page: match p.versions.first().and_then(|v| release_tag(&v.file.url)) {
+            Some(tag) => format!("{SITE}/releases/tag/{tag}"),
+            None => SITE.to_owned(),
+        },
         icon: p.icon.clone(),
         license: p.license.clone(),
         kind: kind_of(&p.kind)?,
@@ -339,6 +342,22 @@ fn version_of(
             .map(|r| format!("taken down: {}", r.reason))
             .or_else(|| needs_newer(v, level).then(|| NEEDS_NEWER.to_string())),
     }
+}
+
+/// The release tag of a registry file URL
+/// (`https://github.com/<owner>/<repo>/releases/download/<tag>/<name>`): a tag is
+/// the release's own name, not always `<id>-<version>` (Kestrel's releases are
+/// named for the mod, e.g. `coordinates-hud-0.1.0`). None for any other shape,
+/// whose project page is the registry itself.
+fn release_tag(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix("https://github.com/")?;
+    let mut parts = rest.split('/');
+    let _owner = parts.next()?;
+    let _repo = parts.next()?;
+    if parts.next() != Some("releases") || parts.next() != Some("download") {
+        return None;
+    }
+    parts.next()
 }
 
 /// A GitHub login as GitHub allows it (letters, digits, single dashes, at most 39), so an index
@@ -396,10 +415,10 @@ impl Source for Registry {
         let index = index()?;
         let p = index
             .project(id)
-            .ok_or_else(|| format!("{id} isn't in Horizon's registry."))?;
+            .ok_or_else(|| format!("{id} isn't in Kestrel's registry."))?;
         project_of(p).ok_or_else(|| {
             format!(
-                "{} is a {} in Horizon's registry: this launcher can't install those yet.",
+                "{} is a {} in Kestrel's registry: this launcher can't install those yet.",
                 p.name,
                 p.kind.name()
             )
@@ -410,7 +429,7 @@ impl Source for Registry {
         let index = index()?;
         let p = index
             .project(&project.id)
-            .ok_or_else(|| format!("{} isn't in Horizon's registry.", project.title))?;
+            .ok_or_else(|| format!("{} isn't in Kestrel's registry.", project.title))?;
         let level = crate::backend::game_mod_api_level();
         Ok(p.versions
             .iter()
@@ -423,7 +442,7 @@ impl Source for Registry {
         let index = index()?;
         let p = index
             .project(&project.id)
-            .ok_or_else(|| format!("{} isn't in Horizon's registry.", project.title))?;
+            .ok_or_else(|| format!("{} isn't in Kestrel's registry.", project.title))?;
         let newest = p.versions.first();
         let mut body = p.description.clone();
         if let Some(v) = newest.filter(|v| !v.capabilities.is_empty()) {
@@ -534,7 +553,7 @@ fn relative(kind: Kind, id: &str, file_name: &str) -> Result<String, String> {
         Kind::ResourcePack => Ok(format!("resourcepacks/{file_name}")),
         Kind::Shader => Ok(format!("shaderpacks/{file_name}")),
         Kind::Modpack => Err("A modpack installs as its own profile (pack::install).".into()),
-        Kind::DataPack => Err("Horizon's registry has no data packs.".into()),
+        Kind::DataPack => Err("Kestrel's registry has no data packs.".into()),
     }
 }
 
@@ -562,7 +581,7 @@ fn install_from(
 ) -> Result<Vec<installed::Entry>, String> {
     let p = index
         .project(&project.id)
-        .ok_or_else(|| format!("{} isn't in Horizon's registry.", project.title))?;
+        .ok_or_else(|| format!("{} isn't in Kestrel's registry.", project.title))?;
     let v = newest(index, p, level)?;
     install_version(index, local, p, v, home, progress).map(|e| vec![e])
 }
@@ -591,7 +610,7 @@ fn newest<'a>(
     })
 }
 
-const NEEDS_NEWER: &str = "needs a newer Horizon than the game you play";
+const NEEDS_NEWER: &str = "needs a newer Kestrel than the game you play";
 
 /// Whether version `v` calls mod API functions a game serving `level` doesn't have.
 fn needs_newer(v: &index::Version, level: Option<u32>) -> bool {

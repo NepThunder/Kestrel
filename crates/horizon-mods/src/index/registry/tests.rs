@@ -38,7 +38,7 @@ key = "RWTVtuGb/GRXcBf3Re5hzM07EzoStr2sLTJjghJia0xX15ULoZRFFZDb"
 version = "0.1.0"
 published = "2026-10-24"
 game = "26.3"
-file = "coords_hud-0.1.0.hmod"
+file = "coords_hud-0.1.0.kmod"
 sha256 = "{HMOD}"
 signature = """{sig}"""
 "#
@@ -104,7 +104,7 @@ impl Scratch {
         s.write("revoked.toml", REVOKED_TOML);
         s.write("icons/coords_hud.png", "png");
         for (name, hash) in [
-            ("coords_hud-0.1.0.hmod", HMOD),
+            ("coords_hud-0.1.0.kmod", HMOD),
             ("cozy-1.0.0.hpack", HPACK),
             ("glow-1.0.0.hshader", HSHADER),
         ] {
@@ -259,7 +259,7 @@ fn a_mod_may_turn_native_once() {
     );
     assert!(r.errors.is_empty(), "{r:?}");
     assert!(r.notes.iter().any(|n| n.contains("turns native")), "{r:?}");
-    // Its .hmod versions are a WebAssembly mod's files; the new ones native.
+    // Its .kmod versions are a WebAssembly mod's files; the new ones native.
     assert_eq!(file_kind(&native, &native.versions[1]), Kind::Mod);
     assert_eq!(file_kind(&native, &native.versions[0]), Kind::NativeMod);
     // And never back.
