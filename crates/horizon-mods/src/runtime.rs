@@ -2416,7 +2416,8 @@ mod tests {
     /// A held key lets go on reset, as it does on rebind: the mod hears
     /// `key-up` instead of the key staying down under the default.
     #[test]
-    fn reset_keys_lets_go_of_a_held_key() {        let mut input = InputState::default();
+    fn reset_keys_lets_go_of_a_held_key() {
+        let mut input = InputState::default();
         input
             .keys
             .push(mod_key("zoom", "Zoom key", "key.keyboard.v"));
@@ -2473,7 +2474,11 @@ mod tests {
     /// with a non-finite coordinate is dropped, not drawn.
     #[test]
     fn world_shapes_clamp_widths_and_drop_non_finite_coordinates() {
-        let clipped = clip_world_shapes(vec![world_line(0.1), world_line(99.0), world_line(f32::NAN)]);
+        let clipped = clip_world_shapes(vec![
+            world_line(0.1),
+            world_line(99.0),
+            world_line(f32::NAN),
+        ]);
         let widths: Vec<f32> = clipped
             .iter()
             .map(|s| match s {
@@ -2502,8 +2507,10 @@ mod tests {
             width: 2.0,
         });
         let lines = world_shape_lines(std::slice::from_ref(&boxed));
-        let edges: Vec<([f64; 3], [f64; 3])> =
-            lines.iter().map(|(start, end, _, _)| (*start, *end)).collect();
+        let edges: Vec<([f64; 3], [f64; 3])> = lines
+            .iter()
+            .map(|(start, end, _, _)| (*start, *end))
+            .collect();
         assert_eq!(
             edges,
             vec![
@@ -2521,6 +2528,10 @@ mod tests {
                 ([1.0, 2.0, 0.0], [1.0, 2.0, 3.0]),
             ]
         );
-        assert!(lines.iter().all(|(_, _, color, width)| *color == 0xFFFF_0000 && *width == 2.0));
+        assert!(
+            lines
+                .iter()
+                .all(|(_, _, color, width)| *color == 0xFFFF_0000 && *width == 2.0)
+        );
     }
 }

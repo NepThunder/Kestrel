@@ -1,0 +1,16 @@
+[package]
+name = "draw-probe"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Prototype probe for world-space drawing: a box round the nearest mob and a line from the player to the mob under the crosshair"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+horizon-mod-sdk = { path = "../.." }
+
+[lints]
+workspace = true
