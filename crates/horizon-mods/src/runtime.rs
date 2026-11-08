@@ -878,8 +878,7 @@ impl Mods {
         // The aggregate as the call starts, from the other running mods,
         // so the mod's getters read the effective value even before it
         // sets anything of its own.
-        let (aggregate_gamma, aggregate_fog_off) =
-            (self.gamma_except(i), self.fog_off_except(i));
+        let (aggregate_gamma, aggregate_fog_off) = (self.gamma_except(i), self.fog_off_except(i));
         let entry = &mut self.entries[i];
         let run = entry.run.as_mut()?;
         run.store.data_mut().snapshot = self.snapshot.clone();

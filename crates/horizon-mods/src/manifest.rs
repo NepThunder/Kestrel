@@ -180,7 +180,9 @@ impl Capability {
                 "add blocks, items, mob effects and entity types to your worlds"
             }
             Capability::Ui => "show its own screens and a settings page",
-            Capability::Render => "draw on your screen and in the world, shake and zoom the camera, brighten it and turn off distance fog",
+            Capability::Render => {
+                "draw on your screen and in the world, shake and zoom the camera, brighten it and turn off distance fog"
+            }
             Capability::Input => {
                 "see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys"
             }
