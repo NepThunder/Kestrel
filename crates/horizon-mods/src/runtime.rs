@@ -1123,6 +1123,30 @@ impl Mods {
         input.rebind(name, key.to_owned());
         true
     }
+    /// Mod `i`'s keys back to the defaults they registered, forgetting the
+    /// player's choices; live, so a held key lets go first. False when the
+    /// mod isn't running.
+    pub fn reset_keys(&mut self, i: usize) -> bool {
+        let Some(run) = self.entries.get_mut(i).and_then(|e| e.run.as_mut()) else {
+            return false;
+        };
+        run.store.data_mut().input.reset_keys();
+        true
+    }
+    /// Every other running mod's keys: (mod name, key), for the duplicate
+    /// warnings on the Mods screens. The caller's own index is skipped, so
+    /// a mod's keys never warn against themselves.
+    pub fn other_mod_keys(&self, skip: usize) -> impl Iterator<Item = (&str, &ModKey)> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(move |(i, _)| *i != skip)
+            .filter_map(|(_, e)| e.run.as_ref())
+            .flat_map(|r| {
+                let d = r.store.data();
+                d.input.keys.iter().map(move |k| (d.name.as_str(), k))
+            })
+    }
     /// The use button went down with `item`: `use-start` to each mod that
     /// claimed it.
     pub fn use_start(&mut self, item: &HeldItem) {
@@ -1727,6 +1751,9 @@ pub struct ModKey {
     pub label: String,
     /// `key.keyboard.r`.
     pub key: String,
+    /// The key `register-key` gave, before the player's choice: what a
+    /// reset restores. `rebind` never touches it.
+    pub default: String,
 }
 
 /// What capability `input` holds for one mod.
@@ -1773,6 +1800,19 @@ impl InputState {
             self.push(InputEvent::KeyUp(name));
         }
     }
+    /// Every key back to the default it registered with; the player's
+    /// choices are forgotten. A held key lets go first, as `rebind` does.
+    fn reset_keys(&mut self) {
+        self.bindings.clear();
+        let defaults: Vec<(String, String)> = self
+            .keys
+            .iter()
+            .map(|k| (k.name.clone(), k.default.clone()))
+            .collect();
+        for (name, key) in defaults {
+            self.rebind(&name, key);
+        }
+    }
     fn push(&mut self, event: InputEvent) {
         if self.events.len() == INPUT_EVENTS {
             self.events.pop_front();
@@ -1792,18 +1832,24 @@ impl input::Host for State {
             ));
         }
         let (name, label) = (clip(name), clip(label));
+        let default = key.clone();
         let key = match self.input.bindings.iter().find(|(n, _)| *n == name) {
             Some((_, chosen)) => chosen.clone(),
             None => key,
         };
         if let Some(k) = self.input.keys.iter_mut().find(|k| k.name == name) {
-            (k.label, k.key) = (label, key);
+            (k.label, k.key, k.default) = (label, key, default);
             return Ok(());
         }
         if self.input.keys.len() == KEYS {
             return Err(format!("a mod may register {KEYS} keys"));
         }
-        self.input.keys.push(ModKey { name, label, key });
+        self.input.keys.push(ModKey {
+            name,
+            label,
+            key,
+            default,
+        });
         Ok(())
     }
     fn held(&mut self) -> Option<HeldItem> {
@@ -2140,5 +2186,63 @@ mod tests {
         let view: Box<dyn std::any::Any> = view;
         assert_eq!(view.downcast::<NamedView>().unwrap().0, "second");
         assert!(mods.take_world().is_none());
+    }
+
+    /// A mod key as `register-key` leaves it: the key is its own default.
+    fn mod_key(name: &str, label: &str, key: &str) -> ModKey {
+        ModKey {
+            name: name.to_owned(),
+            label: label.to_owned(),
+            key: key.to_owned(),
+            default: key.to_owned(),
+        }
+    }
+
+    /// Resetting restores the defaults the mod registered, not the keys
+    /// the player chose — and forgets those choices, so a later
+    /// `register-key` sees the default again.
+    #[test]
+    fn reset_keys_restores_the_registered_defaults() {
+        let mut input = InputState::default();
+        input
+            .keys
+            .push(mod_key("zoom", "Zoom key", "key.keyboard.v"));
+        input
+            .keys
+            .push(mod_key("recipes", "Show recipes", "key.keyboard.r"));
+        input
+            .bindings
+            .push(("zoom".to_owned(), "key.keyboard.b".to_owned()));
+        input.rebind("zoom", "key.keyboard.b".to_owned());
+        assert_eq!(input.keys[0].key, "key.keyboard.b");
+        input.reset_keys();
+        assert_eq!(input.keys[0].key, "key.keyboard.v");
+        assert_eq!(input.keys[0].default, "key.keyboard.v");
+        assert_eq!(input.keys[1].key, "key.keyboard.r");
+        assert!(input.bindings.is_empty());
+    }
+
+    /// A held key lets go on reset, as it does on rebind: the mod hears
+    /// `key-up` instead of the key staying down under the default.
+    #[test]
+    fn reset_keys_lets_go_of_a_held_key() {
+        let mut input = InputState::default();
+        input
+            .keys
+            .push(mod_key("zoom", "Zoom key", "key.keyboard.v"));
+        input.down.push("zoom".to_owned());
+        input.reset_keys();
+        assert!(input.down.is_empty());
+        assert!(input.events.iter().any(|e| matches!(
+            e,
+            InputEvent::KeyUp(name) if name == "zoom"
+        )));
+    }
+
+    /// Resetting a mod that isn't running changes nothing and says so.
+    #[test]
+    fn reset_keys_of_a_mod_that_isnt_running_is_false() {
+        let mut mods = Mods::default();
+        assert!(!mods.reset_keys(0));
     }
 }
