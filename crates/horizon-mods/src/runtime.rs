@@ -289,6 +289,12 @@ pub trait WorldView: std::any::Any + Send {
     fn block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String>;
     /// The biome at a position, `minecraft:plains`; `None` as for blocks.
     fn biome(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String>;
+    /// The light at a position, `(block, sky)`, each 0 to 15; `None`
+    /// where no chunk of that dimension is loaded, its light has not
+    /// been computed yet, or the position is outside the column's
+    /// build range. Never a guessed value: an unlit chunk would read
+    /// as full sky light, so it reads as `None` instead.
+    fn light(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<(u8, u8)>;
     /// Whether `dimension` is one the server has.
     fn has_dimension(&self, dimension: &str) -> bool;
     /// `Err` (why) for a state string that names no block state.
@@ -1739,6 +1745,19 @@ impl State {
             .map(|&(x, y, z)| view.block(dimension, x, y, z))
             .collect()
     }
+    /// The light at `positions`, in order, as [`State::view_blocks`].
+    fn view_lights(&self, dimension: &str, positions: &[(i32, i32, i32)]) -> Vec<Option<(u8, u8)>> {
+        let Ok(view) = self.world.lock() else {
+            return positions.iter().map(|_| None).collect();
+        };
+        let Some(view) = view.as_ref() else {
+            return positions.iter().map(|_| None).collect();
+        };
+        positions
+            .iter()
+            .map(|&(x, y, z)| view.light(dimension, x, y, z))
+            .collect()
+    }
     /// `set-blocks`, shared by the client and server hosts: a client mod
     /// is refused outright and queues nothing; a server mod's changes are
     /// checked now and queued for the game to apply after the call.
@@ -1799,6 +1818,26 @@ impl mod_world::Host for State {
                 y: p.y,
                 z: p.z,
                 state,
+            })
+            .collect()
+    }
+    fn get_lights(
+        &mut self,
+        dimension: String,
+        positions: Vec<mod_world::BlockPos>,
+    ) -> Vec<mod_world::LightResult> {
+        if positions.len() > BLOCKS_PER_CALL {
+            return Vec::new();
+        }
+        let at: Vec<(i32, i32, i32)> = positions.iter().map(|p| (p.x, p.y, p.z)).collect();
+        self.view_lights(&dimension, &at)
+            .into_iter()
+            .zip(positions)
+            .map(|(light, p)| mod_world::LightResult {
+                x: p.x,
+                y: p.y,
+                z: p.z,
+                light: light.map(|(block, sky)| mod_world::LightValue { block, sky }),
             })
             .collect()
     }
@@ -2326,6 +2365,9 @@ mod tests {
         }
         fn biome(&self, _dimension: &str, _x: i32, _y: i32, _z: i32) -> Option<String> {
             Some(self.0.to_string())
+        }
+        fn light(&self, _dimension: &str, _x: i32, _y: i32, _z: i32) -> Option<(u8, u8)> {
+            Some((0, 0))
         }
         fn has_dimension(&self, _dimension: &str) -> bool {
             true
