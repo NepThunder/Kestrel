@@ -510,10 +510,10 @@ struct State {
     gamma: Option<f32>,
     /// Capability `render`'s distance-fog flag, when the mod sets one.
     fog: Option<bool>,
-    /// The strongest gamma / fog-off the running mods asked for when this
-    /// mod's current call started, so `get-gamma` / `get-fog` read the
-    /// effective value, not just this mod's own (`Mods::call` refreshes
-    /// them before every call).
+    /// The strongest gamma / fog-off the other running mods asked for
+    /// when this mod's current call started, so `get-gamma` / `get-fog`
+    /// read the effective value, not just this mod's own (`Mods::call`
+    /// refreshes them before every call).
     aggregate_gamma: Option<f32>,
     aggregate_fog_off: bool,
     input: InputState,
@@ -875,9 +875,11 @@ impl Mods {
         fuel: u64,
         f: impl FnOnce(&mut Running) -> wasmtime::Result<R>,
     ) -> Option<R> {
-        // The aggregate as the call starts, so the mod's getters read the
-        // effective value even before it sets anything of its own.
-        let (aggregate_gamma, aggregate_fog_off) = (self.gamma(), self.fog_off());
+        // The aggregate as the call starts, from the other running mods,
+        // so the mod's getters read the effective value even before it
+        // sets anything of its own.
+        let (aggregate_gamma, aggregate_fog_off) =
+            (self.gamma_except(i), self.fog_off_except(i));
         let entry = &mut self.entries[i];
         let run = entry.run.as_mut()?;
         run.store.data_mut().snapshot = self.snapshot.clone();
@@ -1337,19 +1339,36 @@ impl Mods {
     }
     /// The strongest gamma a running mod asks for (capability `render`).
     pub fn gamma(&self) -> Option<f32> {
-        strongest_gamma(
-            self.entries
-                .iter()
-                .filter_map(|e| e.run.as_ref()?.store.data().gamma),
-        )
+        strongest_gamma(self.gamma_values(None))
+    }
+    /// The strongest gamma a running mod other than `skip` asks for: what
+    /// that mod's `get-gamma` reads beside its own value, so a mod that
+    /// lowers its own gamma after setting it high does not keep reading
+    /// its old value back.
+    fn gamma_except(&self, skip: usize) -> Option<f32> {
+        strongest_gamma(self.gamma_values(Some(skip)))
+    }
+    fn gamma_values(&self, skip: Option<usize>) -> impl Iterator<Item = f32> + '_ {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(move |(i, _)| Some(*i) != skip)
+            .filter_map(|(_, e)| e.run.as_ref()?.store.data().gamma)
     }
     /// Whether any running mod turned distance fog off (capability `render`).
     pub fn fog_off(&self) -> bool {
-        any_fog_off(
-            self.entries
-                .iter()
-                .filter_map(|e| e.run.as_ref()?.store.data().fog),
-        )
+        any_fog_off(self.fog_values(None))
+    }
+    /// Whether any running mod other than `skip` turned distance fog off.
+    fn fog_off_except(&self, skip: usize) -> bool {
+        any_fog_off(self.fog_values(Some(skip)))
+    }
+    fn fog_values(&self, skip: Option<usize>) -> impl Iterator<Item = bool> + '_ {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(move |(i, _)| Some(*i) != skip)
+            .filter_map(|(_, e)| e.run.as_ref()?.store.data().fog)
     }
     fn inputs(&self) -> impl Iterator<Item = &InputState> {
         self.entries
