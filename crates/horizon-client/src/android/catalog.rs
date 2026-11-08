@@ -876,7 +876,7 @@ impl Catalog {
                         enabled: true,
                         size_bytes: 0,
                         badge: "MOD",
-                        subtitle: format!("Built-in Horizon Mod  •  {b_desc}  •  {b_id}"),
+                        subtitle: format!("Built-in Kestrel Mod  •  {b_desc}  •  {b_id}"),
                     });
                 }
             }
@@ -1711,7 +1711,7 @@ impl Catalog {
         let status = match (project.kind, project.source) {
             (Kind::Shader, browser::SourceId::Modrinth) => "Downloading shader pack ZIP...",
             (Kind::Mod, browser::SourceId::Modrinth) => "Downloading and porting Modrinth mod...",
-            (Kind::Mod, _) => "Downloading Horizon mod package...",
+            (Kind::Mod, _) => "Downloading Kestrel mod package...",
             _ => "Checking compatibility and downloading...",
         };
         self.job(status, move || {

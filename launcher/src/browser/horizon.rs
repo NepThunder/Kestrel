@@ -264,7 +264,7 @@ pub fn trust_and_capabilities(id: &str) -> Vec<String> {
         if let Some(v) = p.versions.first() {
             let pin = v.api.split('/').nth(1).unwrap_or_default();
             lines.push(format!(
-                "Built by the launcher on Horizon {}",
+                "Built by the launcher on Kestrel {}",
                 &pin[..pin.len().min(7)]
             ));
         }

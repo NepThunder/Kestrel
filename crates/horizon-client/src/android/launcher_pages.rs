@@ -1711,7 +1711,7 @@ impl Launcher {
                     content_x + 64.0,
                     y + 45.0,
                     my3_accent(),
-                    "Horizon Built-in • Tap for versions, Modrinth info & screenshots",
+                    "Kestrel Built-in • Tap for versions, Modrinth info & screenshots",
                 );
                 if let Some(c) = ui.clip_rect(card_rect) {
                     self.targets.push((c, Action::OpenBundledProject(id)));
@@ -5424,7 +5424,7 @@ impl Launcher {
                         slug: (*id).to_owned(),
                         title: (*title).to_owned(),
                         summary: (*desc).to_owned(),
-                        author: "Horizon Built-in".into(),
+                        author: "Kestrel Built-in".into(),
                         downloads: 0,
                         icon: None,
                         page: String::new(),
