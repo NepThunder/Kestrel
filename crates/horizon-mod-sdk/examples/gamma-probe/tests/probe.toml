@@ -1,0 +1,56 @@
+# Mod gamma and fog: the effective values at rest are the player's own
+# Brightness (0.5) and Fog (on) settings; set-gamma clamps host-side, a
+# non-finite gamma reads back as 1.0, and reloading the mod restores the
+# stored settings.
+
+[[step]]
+ticks = 1
+expect.chat = ["[Gamma Probe] gamma=0.5 fog=on"]
+
+# 11.0 clamps to the 10.0 Fullbright value.
+[[step]]
+command = "gamma 11"
+expect.feedback = "gamma 10"
+
+# -1.0 clamps to the darkest the lightmap goes.
+[[step]]
+command = "gamma -1"
+expect.feedback = "gamma 0"
+
+# A non-finite gamma reads as 1.0, not 0.0: a NaN must never black the screen.
+[[step]]
+command = "gamma-nan"
+expect.feedback = "gamma 1"
+
+# The tick shows the effective value, and get-gamma with no argument reads it back.
+[[step]]
+command = "gamma 2"
+expect.feedback = "gamma 2"
+
+[[step]]
+ticks = 1
+expect.chat = ["[Gamma Probe] gamma=2 fog=on"]
+
+# Distance fog off, then back on; the tick shows the flag either way.
+[[step]]
+command = "fog-off"
+expect.feedback = "fog off"
+
+[[step]]
+ticks = 1
+expect.chat = ["[Gamma Probe] gamma=2 fog=off"]
+
+[[step]]
+command = "fog-on"
+expect.feedback = "fog on"
+
+[[step]]
+ticks = 1
+expect.chat = ["[Gamma Probe] gamma=2 fog=on"]
+
+# Reloading the mod unloads it, so its gamma and fog leave the aggregate
+# and the stored settings apply again.
+[[step]]
+reload = true
+ticks = 1
+expect.chat = ["[Gamma Probe] gamma=0.5 fog=on"]

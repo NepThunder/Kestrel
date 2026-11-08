@@ -59,6 +59,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "light-probe",
                 "-p",
+                "gamma-probe",
+                "-p",
                 "horizon-mods-test-guest",
                 "-p",
                 "horizon-mods-test-ui-guest",
@@ -88,6 +90,7 @@ fn mods_dir() -> &'static Path {
             ("entity_probe", example("entity-probe")),
             ("draw_probe", example("draw-probe")),
             ("light_probe", example("light-probe")),
+            ("gamma_probe", example("gamma-probe")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
         ];
@@ -281,7 +284,9 @@ experimental = ["ui", "render", "input", "recipes", "inventory", "entity"]
     // The draw probe draws world shapes (`render.set-world`, level 11).
     assert_eq!(level("draw_probe.kmod"), 11);
     // The light probe reads light (`world.get-lights`, level 12).
-    assert_eq!(level("light_probe.kmod"), LEVEL);
+    assert_eq!(level("light_probe.kmod"), 12);
+    // The gamma probe brightens (`render.set-gamma`, level 13).
+    assert_eq!(level("gamma_probe.kmod"), LEVEL);
 }
 
 #[test]
@@ -938,6 +943,7 @@ fn the_examples_test_scripts_pass() {
         ("entity-probe", "entity_probe"),
         ("draw-probe", "draw_probe"),
         ("light-probe", "light_probe"),
+        ("gamma-probe", "gamma_probe"),
     ];
     for (example, kmod) in examples_and_files {
         for entry in std::fs::read_dir(examples.join(example).join("tests")).unwrap() {
@@ -950,7 +956,7 @@ fn the_examples_test_scripts_pass() {
             ran += 1;
         }
     }
-    assert_eq!(ran, 11);
+    assert_eq!(ran, 12);
 }
 
 /// Capability `world` without a world lent (the registry's trial run):
