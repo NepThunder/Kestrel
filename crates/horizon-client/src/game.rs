@@ -16589,7 +16589,7 @@ impl Game<'_> {
                 .touch
                 .editor
                 .as_ref()
-                .is_some_and(|e| e.save_dialog_open)
+                .is_some_and(|e| e.save_dialog_open || (e.props_open && e.editing_custom_label))
                 || self.pad.touch_ui.preset_dialog.is_some())
         {
             if let PhysicalKey::Code(code) = event.physical_key {
@@ -16601,6 +16601,7 @@ impl Game<'_> {
                         &out,
                     );
                     if horizon_client::touch_ui::output_dismisses(&out) {
+                        self.android_commit_custom_label();
                         crate::platform::hide();
                     }
                     return;

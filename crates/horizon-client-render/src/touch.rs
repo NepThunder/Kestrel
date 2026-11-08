@@ -31,7 +31,7 @@ pub fn set_current_hud_opacity_scale(scale: f32) {
 pub mod custom;
 pub mod editor;
 pub use custom::CustomButton;
-pub use editor::{Editor, EditorDragKind, PickerStep};
+pub use editor::{CUSTOM_LABEL_MAX_LEN, Editor, EditorDragKind, PickerStep};
 pub mod layout;
 pub use layout::{
     Control, ControlStyle, JoystickMoveArea, JoystickStyle, Mode, Placement, PresetMeta, Settings,

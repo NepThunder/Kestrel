@@ -1221,6 +1221,16 @@ impl Game<'_> {
             crate::platform::show(&initial);
         }
     }
+    /// Commit a typed custom-button name (if one is being edited) into the
+    /// touch settings and persist it. No-op when no rename is in progress.
+    pub(super) fn android_commit_custom_label(&mut self) {
+        if let Some(ed) = self.pad.touch.editor.as_mut()
+            && ed.commit_custom_label(&mut self.pad.touch.settings)
+        {
+            let _ = self.pad.touch.settings.save();
+        }
+    }
+
     /// Text from the Android keyboard while a preset naming field has focus.
     /// Both naming dialogs (the editor's save-as and the hub's copy) type here
     /// instead of showing a keyboard inside the dialog.
@@ -1231,6 +1241,9 @@ impl Game<'_> {
             out,
         );
         if handled && horizon_client::touch_ui::output_dismisses(out) {
+            // Dismissing the keyboard (Enter / Escape / Close) also commits
+            // a typed custom-button name.
+            self.android_commit_custom_label();
             crate::platform::hide();
         }
         handled
@@ -1242,7 +1255,9 @@ impl Game<'_> {
         if let Some(ed) = self.pad.touch.editor.as_mut()
             && std::mem::take(&mut ed.keyboard_request)
         {
-            let text = if ed.editing_save_desc {
+            let text = if ed.editing_custom_label {
+                ed.custom_label_input.clone()
+            } else if ed.editing_save_desc {
                 ed.save_desc_input.clone()
             } else {
                 ed.save_name_input.clone()
