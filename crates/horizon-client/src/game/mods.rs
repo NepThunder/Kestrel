@@ -681,6 +681,8 @@ impl Game<'_> {
             open_container,
             entities,
             targeted,
+            gamma: self.settings.gamma,
+            fog: self.settings.horizon.fog,
         }
     }
     /// The first block along the player's view within

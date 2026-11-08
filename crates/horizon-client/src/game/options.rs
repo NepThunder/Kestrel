@@ -507,9 +507,10 @@ impl Game<'_> {
             self.reload_packs();
         }
         self.apply_fullscreen();
+        let gamma = self.effective_gamma();
         let s = &self.settings;
         if let Some(r) = self.renderer.as_mut() {
-            r.gamma = s.gamma;
+            r.gamma = gamma;
             r.fullbright = s.extras.fullbright;
             r.improved_transparency = s.improved_transparency;
             r.set_present_mode(s.vsync, s.horizon.present_mode);

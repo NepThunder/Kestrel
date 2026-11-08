@@ -34,6 +34,12 @@ impl Game<'_> {
     pub(super) fn mod_far_terrain(&self) -> Option<ModFarTerrain> {
         None
     }
+    pub(super) fn effective_gamma(&self) -> f32 {
+        self.settings.gamma
+    }
+    pub(super) fn mod_fog_off(&self) -> bool {
+        false
+    }
 }
 
 /// A mod's zoom (`render.set-zoom`), clamped by the runtime.
@@ -208,5 +214,17 @@ impl Game<'_> {
             distance: f.distance,
             reduced: f.reduced,
         })
+    }
+    /// The brightness the renderer applies: the strongest gamma a running
+    /// mod asks for while playing, else the player's own Brightness setting.
+    pub(super) fn effective_gamma(&self) -> f32 {
+        if !self.mod_playing() {
+            return self.settings.gamma;
+        }
+        self.mods.mods.gamma().unwrap_or(self.settings.gamma)
+    }
+    /// Whether any running mod turned distance fog off, while playing.
+    pub(super) fn mod_fog_off(&self) -> bool {
+        self.mod_playing() && self.mods.mods.fog_off()
     }
 }
