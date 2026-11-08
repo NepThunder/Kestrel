@@ -14,7 +14,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `command` | [`command`](#command) | run commands as you, with your permissions |
 | `registries` | data files (`assets/`, `data/`), no interface | add blocks, items, mob effects and entity types to your worlds |
 | `ui` | [`ui`](#ui) | show its own screens and a settings page |
-| `render` | [`render`](#render) | draw on your screen, shake and zoom the camera |
+| `render` | [`render`](#render) | draw on your screen and in the world, shake and zoom the camera |
 | `input` | [`input`](#input) | see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys |
 | `players` | [`players`](#players) | see who is on the server and message them |
 | `world` | [`world`](#world) | read the world's blocks, and change them where the game runs the world |
@@ -411,6 +411,45 @@ Any four-cornered shape (a wheel's segment, an arrow): the corners in order roun
 | `item` | `item-shape` |  |
 | `text` | `text-shape` |  |
 
+### record `world-point`
+
+A point in the world, in blocks.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+
+### record `world-line`
+
+One world-space line: the two ends, a 0xAARRGGBB colour, and a width in pixels (0.5 to 8, as the game's gizmos use 1 to 4).
+
+| Field | Type | |
+| --- | --- | --- |
+| `start` | `world-point` |  |
+| `end` | `world-point` |  |
+| `color` | `u32` | 0xAARRGGBB. |
+| `width` | `f32` | Pixels wide, 0.5 to 8. |
+
+### record `world-box`
+
+One world-space box: the two opposite corners, a 0xAARRGGBB colour, and a width in pixels. Drawn as its twelve edges, in `CuboidGizmo.emit`'s order.
+
+| Field | Type | |
+| --- | --- | --- |
+| `min` | `world-point` |  |
+| `max` | `world-point` |  |
+| `color` | `u32` | 0xAARRGGBB. |
+| `width` | `f32` | Pixels wide, 0.5 to 8. |
+
+### variant `world-shape`
+
+| Case | Payload | |
+| --- | --- | --- |
+| `line` | `world-line` |  |
+| `box` | `world-box` |  |
+
 ### record `frame-rate`
 
 | Field | Type | |
@@ -451,6 +490,7 @@ Any four-cornered shape (a wheel's segment, an arrow): the corners in order roun
 | `shake` | `func(strength: f32, seconds: f32)` | Shakes the camera: a jolt of `strength` (0 to 1, 1 the hardest) that fades out over `seconds` (at most 10). Jolts add up to 1. The view turns, the player doesn't, and the player's Distortion Effects option scales it (0 turns it off). |
 | `set-corner` | `func(corner: corner, width: f32, height: f32, shapes: list<shape>)` | Replaces the mod's corner panel: shapes in GUI pixels from the top left of a `width` × `height` box that the game places in `corner`, stacked with the game's overlays and the other mods' panels (under the status effects at the top right), as `hud`'s panels are. |
 | `clear-corner` | `func()` | Removes the mod's corner panel. |
+| `set-world` | `func(shapes: list<world-shape>)` | Replaces the mod's world shapes: up to 1024 lines (a box counts as 12), drawn every frame in order over the world, depth-tested so walls hide them, hidden with the HUD (F1). An empty list removes them. Nothing here is ever drawn on top of everything. |
 | `text-width` | `func(text: string) -> f32` | The width of one line of text in GUI pixels, in the HUD's font: exact for Latin letters (U+0000 to U+024F), 6 per other character. |
 | `frame-stats` | `func() -> frame-rate` | The game's frame counter, recomputed twice a second. |
 | `set-zoom` | `func(zoom: zoom)` | Zooms the camera until the next call (`factor` 1 ends it), only while playing: a screen opening or the spyglass's own view (which wins) leave the camera vanilla's. With several mods, the strongest zoom counts. |

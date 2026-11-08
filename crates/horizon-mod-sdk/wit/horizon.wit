@@ -366,6 +366,43 @@ interface render {
     set-corner: func(corner: corner, width: f32, height: f32, shapes: list<shape>);
     /// Removes the mod's corner panel.
     clear-corner: func();
+    /// A point in the world, in blocks.
+    record world-point {
+        x: f64,
+        y: f64,
+        z: f64,
+    }
+    /// One world-space line: the two ends, a 0xAARRGGBB colour, and
+    /// a width in pixels (0.5 to 8, as the game's gizmos use 1 to 4).
+    record world-line {
+        start: world-point,
+        end: world-point,
+        /// 0xAARRGGBB.
+        color: u32,
+        /// Pixels wide, 0.5 to 8.
+        width: f32,
+    }
+    /// One world-space box: the two opposite corners, a 0xAARRGGBB
+    /// colour, and a width in pixels. Drawn as its twelve edges, in
+    /// `CuboidGizmo.emit`'s order.
+    record world-box {
+        min: world-point,
+        max: world-point,
+        /// 0xAARRGGBB.
+        color: u32,
+        /// Pixels wide, 0.5 to 8.
+        width: f32,
+    }
+    variant world-shape {
+        line(world-line),
+        box(world-box),
+    }
+    /// Replaces the mod's world shapes: up to 1024 lines (a box
+    /// counts as 12), drawn every frame in order over the world,
+    /// depth-tested so walls hide them, hidden with the HUD (F1).
+    /// An empty list removes them. Nothing here is ever drawn on
+    /// top of everything.
+    set-world: func(shapes: list<world-shape>);
     /// The width of one line of text in GUI pixels, in the HUD's font: exact
     /// for Latin letters (U+0000 to U+024F), 6 per other character.
     text-width: func(text: string) -> f32;

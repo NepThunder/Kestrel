@@ -76,6 +76,23 @@ Before a world loads the list is empty and there is no target.
 `crates/horizon-mod-sdk/examples/entity-probe` is a probe mod that shows
 the mobs around the player, nearest first, and the crosshair target.
 
+A code mod with capability `render` (experimental) draws lines and boxes
+in the world (`render.set-world`, API level 11). It is draw-only — a box
+does not select, protect or change a block or an entity — and a mod
+submits on its tick hook: the shapes draw every frame until replaced, an
+empty list clearing them. At most 1024 lines per mod, a box counting as
+its twelve edges; widths are 0.5 to 8 pixels. The lines are depth-tested,
+so a wall hides them like the game's own hitbox boxes, and they hide
+with the HUD (F1). Nothing here is ever drawn on top of everything, and
+there are no filled boxes, no world text and no custom shaders in v1.
+What a mod draws comes from what it may read: boxes from `entity.entities`
+draw in singleplayer, while in multiplayer only the crosshair target (or
+a `game.raycast` hit) is there to draw round. Before a world loads the
+shapes store but nothing draws them.
+`crates/horizon-mod-sdk/examples/draw-probe` is a probe mod that draws a
+box round the nearest mob and a line from the player to the mob under the
+crosshair.
+
 ## Making a content mod
 
 ```sh

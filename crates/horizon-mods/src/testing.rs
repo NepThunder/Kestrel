@@ -9,7 +9,7 @@
 //! saying what happens and what the mod must have shown by then.
 use crate::{
     BlockPos, Clock, Container, Corner, Entity, GameMode, InvStack, Mods, Output, Panel, Player,
-    PlayerInventory, ServerPlayer, Snapshot, Status, Target,
+    PlayerInventory, ServerPlayer, Snapshot, Status, Target, WorldDrawLine,
 };
 use serde::Deserialize;
 use std::{
@@ -394,6 +394,11 @@ impl TestGame {
     pub fn panel(&self) -> Option<&Panel> {
         self.mods.panels().next()
     }
+    /// The running mod's world shapes as depth-tested lines (capability
+    /// `render`): what the game would draw this frame.
+    pub fn world_lines(&self) -> Vec<WorldDrawLine> {
+        self.mods.world_lines()
+    }
     pub fn status(&self) -> &Status {
         &self.mods.entries()[0].status
     }
@@ -723,6 +728,10 @@ pub struct Expect {
     /// The panel's lines (`[]`: no panel) and its corner.
     panel: Option<Vec<String>>,
     corner: Option<String>,
+    /// The mod's world shapes as depth-tested lines (`render.set-world`),
+    /// each as (start x, y, z, end x, y, z, colour, width): a box is its
+    /// twelve edges, in `CuboidGizmo.emit`'s order.
+    world_lines: Option<Vec<(f64, f64, f64, f64, f64, f64, u32, f32)>>,
     /// Blocks of the Overworld after the step, the mod's changes made
     /// (capability `world`).
     blocks: Option<Vec<BlockSet>>,
@@ -1029,6 +1038,14 @@ impl Step {
                 .map(|p| p.lines.iter().map(|l| l.text.clone()).collect())
                 .unwrap_or_default();
             same("panel", want, &got)?;
+        }
+        if let Some(want) = &e.world_lines {
+            let got: Vec<(f64, f64, f64, f64, f64, f64, u32, f32)> = game
+                .world_lines()
+                .into_iter()
+                .map(|(s, e, c, w)| (s[0], s[1], s[2], e[0], e[1], e[2], c, w))
+                .collect();
+            same("world-lines", want, &got)?;
         }
         if let Some(want) = &e.blocks {
             for b in want {
