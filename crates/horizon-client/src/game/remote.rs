@@ -9612,6 +9612,15 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
 }
 
 impl Remote {
+    /// The profile name a player entity was created with, if the client
+    /// knows it (capability `entity` names a player under the crosshair
+    /// with it). It outlives the player-list entry, which servers
+    /// remove to hide their NPCs from the list.
+    pub(super) fn player_name(&self, id: u32) -> Option<&str> {
+        self.level_player_names
+            .get(&(id as i32))
+            .map(String::as_str)
+    }
     /// `PlayerInfo.getMessageValidator().updateAndValidate(message)` for `message.sender`.
     fn validate_chat(
         &mut self,

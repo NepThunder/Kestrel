@@ -1086,6 +1086,56 @@ mod tests {
         ));
     }
 
+    /// The server side of the health sync: `mob_meta` (game/lan.rs)
+    /// emits a zombie's health as LivingEntity DATA_HEALTH_ID (index 9)
+    /// whenever it differs from 1.0, with 1.0 as its default. The tracker
+    /// must carry that health to the client at spawn and again after
+    /// server-side-only damage. This is what the `%entity` capability's
+    /// singleplayer health rests on.
+    #[test]
+    fn a_damaged_zombies_new_health_reaches_its_tracker() {
+        // A full-health zombie, as the server's `mob_meta` builds it.
+        let mut full = state(0.0);
+        full.meta
+            .push((9, serializer::FLOAT, Value::Float(20.0)));
+        full.defaults
+            .push((9, serializer::FLOAT, Value::Float(1.0)));
+        let mut tracker = added(&full);
+        // Spawn: pairing introduces the zombie with its health.
+        let mut spawn = Vec::new();
+        tracker.pairing(&full, 100, &Riding::default(), &mut spawn);
+        assert!(
+            spawn.iter().any(|p| matches!(p,
+                play::Clientbound::SetEntityData(d)
+                    if d.values.contains(&(9, serializer::FLOAT, Value::Float(20.0))))),
+            "spawn must send health 20.0: {spawn:?}"
+        );
+        // Server-side-only damage of 6 (e.g. `/damage`, no knockback, so
+        // `needs_sync` stays false): health 14.0 must still go out,
+        // because the metadata itself changed.
+        let mut hurt = full.clone();
+        hurt.meta = vec![(9, serializer::FLOAT, Value::Float(14.0))];
+        let out = changes(&mut tracker, &hurt);
+        assert!(
+            out.iter().any(|p| matches!(p,
+                play::Clientbound::SetEntityData(d)
+                    if d.values.contains(&(9, serializer::FLOAT, Value::Float(14.0))))),
+            "server health 20.0 -> 14.0 must reach the client: {out:?}"
+        );
+        // Damage down to exactly 1.0: `mob_meta` omits index 9 then, and
+        // the tracker must send the 1.0 default instead of leaving the
+        // client on the stale 14.0.
+        let mut one = full.clone();
+        one.meta = Vec::new();
+        let out = changes(&mut tracker, &one);
+        assert!(
+            out.iter().any(|p| matches!(p,
+                play::Clientbound::SetEntityData(d)
+                    if d.values.contains(&(9, serializer::FLOAT, Value::Float(1.0))))),
+            "server health 14.0 -> 1.0 must send the 1.0 default: {out:?}"
+        );
+    }
+
     #[test]
     fn fireballs_bundle_their_motion_with_their_power() {
         let mut e = state(0.0);

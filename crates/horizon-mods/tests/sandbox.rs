@@ -53,6 +53,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "inventory-probe",
                 "-p",
+                "entity-probe",
+                "-p",
                 "horizon-mods-test-guest",
                 "-p",
                 "horizon-mods-test-ui-guest",
@@ -79,6 +81,7 @@ fn mods_dir() -> &'static Path {
             ("beacons", example("beacons")),
             ("world_probe", example("world-probe")),
             ("inventory_probe", example("inventory-probe")),
+            ("entity_probe", example("entity-probe")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
         ];
@@ -247,8 +250,8 @@ id = "too_new"
 name = "Too New"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world", "inventory"]
-experimental = ["ui", "render", "input", "recipes", "inventory"]
+capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world", "inventory", "entity"]
+experimental = ["ui", "render", "input", "recipes", "inventory", "entity"]
 "#;
     std::fs::write(dir.join("horizon-mod.toml"), manifest).unwrap();
     std::fs::write(dir.join("mod.wasm"), wasm).unwrap();
@@ -266,7 +269,9 @@ experimental = ["ui", "render", "input", "recipes", "inventory"]
     // The world probe reads blocks (`world.get-blocks`, level 8).
     assert_eq!(level("world_probe.kmod"), 8);
     // The inventory probe reads its inventory (`inventory.inventory`, level 9).
-    assert_eq!(level("inventory_probe.kmod"), LEVEL);
+    assert_eq!(level("inventory_probe.kmod"), 9);
+    // The entity probe reads the mobs (`entity.entities`, level 10).
+    assert_eq!(level("entity_probe.kmod"), LEVEL);
 }
 
 #[test]
@@ -900,6 +905,7 @@ fn the_examples_test_scripts_pass() {
         ("beacons", "beacons"),
         ("world-probe", "world_probe"),
         ("inventory-probe", "inventory_probe"),
+        ("entity-probe", "entity_probe"),
     ];
     for (example, kmod) in examples_and_files {
         for entry in std::fs::read_dir(examples.join(example).join("tests")).unwrap() {
@@ -912,7 +918,7 @@ fn the_examples_test_scripts_pass() {
             ran += 1;
         }
     }
-    assert_eq!(ran, 7);
+    assert_eq!(ran, 9);
 }
 
 /// Capability `world` without a world lent (the registry's trial run):

@@ -50,6 +50,7 @@ mod ui_bindings {
     });
 }
 pub use bindings::horizon::mods::{
+    entity::{Entity, Target},
     game::{Clock, Hit, Player},
     hud::{Corner, Line},
     inventory::{Container, InvStack, PlayerInventory},
@@ -57,7 +58,7 @@ pub use bindings::horizon::mods::{
 use bindings::{
     HorizonMod,
     exports::horizon::mods::events::Registration,
-    horizon::mods::{chat, command, game, hud, inventory, log as mod_log, storage},
+    horizon::mods::{chat, command, entity, game, hud, inventory, log as mod_log, storage},
 };
 pub use server_bindings::{
     exports::horizon::mods::server_events::{
@@ -127,6 +128,11 @@ const CHAT_PER_CALL: usize = 8;
 const QUIET_PER_CALL: usize = 256;
 /// How far `game.raycast` sees, in blocks.
 pub const RAYCAST_MAX: f32 = 1024.0;
+/// How far `entity.targeted` sees, in blocks.
+pub const ENTITY_TARGET_MAX: f32 = 128.0;
+/// How far `entity.entities` lists, in blocks, and how many it lists at most.
+pub const ENTITY_LIST_RANGE: f64 = 128.0;
+pub const ENTITY_LIST_MAX: usize = 256;
 const HUD_LINES: usize = 16;
 const LINE_CHARS: usize = 256;
 /// Total bytes a mod's `storage` may hold on disk, across all its keys.
@@ -184,6 +190,15 @@ pub struct Snapshot {
     /// `inventory`); None when no container screen is open, so a mod
     /// can never read a container after closing it.
     pub open_container: Option<Container>,
+    /// The living mobs within 128 blocks, nearest first, at most 256
+    /// (capability `entity`); the game fills it once per tick, and only
+    /// while a mod reads it ([`Mods::wants_entities`]). Empty in
+    /// multiplayer in v1, and on the title screen.
+    pub entities: Vec<Entity>,
+    /// The mob under the crosshair, if any, with its distance from the
+    /// eye (capability `entity`); None when nothing is hit, on the title
+    /// screen, or while no mod reads it.
+    pub targeted: Option<Target>,
 }
 
 /// Capability `recipes`'s tables: `items` in the registry's order, which
@@ -337,6 +352,8 @@ struct Running {
     reads_recipes: bool,
     /// It imports capability `inventory`.
     reads_inventory: bool,
+    /// It imports capability `entity`.
+    reads_entities: bool,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -709,6 +726,7 @@ impl Mods {
             raycasts: functions.iter().any(|f| f == "game.raycast"),
             reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
             reads_inventory: functions.iter().any(|f| f.starts_with("inventory.")),
+            reads_entities: functions.iter().any(|f| f.starts_with("entity.")),
         }))
     }
 
@@ -1049,6 +1067,13 @@ impl Mods {
         self.entries
             .iter()
             .any(|e| e.run.as_ref().is_some_and(|r| r.reads_inventory))
+    }
+    /// Some running mod reads capability `entity`: the snapshot needs
+    /// [`Snapshot::entities`] and [`Snapshot::targeted`].
+    pub fn wants_entities(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.reads_entities))
     }
     /// Some running mod has a `frame` hook: the game refreshes the snapshot
     /// every frame for it.
@@ -1482,6 +1507,20 @@ impl inventory::Host for State {
     }
     fn open_container(&mut self) -> Option<Container> {
         self.snapshot.open_container.clone()
+    }
+}
+/// Capability `entity`: the living mobs around the player and the one
+/// under the crosshair, read-only by absence — this interface has no
+/// write function to refuse, unlike `world.set-blocks`.
+impl entity::Host for State {
+    fn entities(&mut self) -> Vec<Entity> {
+        self.snapshot.entities.clone()
+    }
+    fn targeted(&mut self, distance: f32) -> Option<Target> {
+        let target = self.snapshot.targeted.clone()?;
+        // NaN compares false: no hit. A request past the cap gets the
+        // capped result, as `game.raycast` does with `RAYCAST_MAX`.
+        (target.distance <= distance.min(ENTITY_TARGET_MAX) && !distance.is_nan()).then_some(target)
     }
 }
 impl browser::Host for State {

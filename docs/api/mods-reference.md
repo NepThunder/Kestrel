@@ -20,12 +20,13 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `world` | [`world`](#world) | read the world's blocks, and change them where the game runs the world |
 | `recipes` | [`recipes`](#recipes) | read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items |
 | `inventory` | [`inventory`](#inventory) | see your inventory and open containers |
+| `entity` | [`entity`](#entity) | see the mobs around you and the entity you look at |
 
 ## World `horizon-mod`
 
 A client mod: runs in the player's game.
 
-- Imports (what the game offers): `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`
+- Imports (what the game offers): `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
 - Exports (what the mod provides): `events`
 
 ## World `horizon-server-mod`
@@ -39,7 +40,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
 - Exports (what the mod provides): `ui-events`, `events`
 
 ## World `ui-host`
@@ -750,6 +751,50 @@ A container the player has open, if any.
 | --- | --- | --- |
 | `inventory` | `func() -> player-inventory` | The player's own inventory, as of this tick. |
 | `open-container` | `func() -> option<container>` | The open container, if a container screen is open; none otherwise. The slots are cleared the tick the menu closes: a mod can never read a container after closing it. |
+
+## `entity`
+
+Access: capability `entity`.
+
+Capability `entity` (manifest `api = "0.1"`, experimental): the living mobs around the player and the entity under the crosshair. Read-only: nothing here can damage, move, spawn, ride or interact with an entity, and it cannot see another player's inventory or health. The snapshot is copied once per tick, so a mod reads the entities as of the last tick, not as of its call.
+
+### record `entity`
+
+One living mob, as the game holds it this tick.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `u32` | The entity id the server tracks it by. |
+| `kind` | `string` | `minecraft:zombie`, `minecraft:cow`, `minecraft:player`, ... |
+| `name` | `string` | The name as the game shows it: the custom name when set, else the type's translated display name (a player's profile name for `minecraft:player`). |
+| `x` | `f64` | Feet position, in blocks. |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+| `vx` | `f64` | Blocks per second. |
+| `vy` | `f64` |  |
+| `vz` | `f64` |  |
+| `yaw` | `f32` | Degrees, movement facing. |
+| `health` | `option<f32>` | Hit points as vanilla counts them, or none where the client cannot vouch for it (multiplayer in v1). `max-health` is the type's maximum. |
+| `max-health` | `f32` |  |
+| `width` | `f32` | Hitbox size, in blocks (from the type). |
+| `height` | `f32` |  |
+| `on-ground` | `bool` | The mob stands on a block. |
+| `custom-name` | `option<string>` | The plain-text custom name, if the mob has one. |
+| `baby` | `bool` | A baby variant (animals, zombies, piglins...). |
+
+### record `target`
+
+The entity under the crosshair, if any.
+
+| Field | Type | |
+| --- | --- | --- |
+| `entity` | `entity` |  |
+| `distance` | `f32` | Blocks from the eye to the hit point. |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `entities` | `func() -> list<entity>` | The living mobs within 128 blocks, nearest first, at most 256. Other players are not listed. Empty on the title screen and, in v1, in multiplayer. |
+| `targeted` | `func(distance: f32) -> option<target>` | The nearest pickable living mob along the player's view within `distance` blocks (at most 128), before any block: a wall between the two hides the mob. None when nothing is hit, and on the title screen. Works in singleplayer and multiplayer. |
 
 ## `server-events`
 

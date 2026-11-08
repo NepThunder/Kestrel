@@ -106,9 +106,12 @@ pub enum Capability {
     /// The player's own inventory and the open container's contents,
     /// read-only (interface `inventory`).
     Inventory,
+    /// The living mobs around the player and the entity under the
+    /// crosshair, read-only (interface `entity`).
+    Entity,
 }
 impl Capability {
-    pub const ALL: [Capability; 13] = [
+    pub const ALL: [Capability; 14] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -122,6 +125,7 @@ impl Capability {
         Capability::World,
         Capability::Recipes,
         Capability::Inventory,
+        Capability::Entity,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -146,6 +150,7 @@ impl Capability {
             Capability::World => "world",
             Capability::Recipes => "recipes",
             Capability::Inventory => "inventory",
+            Capability::Entity => "entity",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -158,6 +163,7 @@ impl Capability {
                 | Capability::Input
                 | Capability::Recipes
                 | Capability::Inventory
+                | Capability::Entity
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -184,6 +190,7 @@ impl Capability {
                 "read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items"
             }
             Capability::Inventory => "see your inventory and open containers",
+            Capability::Entity => "see the mobs around you and the entity you look at",
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -226,6 +233,7 @@ impl fmt::Display for Capability {
             Capability::World => "world",
             Capability::Recipes => "recipes",
             Capability::Inventory => "inventory",
+            Capability::Entity => "entity",
         };
         f.write_str(name)
     }

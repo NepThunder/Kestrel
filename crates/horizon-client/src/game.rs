@@ -183,6 +183,8 @@ mod mob_blocks;
 mod mob_gear;
 mod mob_looting;
 mod mob_sounds;
+#[cfg(feature = "mods")]
+mod mod_entities;
 mod mod_input;
 #[cfg(feature = "mods")]
 mod mod_inventory;

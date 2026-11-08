@@ -8,8 +8,8 @@
 //! test written in TOML, `tests/<name>.toml` in the mod's folder: steps, each
 //! saying what happens and what the mod must have shown by then.
 use crate::{
-    BlockPos, Clock, Container, Corner, GameMode, InvStack, Mods, Output, Panel, Player,
-    PlayerInventory, ServerPlayer, Snapshot, Status,
+    BlockPos, Clock, Container, Corner, Entity, GameMode, InvStack, Mods, Output, Panel, Player,
+    PlayerInventory, ServerPlayer, Snapshot, Status, Target,
 };
 use serde::Deserialize;
 use std::{
@@ -35,6 +35,18 @@ pub struct TestGame {
     /// script sets them with its `inventory` / `container` steps.
     pub inventory: PlayerInventory,
     pub open_container: Option<Container>,
+    /// What the mod reads with capability `entity`: the living mobs
+    /// around the player, as the game's snapshot builder lists them
+    /// (other players excepted, multiplayer excepted — see
+    /// [`TestGame::snapshot`]), and the mob under the crosshair, if
+    /// any. A script sets the mobs with its `entities` steps; the
+    /// target is worked out from them, the player's aim and the
+    /// script's blocks.
+    pub entities: Vec<Entity>,
+    /// Multiplayer from a script's `multiplayer` step on: `entities()`
+    /// reads empty and health reads None, while the crosshair target
+    /// still answers.
+    pub multiplayer: bool,
     /// The player is dead: the game reads no open container while the
     /// death screen is up, so neither does the sandbox.
     pub dead: bool,
@@ -135,6 +147,8 @@ impl TestGame {
                 carried: None,
             },
             open_container: None,
+            entities: Vec::new(),
+            multiplayer: false,
             dead: false,
             world: Default::default(),
         };
@@ -160,6 +174,33 @@ impl TestGame {
     }
 
     fn snapshot(&mut self) {
+        // The list as the game's snapshot builder makes it: other
+        // players are not listed, in multiplayer it is empty, and on
+        // the title screen there is no player to stand near — and it is
+        // nearest first, at most 256.
+        let entities: Vec<Entity> = match (&self.player, self.multiplayer) {
+            (None, _) | (_, true) => Vec::new(),
+            (Some(p), false) => {
+                let mut list: Vec<Entity> = self
+                    .entities
+                    .iter()
+                    .filter(|e| e.kind != "minecraft:player")
+                    .filter(|e| {
+                        (e.x - p.x).powi(2) + (e.y - p.y).powi(2) + (e.z - p.z).powi(2)
+                            <= 128.0 * 128.0
+                    })
+                    .cloned()
+                    .collect();
+                list.sort_by(|a, b| {
+                    let d = |e: &Entity| {
+                        (e.x - p.x).powi(2) + (e.y - p.y).powi(2) + (e.z - p.z).powi(2)
+                    };
+                    d(a).partial_cmp(&d(b)).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                list.truncate(256);
+                list
+            }
+        };
         self.mods.set_snapshot(Snapshot {
             player: self.player.clone(),
             clock: self.clock,
@@ -171,8 +212,76 @@ impl TestGame {
             // reads while the death screen is up. A script that revives
             // the player must close the container itself, as respawn does.
             open_container: (!self.dead).then(|| self.open_container.clone()).flatten(),
+            entities,
+            targeted: self.compute_targeted(),
             ..Snapshot::default()
         });
+    }
+
+    /// The mob under the crosshair, as the game's snapshot builder finds
+    /// it: the nearest fixture mob along the player's view within 128
+    /// blocks, before any block of the script's world. Player mobs may
+    /// be named, with no health; in multiplayer health reads None.
+    fn compute_targeted(&self) -> Option<Target> {
+        let player = self.player.as_ref()?;
+        let eye = [player.x, player.y + 1.62, player.z];
+        // The game's view vector: from the head's yaw and pitch.
+        let (yaw, pitch) = (
+            f64::from(player.yaw).to_radians(),
+            f64::from(player.pitch).to_radians(),
+        );
+        let dir = [
+            -yaw.sin() * pitch.cos(),
+            -pitch.sin(),
+            yaw.cos() * pitch.cos(),
+        ];
+        let reach = 128.0;
+        // The first non-air block along the view, if any within reach:
+        // a mob past it is hidden from the crosshair.
+        let mut block_at = f64::INFINITY;
+        let mut t = 0.0;
+        while t <= reach {
+            let at = [
+                eye[0] + dir[0] * t,
+                eye[1] + dir[1] * t,
+                eye[2] + dir[2] * t,
+            ];
+            let block = [
+                at[0].floor() as i32,
+                at[1].floor() as i32,
+                at[2].floor() as i32,
+            ];
+            if self
+                .world
+                .get(&(block[0], block[1], block[2]))
+                .is_some_and(|s| s != "minecraft:air")
+            {
+                block_at = t;
+                break;
+            }
+            t += 0.02;
+        }
+        let mut best: Option<(usize, f64)> = None;
+        for (i, e) in self.entities.iter().enumerate() {
+            let half = f64::from(e.width) / 2.0;
+            let min = [e.x - half, e.y, e.z - half];
+            let max = [e.x + half, e.y + f64::from(e.height), e.z + half];
+            let Some(hit) = ray_box(eye, dir, reach, min, max) else {
+                continue;
+            };
+            if hit < block_at && best.is_none_or(|b| hit < b.1) {
+                best = Some((i, hit));
+            }
+        }
+        let (i, distance) = best?;
+        let mut entity = self.entities[i].clone();
+        if self.multiplayer || entity.kind == "minecraft:player" {
+            entity.health = None;
+        }
+        Some(Target {
+            entity,
+            distance: distance as f32,
+        })
     }
     /// Whether the mod is a server mod.
     pub fn server(&self) -> bool {
@@ -470,10 +579,77 @@ impl ContainerSet {
     }
 }
 
+/// One mob of a script's entity fixture (capability `entity`), in the
+/// WIT record's shape: the snapshot lists it (players excepted,
+/// multiplayer excepted) and the crosshair may target it. A mob without
+/// `health` reads full health; `name` defaults to the kind.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct EntitySet {
+    id: u32,
+    kind: String,
+    #[serde(default)]
+    name: String,
+    x: f64,
+    y: f64,
+    z: f64,
+    #[serde(default)]
+    vx: f64,
+    #[serde(default)]
+    vy: f64,
+    #[serde(default)]
+    vz: f64,
+    #[serde(default)]
+    yaw: f32,
+    #[serde(default)]
+    health: Option<f32>,
+    max_health: f32,
+    width: f32,
+    height: f32,
+    #[serde(default = "on_ground_default")]
+    on_ground: bool,
+    #[serde(default)]
+    custom_name: Option<String>,
+    #[serde(default)]
+    baby: bool,
+}
+
+fn on_ground_default() -> bool {
+    true
+}
+
+impl EntitySet {
+    fn to_entity(&self) -> Entity {
+        Entity {
+            id: self.id,
+            kind: self.kind.clone(),
+            name: if self.name.is_empty() {
+                self.kind.clone()
+            } else {
+                self.name.clone()
+            },
+            x: self.x,
+            y: self.y,
+            z: self.z,
+            vx: self.vx,
+            vy: self.vy,
+            vz: self.vz,
+            yaw: self.yaw,
+            health: self.health.or(Some(self.max_health)),
+            max_health: self.max_health,
+            width: self.width,
+            height: self.height,
+            on_ground: self.on_ground,
+            custom_name: self.custom_name.clone(),
+            baby: self.baby,
+        }
+    }
+}
+
 /// One step. Its parts happen in this order: `reload`, `title-screen`,
 /// `blocks`, `join`, `player`, `clock`, `inventory`, `container`,
-/// `close-container`, `dead`, `ticks`, `frames`, `chat`, `command`, `break`,
-/// `place`, `leave`; then the blocks the mod set are made, and `expect`
+/// `close-container`, `dead`, `entities`, `multiplayer`, `ticks`,
+/// `frames`, `chat`, `command`, `break`, `place`, `leave`; then the blocks the mod set are made, and `expect`
 /// is checked against what the mod showed and changed during the step.
 /// For a server mod, `player`, `chat`, `command`, `break` and `place` are
 /// the doing of the player named by `as`, or of the first player on.
@@ -498,6 +674,15 @@ pub struct Step {
     /// reads as closed from this step on.
     #[serde(default)]
     dead: bool,
+    /// The living mobs around the player (capability `entity`):
+    /// replaces the fixture wholesale; a step without it keeps the
+    /// last one.
+    entities: Option<Vec<EntitySet>>,
+    /// Multiplayer from this step on (capability `entity`): the list
+    /// reads empty and health reads None, while the crosshair target
+    /// still answers.
+    #[serde(default)]
+    multiplayer: bool,
     #[serde(default)]
     ticks: u64,
     #[serde(default)]
@@ -620,6 +805,12 @@ impl Step {
         if self.dead {
             parts.push("dies".to_string());
         }
+        if self.entities.is_some() {
+            parts.push("entities".to_string());
+        }
+        if self.multiplayer {
+            parts.push("multiplayer".to_string());
+        }
         if self.ticks > 0 {
             parts.push(count(self.ticks, "tick"));
         }
@@ -708,6 +899,12 @@ impl Step {
         }
         if self.dead {
             game.dead = true;
+        }
+        if let Some(set) = &self.entities {
+            game.entities = set.iter().map(EntitySet::to_entity).collect();
+        }
+        if self.multiplayer {
+            game.multiplayer = true;
         }
         game.tick(self.ticks);
         game.frames(self.frames);
@@ -860,6 +1057,31 @@ fn corner_name(c: Corner) -> &'static str {
         Corner::BottomLeft => "bottom-left",
         Corner::BottomRight => "bottom-right",
     }
+}
+
+/// The distance along `dir` from `eye` to the box, if the ray hits it
+/// within `reach` — the slab test the game's crosshair raycast uses.
+fn ray_box(eye: [f64; 3], dir: [f64; 3], reach: f64, min: [f64; 3], max: [f64; 3]) -> Option<f64> {
+    let mut t0: f64 = 0.0;
+    let mut t1: f64 = reach;
+    for a in 0..3 {
+        if dir[a].abs() < f64::EPSILON {
+            if eye[a] < min[a] || eye[a] > max[a] {
+                return None;
+            }
+        } else {
+            let (mut near, mut far) = ((min[a] - eye[a]) / dir[a], (max[a] - eye[a]) / dir[a]);
+            if near > far {
+                std::mem::swap(&mut near, &mut far);
+            }
+            t0 = t0.max(near);
+            t1 = t1.min(far);
+            if t0 > t1 {
+                return None;
+            }
+        }
+    }
+    Some(t0.max(0.0))
 }
 
 fn same<T: PartialEq + std::fmt::Debug>(what: &str, want: &T, got: &T) -> Result<(), String> {
