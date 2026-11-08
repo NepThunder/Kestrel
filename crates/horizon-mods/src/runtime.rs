@@ -1520,8 +1520,7 @@ impl entity::Host for State {
         let target = self.snapshot.targeted.clone()?;
         // NaN compares false: no hit. A request past the cap gets the
         // capped result, as `game.raycast` does with `RAYCAST_MAX`.
-        (target.distance <= distance.min(ENTITY_TARGET_MAX) && !distance.is_nan())
-            .then_some(target)
+        (target.distance <= distance.min(ENTITY_TARGET_MAX) && !distance.is_nan()).then_some(target)
     }
 }
 impl browser::Host for State {

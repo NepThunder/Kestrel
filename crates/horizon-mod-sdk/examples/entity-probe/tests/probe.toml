@@ -1,0 +1,155 @@
+# Client entity reads: the mobs around the player, nearest first, with
+# their fields — and the mob under the crosshair. The player stands at
+# 0.5 64 0.5 facing south (+z). A baby zombie, a hurt zombie, a named
+# sheep and a cow are near; another player stands off to the side and
+# must never be listed.
+
+[[step]]
+ticks = 1
+[[step.entities]]
+id = 4
+kind = "minecraft:zombie"
+name = "Zombie"
+x = -0.5
+y = 64.0
+z = 3.5
+health = 20.0
+max-health = 20.0
+width = 0.3
+height = 1.0
+baby = true
+[[step.entities]]
+id = 1
+kind = "minecraft:zombie"
+name = "Zombie"
+x = 0.5
+y = 64.0
+z = 5.5
+health = 14.0
+max-health = 20.0
+width = 0.6
+height = 1.95
+[[step.entities]]
+id = 3
+kind = "minecraft:sheep"
+name = "Dolly"
+x = -2.5
+y = 64.0
+z = 4.5
+health = 8.0
+max-health = 8.0
+width = 0.9
+height = 1.3
+custom-name = "Dolly"
+[[step.entities]]
+id = 2
+kind = "minecraft:cow"
+name = "Cow"
+x = 3.5
+y = 64.0
+z = 8.5
+health = 10.0
+max-health = 10.0
+width = 0.9
+height = 1.4
+[[step.entities]]
+id = 5
+kind = "minecraft:player"
+name = "Steve"
+x = 5.5
+y = 64.0
+z = 5.5
+health = 20.0
+max-health = 20.0
+width = 0.6
+height = 1.8
+[step.expect]
+chat = ["target: Zombie (minecraft:zombie) 4.7 blocks 14.0/20.0"]
+panel = [
+  "Zombie (minecraft:zombie) 3.2 20.0/20.0 0.30x1.00 v=0.0,0.0,0.0 yaw=0.0 baby ground",
+  "Zombie (minecraft:zombie) 5.0 14.0/20.0 0.60x1.95 v=0.0,0.0,0.0 yaw=0.0 ground",
+  "Dolly (minecraft:sheep) 5.0 8.0/8.0 0.90x1.30 v=0.0,0.0,0.0 yaw=0.0 ground",
+  "Cow (minecraft:cow) 8.5 10.0/10.0 0.90x1.40 v=0.0,0.0,0.0 yaw=0.0 ground",
+]
+
+# The crosshair may name a player under it — with no health — while the
+# list still keeps players out.
+[[step]]
+ticks = 1
+[[step.entities]]
+id = 5
+kind = "minecraft:player"
+name = "Steve"
+x = 0.5
+y = 64.0
+z = 3.5
+health = 20.0
+max-health = 20.0
+width = 0.6
+height = 1.8
+[[step.entities]]
+id = 1
+kind = "minecraft:zombie"
+name = "Zombie"
+x = 0.5
+y = 64.0
+z = 5.5
+health = 14.0
+max-health = 20.0
+width = 0.6
+height = 1.95
+[step.expect]
+chat = ["target: Steve (minecraft:player) 2.7 blocks ?/20.0"]
+panel = ["Zombie (minecraft:zombie) 5.0 14.0/20.0 0.60x1.95 v=0.0,0.0,0.0 yaw=0.0 ground"]
+
+# A wall between the player and the mobs hides them from the crosshair,
+# but they stay in the list.
+[[step]]
+ticks = 1
+blocks = [{ x = 0, y = 65, z = 3, state = "minecraft:stone" }]
+[step.expect]
+chat = ["target: none"]
+panel = ["Zombie (minecraft:zombie) 5.0 14.0/20.0 0.60x1.95 v=0.0,0.0,0.0 yaw=0.0 ground"]
+
+# Turning around and looking slightly down: the cow behind the player
+# is the target now. (A level look passes over a 1.4-high cow: the eye
+# is 1.62 up, the cow's top 1.4.)
+[[step]]
+ticks = 1
+[step.player]
+yaw = 180.0
+pitch = 10.0
+[[step.entities]]
+id = 2
+kind = "minecraft:cow"
+name = "Cow"
+x = 0.5
+y = 64.0
+z = -5.5
+health = 10.0
+max-health = 10.0
+width = 0.9
+height = 1.4
+[step.expect]
+chat = ["target: Cow (minecraft:cow) 5.6 blocks 10.0/10.0"]
+panel = ["Cow (minecraft:cow) 6.0 10.0/10.0 0.90x1.40 v=0.0,0.0,0.0 yaw=0.0 ground"]
+
+# Past 128 blocks there is nothing to list and nothing to target.
+[[step]]
+ticks = 1
+[step.player]
+yaw = 0.0
+[[step.entities]]
+id = 1
+kind = "minecraft:zombie"
+name = "Zombie"
+x = 0.5
+y = 64.0
+z = 130.5
+health = 20.0
+max-health = 20.0
+width = 0.6
+height = 1.95
+[step.expect]
+chat = ["target: none"]
+panel = ["no mobs"]
