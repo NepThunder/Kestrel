@@ -646,6 +646,7 @@ impl Game<'_> {
         }
         let (recipes, known_recipes) = self.mod_recipes();
         let (inventory, open_container) = self.mod_inventory();
+        let (entities, targeted) = self.mod_entities();
         Snapshot {
             player,
             clock,
@@ -663,6 +664,8 @@ impl Game<'_> {
             creative: self.creative,
             inventory,
             open_container,
+            entities,
+            targeted,
         }
     }
     /// The first block along the player's view within
