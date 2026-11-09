@@ -213,6 +213,10 @@ pub(crate) fn with_context<R>(
         match result {
             Ok(value) => Some(value),
             Err(error) => {
+                // Print the real Java exception (class, message, stack)
+                // to logcat before clearing it; the jni error alone only
+                // says that an exception occurred, never which one.
+                let _ = env.exception_describe();
                 let _ = env.exception_clear();
                 log::warn!("Android platform: {error}");
                 None
@@ -548,36 +552,54 @@ pub fn can_install_packages() -> bool {
 
 /// Open the system "Install unknown apps" screen for this app, so the
 /// player can allow Kestrel to install APKs. Returns false when the
-/// settings screen could not be opened.
+/// settings screen could not be opened. Some OEM Settings apps do not
+/// resolve the per-app screen, so fall back to the all-apps list, then to
+/// this app's info page, which every ROM provides.
 pub fn open_install_permission_settings() -> bool {
     let Some(package) = package_name() else {
         return false;
     };
+    open_settings_screen(
+        "android.settings.action.MANAGE_UNKNOWN_APP_SOURCES",
+        Some(&package),
+    ) || open_settings_screen(
+        "android.settings.action.MANAGE_UNKNOWN_APP_SOURCES",
+        None,
+    ) || open_settings_screen(
+        "android.settings.APPLICATION_DETAILS_SETTINGS",
+        Some(&package),
+    )
+}
+
+/// Open one system settings screen, optionally scoped to a package.
+/// Each call is its own `with_context`, so a Java exception thrown by one
+/// attempt is cleared there and cannot poison the next.
+fn open_settings_screen(action: &str, package: Option<&str>) -> bool {
     with_context(|env, activity| {
-        let action = JObject::from(env.new_string(
-            "android.settings.action.MANAGE_UNKNOWN_APP_SOURCES",
-        )?);
+        let action = JObject::from(env.new_string(action)?);
         let intent = env.new_object(
             "android/content/Intent",
             "(Ljava/lang/String;)V",
             &[JValue::Object(&action)],
         )?;
-        let uri_text = format!("package:{package}");
-        let address = JObject::from(env.new_string(uri_text)?);
-        let uri = env
-            .call_static_method(
-                "android/net/Uri",
-                "parse",
-                "(Ljava/lang/String;)Landroid/net/Uri;",
-                &[JValue::Object(&address)],
-            )?
-            .l()?;
-        env.call_method(
-            &intent,
-            "setData",
-            "(Landroid/net/Uri;)Landroid/content/Intent;",
-            &[JValue::Object(&uri)],
-        )?;
+        if let Some(package) = package {
+            let uri_text = format!("package:{package}");
+            let address = JObject::from(env.new_string(uri_text)?);
+            let uri = env
+                .call_static_method(
+                    "android/net/Uri",
+                    "parse",
+                    "(Ljava/lang/String;)Landroid/net/Uri;",
+                    &[JValue::Object(&address)],
+                )?
+                .l()?;
+            env.call_method(
+                &intent,
+                "setData",
+                "(Landroid/net/Uri;)Landroid/content/Intent;",
+                &[JValue::Object(&uri)],
+            )?;
+        }
         // FLAG_ACTIVITY_NEW_TASK: the settings open from a new task.
         env.call_method(
             &intent,
