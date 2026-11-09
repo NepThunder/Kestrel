@@ -611,6 +611,43 @@ pub struct Mods {
     generation: u64,
 }
 
+/// A `Send` handle to a running [`Mods`] for the sound engine's hook
+/// (API 15): the engine owns the hook and calls it from inside the
+/// game's own audio calls, where the borrow checker cannot see that
+/// the game's audio and mods are disjoint fields, so the game hands
+/// over a raw pointer rather than a reference.
+///
+/// The contract is the game's: it builds the handle from `&mut Mods`,
+/// refreshes it whenever mods load and on every sound tick, calls
+/// [`SoundHookHandle::adjust`] only on the game thread while the game
+/// runs, and the `Mods` outlives the handle (both are owned by the
+/// same session object). The unsafe stays in this crate so the game's
+/// crate roots can forbid unsafe code.
+pub struct SoundHookHandle {
+    mods: *mut Mods,
+}
+
+// SAFETY: the handle is only a pointer the game dereferences on its
+// own thread under the contract above; the `Mods` itself never moves
+// between threads through it.
+unsafe impl Send for SoundHookHandle {}
+
+impl SoundHookHandle {
+    pub fn new(mods: &mut Mods) -> Self {
+        SoundHookHandle { mods }
+    }
+
+    /// Ask the sound mod about one world sound; see
+    /// [`Mods::adjust_sound`].
+    pub fn adjust(&mut self, query: &ModSoundQuery) -> ModSoundAdjustment {
+        // SAFETY: the game's contract on the type: the pointer came
+        // from its `&mut Mods`, is refreshed on every sound tick, and
+        // this call happens on the game thread while the game runs.
+        let mods = unsafe { &mut *self.mods };
+        mods.adjust_sound(query)
+    }
+}
+
 impl Mods {
     /// Changes whenever the running mods (so their commands) change.
     pub fn generation(&self) -> u64 {

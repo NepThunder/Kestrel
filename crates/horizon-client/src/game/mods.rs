@@ -854,8 +854,8 @@ impl Game<'_> {
     /// the engine. Called when mods (re)load and again every sound
     /// tick, so the hook always points at the current `Mods`.
     pub(super) fn install_sound_hook(&mut self) {
-        let mods: *mut Mods = &mut self.mods.mods;
-        self.audio.engine.set_hook(Box::new(ModSoundHook { mods }));
+        let handle = horizon_mods::SoundHookHandle::new(&mut self.mods.mods);
+        self.audio.engine.set_hook(Box::new(ModSoundHook { handle }));
     }
     /// Lends the in-place dimension's loaded columns to capability `world`
     /// for the client tick, when a running mod has it and this is the
@@ -2153,37 +2153,35 @@ mod native_bundle_tests {
 
 /// The sound engine's hook (API 15): forwards each world sound to
 /// the mods and returns the winning mod's adjustment.
-#[cfg(feature = "mods")]
 ///
-/// The `Mods` is held by raw pointer because the engine calls the
-/// hook from inside the game's own audio calls (`self.audio.play`,
-/// `self.audio.tick`), where the borrow checker cannot see that the
-/// game's `audio` and `mods` are disjoint fields. The pointer is
-/// refreshed from `&mut self.mods.mods` whenever mods load and on
-/// every sound tick, the hook only runs on the game thread inside
-/// those calls, and the `Mods` outlives the engine: both are fields
-/// of the same `Game`, which owns them for the whole session.
+/// The `Mods` sits behind a `SoundHookHandle` because the engine
+/// calls the hook from inside the game's own audio calls
+/// (`self.audio.play`, `self.audio.tick`), where the borrow checker
+/// cannot see that the game's `audio` and `mods` are disjoint
+/// fields. The handle is refreshed from `&mut self.mods.mods`
+/// whenever mods load and on every sound tick, the hook only runs
+/// on the game thread inside those calls, and the `Mods` outlives
+/// the engine: both are fields of the same `Game`, which owns them
+/// for the whole session. The handle keeps the one raw pointer (and
+/// its unsafe) inside `horizon-mods`, so this file stays free of
+/// unsafe code, as both crate roots require.
+///
+/// The engine is named through the `horizon_client` library, as in
+/// `game/music.rs`: this file is compiled under two crate roots
+/// (the desktop `main.rs` and Android's `android_main.rs`), neither
+/// of which re-exports `sound_engine` at `crate::`.
+#[cfg(feature = "mods")]
 struct ModSoundHook {
-    mods: *mut Mods,
+    handle: horizon_mods::SoundHookHandle,
 }
 
-
-// The hook never leaves the game thread in practice; the engine
-// only calls it from its play paths on that thread.
 #[cfg(feature = "mods")]
-unsafe impl Send for ModSoundHook {}
-
-#[cfg(feature = "mods")]
-impl crate::sound_engine::SoundHook for ModSoundHook {
+impl horizon_client::sound_engine::SoundHook for ModSoundHook {
     fn adjust(
         &mut self,
-        query: &crate::sound_engine::SoundQuery,
-    ) -> crate::sound_engine::SoundAdjustment {
-        // SAFETY: see the type's comment. The pointer came from the
-        // game's own `&mut Mods` and is refreshed every sound tick;
-        // this call happens on the game thread while the game runs.
-        let mods = unsafe { &mut *self.mods };
-        let answer = mods.adjust_sound(&horizon_mods::ModSoundQuery {
+        query: &horizon_client::sound_engine::SoundQuery,
+    ) -> horizon_client::sound_engine::SoundAdjustment {
+        let answer = self.handle.adjust(&horizon_mods::ModSoundQuery {
             event: query.event.clone(),
             category: query.category as u32,
             position: horizon_mods::ModSoundPosition {
@@ -2195,7 +2193,7 @@ impl crate::sound_engine::SoundHook for ModSoundHook {
             volume: query.volume,
             pitch: query.pitch,
         });
-        crate::sound_engine::SoundAdjustment {
+        horizon_client::sound_engine::SoundAdjustment {
             gain: answer.gain,
             lowpass: answer.lowpass,
             reverb: answer.reverb,
