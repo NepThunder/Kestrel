@@ -13409,6 +13409,14 @@ impl Game<'_> {
             .is_some_and(|p| p.auto_spin_attack_ticks > 0);
         let items = self.visible_hand_items();
         let off_hand_empty = items[1].is_none();
+        // API 16: a mod's hand offset rides the whole hand pose, the
+        // arms and the items alike — but not while a two-handed map
+        // is held: its pose is its own, and offsets skip it entirely.
+        let two_handed_map = items[0]
+            .as_ref()
+            .is_some_and(|s| maps::map_id(s).is_some())
+            && off_hand_empty;
+        let to_world = self.mod_hand_pose(to_world, two_handed_map);
         for (i, (hand, item)) in Hand::BOTH.into_iter().zip(items).enumerate() {
             if !shown[i] {
                 continue;

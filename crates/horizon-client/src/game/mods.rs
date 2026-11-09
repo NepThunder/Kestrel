@@ -29,8 +29,8 @@ use {
         ui,
     },
     horizon_mods::{
-        Clock, ModKey, Mods, Output, Player, Runs, ServerPlayer, Snapshot, SnapshotCamera, Status,
-        UiScreen, UiWidget, WorldView,
+        Clock, ModHandState, ModKey, ModSwingKind, Mods, Output, Player, Runs, ServerPlayer,
+        Snapshot, SnapshotCamera, Status, UiScreen, UiWidget, WorldView,
     },
     std::time::Instant,
     winit::{event::MouseButton, keyboard::KeyCode},
@@ -111,6 +111,13 @@ pub(super) struct ModsState {
     /// Playing at the last frame, for `mod_input_frame`.
     #[cfg(feature = "mods")]
     pub(super) playing: bool,
+    /// The look at the last hand-state push (API 16): the per-frame
+    /// look delta `hand.get-state` reports is differenced against
+    /// it here, where the frames are. None before a session's first
+    /// push, and reset whenever the hand is not posed, so a return
+    /// to the world never reads as one giant turn.
+    #[cfg(feature = "mods")]
+    hand_prev_look: Option<(f32, f32)>,
 }
 
 /// The mappings `input.mapping` answers for, with the default key their
@@ -352,6 +359,13 @@ impl Game<'_> {
     pub(super) fn return_client_world(&mut self) {}
     pub(super) fn tick_mods(&mut self) {}
     pub(super) fn mods_frame(&mut self, _elapsed: Duration) {}
+    pub(super) fn mod_hand_pose(
+        &self,
+        to_world: glam::Mat4,
+        _two_handed_map: bool,
+    ) -> glam::Mat4 {
+        to_world
+    }
     pub(super) fn mod_world_lines(&self, _lines: &mut Vec<horizon_client::gizmos::Line>) {}
     pub(super) fn mod_command(&mut self, _command: &str) -> bool {
         false
@@ -945,12 +959,112 @@ impl Game<'_> {
             return;
         }
         self.mod_input_frame();
+        // API 16: the hand's state for this frame goes in before the
+        // frame hooks, so a hook reads the frame being rendered.
+        self.push_hand_state();
         if self.mods.mods.wants_frames() {
             let snapshot = self.mod_snapshot();
             self.mods.mods.set_snapshot(snapshot);
         }
         self.mods.mods.frame(elapsed.as_secs_f32());
         self.show_mod_output();
+    }
+    /// API 16 (`hand.get-state`): the first-person hand's state for
+    /// this frame, from the same values `hand_geometry` poses from —
+    /// the swing and its animation, the equip heights, the look with
+    /// the turn since the last push (tracked in `hand_prev_look`),
+    /// the view bob, the held item, the use and a two-handed map.
+    /// While the hand is not posed (the title screen, third person,
+    /// sleeping, a detached mod camera, death), the mods are cleared
+    /// back to the zero state instead, and the look tracking resets.
+    pub(super) fn push_hand_state(&mut self) {
+        let Some(state) = self.hand_state_now() else {
+            self.mods.hand_prev_look = None;
+            self.mods.mods.clear_hand_state();
+            return;
+        };
+        self.mods.mods.set_hand_state(state);
+    }
+    /// [`Game::push_hand_state`]'s state, or None while the hand is
+    /// not posed this frame (`hand_geometry`'s own conditions).
+    fn hand_state_now(&mut self) -> Option<ModHandState> {
+        if self.spectator()
+            || self.ui.hide_gui
+            || self.sleeping.is_some()
+            || !self.camera_type.first_person()
+            || self.mod_camera_detached()
+            || self
+                .player
+                .as_ref()
+                .is_none_or(|p| p.health.dead_or_dying())
+            || self.screen == Screen::Dead
+        {
+            return None;
+        }
+        let a = self.clock.camera_fraction() as f32;
+        let items = self.visible_hand_items();
+        let two_handed = items[0]
+            .as_ref()
+            .is_some_and(|s| super::maps::map_id(s).is_some())
+            && items[1].is_none();
+        let (look_delta_yaw, look_delta_pitch) = match self.mods.hand_prev_look {
+            Some((yaw, pitch)) => (
+                (self.yaw - yaw + 180.0).rem_euclid(360.0) - 180.0,
+                self.pitch - pitch,
+            ),
+            None => (0.0, 0.0),
+        };
+        self.mods.hand_prev_look = Some((self.yaw, self.pitch));
+        let swinging = self.swing.swinging();
+        // The swing state knows the animation and the hand, not the
+        // click that started it: a swing of the hand that is using
+        // an item reads as `use`, every other swing as `attack`.
+        let swing_kind = if !swinging {
+            ModSwingKind::Other
+        } else if self.used_hand() == Some(self.swing.attack_hand()) {
+            ModSwingKind::Use
+        } else {
+            ModSwingKind::Attack
+        };
+        Some(ModHandState {
+            swinging,
+            swing_progress: self.swing.animation(a),
+            swing_kind,
+            equip_progress: self.heights.interpolated(a)[0],
+            yaw: self.yaw,
+            pitch: self.pitch,
+            look_delta_yaw,
+            look_delta_pitch,
+            bob_phase: self.avatar.backwards_interpolated_walk_distance(a),
+            bob_amount: self.avatar.interpolated_bob(a),
+            held_item: items[0].as_ref().map(|s| String::from(&*s.item)),
+            using_item: self.used_hand().is_some(),
+            two_handed,
+        })
+    }
+    /// API 16: the hand offset the mods set (`hand.set-offset`),
+    /// folded into the hand's view-to-world pose: the game multiplies
+    /// it in view space, after the vanilla pose, so the arm and the
+    /// held item move as one. The pose is returned unchanged while a
+    /// two-handed map is held (its pose is its own) and while no mod
+    /// sets an offset. Pose composition runs later in the frame than
+    /// the frame hooks, and the offset is stateful — the latest one
+    /// set applies, whenever in the frame it was set.
+    pub(super) fn mod_hand_pose(
+        &self,
+        to_world: glam::Mat4,
+        two_handed_map: bool,
+    ) -> glam::Mat4 {
+        if two_handed_map {
+            return to_world;
+        }
+        let Some(offset) = self.mods.mods.hand_offset() else {
+            return to_world;
+        };
+        to_world
+            * horizon_client::first_person::hand_offset_matrix(
+                offset.x, offset.y, offset.z, offset.pitch, offset.yaw, offset.roll,
+            )
     }
     /// `/command` typed in chat: true when a mod owns it.
     pub(super) fn mod_command(&mut self, command: &str) -> bool {

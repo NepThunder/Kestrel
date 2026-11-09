@@ -576,6 +576,102 @@ interface audio {
     clear-environment: func();
 }
 
+/// Capability `render` (API 16): the first-person hand's pose. The
+/// game hands the mod the hand's state each frame; the mod hands
+/// back one transform the game multiplies into the pose of both the
+/// arm and the held item, after the vanilla pose. While a two-handed
+/// map is held the game ignores offsets: that pose is its own.
+interface hand {
+    /// What a swing is, as far as the game can honestly tell: the
+    /// swing state records an animation and a hand, not which click
+    /// started it, so `use` is a swing of the hand that is using an
+    /// item while it uses it, `attack` is every other swing (the
+    /// plain whack and a spear's stab alike), and `other` is no
+    /// swing at all.
+    enum swing-kind {
+        attack,
+        %use,
+        other,
+    }
+    /// The first-person hand this frame, as the pose code reads it.
+    /// One state covers both hands, as the pose values it mirrors
+    /// are the main hand's (the off hand's pose differs in side,
+    /// not in these numbers).
+    record hand-state {
+        /// A swing is running.
+        swinging: bool,
+        /// The swing's progress, 0 to 1: the value the pose swings
+        /// by, of the hand that swings (0 when none does).
+        swing-progress: f32,
+        swing-kind: swing-kind,
+        /// How far the main hand's item has been raised after a swap
+        /// or a use: 0 just dropped, 1 fully up (the pose's equip
+        /// height).
+        equip-progress: f32,
+        /// The player's look, degrees, as F3 shows them.
+        yaw: f32,
+        /// Degrees: -90 looks straight up, 90 straight down.
+        pitch: f32,
+        /// How far the look turned since the previous frame's
+        /// state, in degrees: the yaw wrapped to -180..180, the
+        /// pitch the plain difference. The game works them out, so
+        /// a mod need not difference frames itself (its own
+        /// differences would read teleports and menu pauses as
+        /// turns). Both are 0 on the first state of a session.
+        look-delta-yaw: f32,
+        look-delta-pitch: f32,
+        /// The view bob's phase: the very value the game's bob
+        /// reads, its cycle sin(phase * pi) and cos(phase * pi)
+        /// over the distance walked. It runs negative as the player
+        /// walks forward (vanilla's backwards interpolation), so a
+        /// mod that copies the game's own formulas stays in step
+        /// with the camera's bob.
+        bob-phase: f32,
+        /// How strong the view bob is now: 0 standing still or
+        /// flying, up to 1 at a full walk.
+        bob-amount: f32,
+        /// The main hand's item, `minecraft:diamond_sword`; none
+        /// when the hand is empty.
+        held-item: option<string>,
+        /// An item is in use (eating, drinking, drawing a bow,
+        /// blocking, ...) in either hand.
+        using-item: bool,
+        /// A two-handed map is held: the game skips hand offsets
+        /// entirely while it is, and the hand shows the map's pose.
+        two-handed: bool,
+    }
+    /// A shift of the hand's pose, in view space: the game applies
+    /// the translation, then the rotation (pitch, then yaw, then
+    /// roll), after the vanilla pose, to the arm and the held item
+    /// alike.
+    record hand-transform {
+        /// Blocks to the right and up, and towards the viewer:
+        /// view space looks along -z, so a punch forward is a
+        /// negative z.
+        x: f32,
+        y: f32,
+        z: f32,
+        /// Degrees about the view axes.
+        pitch: f32,
+        yaw: f32,
+        roll: f32,
+    }
+    /// The hand's state, as of the game's last push: the game
+    /// pushes once per rendered frame, before the frame hooks run.
+    /// Before the first push (the title screen, the first frames)
+    /// every field is zero, false or none.
+    get-state: func() -> hand-state;
+    /// Sets this mod's hand offset, until its next call or
+    /// `clear-offset`. There is one hand: the latest call across
+    /// the running mods wins. The game clamps what it applies:
+    /// translation to ±1 block per axis, rotation to ±60 degrees
+    /// per axis, and a non-finite field reads as 0.
+    set-offset: func(offset: hand-transform);
+    /// Takes this mod's hand offset back. Another mod's offset is
+    /// not this call's to clear.
+    clear-offset: func();
+}
+
 /// What the game calls for sounds (API 15). Only the first mod in
 /// load order with this export is asked; mods built before API 15
 /// have no such export and simply never hear sounds. The call must
@@ -1189,6 +1285,7 @@ world horizon-ui-mod {
     import recipes;
     import browser;
     import audio;
+    import hand;
     export ui-events;
     export audio-events;
 }
@@ -1208,10 +1305,13 @@ world audio-host {
     export audio-events;
 }
 
-/// The game's side of capability `render` (imports only).
+/// The game's side of capability `render` (imports only). API 16's
+/// `hand` rides along: it is a render extension, checked against
+/// the `render` capability, not one of its own.
 world render-host {
     import render;
     import input;
+    import hand;
 }
 
 /// The game's side of capability `recipes` (imports only).

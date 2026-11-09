@@ -14,7 +14,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `command` | [`command`](#command) | run commands as you, with your permissions |
 | `registries` | data files (`assets/`, `data/`), no interface | add blocks, items, mob effects and entity types to your worlds |
 | `ui` | [`ui`](#ui) | show its own screens and a settings page |
-| `render` | [`render`](#render) | draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it and turn off distance fog |
+| `render` | [`render`](#render) | draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it, turn off distance fog and move your hand and held item in first person |
 | `input` | [`input`](#input) | see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys |
 | `players` | [`players`](#players) | see who is on the server and message them |
 | `world` | [`world`](#world) | read the world's blocks, and change them where the game runs the world |
@@ -41,7 +41,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `audio`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `audio`, `hand`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
 - Exports (what the mod provides): `ui-events`, `audio-events`, `events`
 
 ## World `ui-host`
@@ -60,9 +60,9 @@ The game's side of capability `audio` (API 15) beyond `horizon-mod`: a second wo
 
 ## World `render-host`
 
-The game's side of capability `render` (imports only).
+The game's side of capability `render` (imports only). API 16's `hand` rides along: it is a render extension, checked against the `render` capability, not one of its own.
 
-- Imports (what the game offers): `render`, `input`
+- Imports (what the game offers): `render`, `input`, `hand`
 - Exports (what the mod provides): 
 
 ## World `recipes-host`
@@ -557,6 +557,61 @@ Capability `audio` (API 15): the shared reverb's character. The mod that answers
 | --- | --- | --- |
 | `set-environment` | `func(wet: f32, decay: f32)` | Set the shared reverb: a wet gain of 0.0..=1.0 and a decay time in seconds (0.1..=10.0). Out-of-range values are clamped. |
 | `clear-environment` | `func()` | Return the shared reverb to dry (a wet gain of 0). |
+
+## `hand`
+
+Access: not granted by any capability.
+
+Capability `render` (API 16): the first-person hand's pose. The game hands the mod the hand's state each frame; the mod hands back one transform the game multiplies into the pose of both the arm and the held item, after the vanilla pose. While a two-handed map is held the game ignores offsets: that pose is its own.
+
+### enum `swing-kind`
+
+What a swing is, as far as the game can honestly tell: the swing state records an animation and a hand, not which click started it, so `use` is a swing of the hand that is using an item while it uses it, `attack` is every other swing (the plain whack and a spear's stab alike), and `other` is no swing at all.
+
+| Case | |
+| --- | --- |
+| `attack` |  |
+| `use` |  |
+| `other` |  |
+
+### record `hand-state`
+
+The first-person hand this frame, as the pose code reads it. One state covers both hands, as the pose values it mirrors are the main hand's (the off hand's pose differs in side, not in these numbers).
+
+| Field | Type | |
+| --- | --- | --- |
+| `swinging` | `bool` | A swing is running. |
+| `swing-progress` | `f32` | The swing's progress, 0 to 1: the value the pose swings by, of the hand that swings (0 when none does). |
+| `swing-kind` | `swing-kind` |  |
+| `equip-progress` | `f32` | How far the main hand's item has been raised after a swap or a use: 0 just dropped, 1 fully up (the pose's equip height). |
+| `yaw` | `f32` | The player's look, degrees, as F3 shows them. |
+| `pitch` | `f32` | Degrees: -90 looks straight up, 90 straight down. |
+| `look-delta-yaw` | `f32` | How far the look turned since the previous frame's state, in degrees: the yaw wrapped to -180..180, the pitch the plain difference. The game works them out, so a mod need not difference frames itself (its own differences would read teleports and menu pauses as turns). Both are 0 on the first state of a session. |
+| `look-delta-pitch` | `f32` |  |
+| `bob-phase` | `f32` | The view bob's phase: the very value the game's bob reads, its cycle sin(phase * pi) and cos(phase * pi) over the distance walked. It runs negative as the player walks forward (vanilla's backwards interpolation), so a mod that copies the game's own formulas stays in step with the camera's bob. |
+| `bob-amount` | `f32` | How strong the view bob is now: 0 standing still or flying, up to 1 at a full walk. |
+| `held-item` | `option<string>` | The main hand's item, `minecraft:diamond_sword`; none when the hand is empty. |
+| `using-item` | `bool` | An item is in use (eating, drinking, drawing a bow, blocking, ...) in either hand. |
+| `two-handed` | `bool` | A two-handed map is held: the game skips hand offsets entirely while it is, and the hand shows the map's pose. |
+
+### record `hand-transform`
+
+A shift of the hand's pose, in view space: the game applies the translation, then the rotation (pitch, then yaw, then roll), after the vanilla pose, to the arm and the held item alike.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `f32` | Blocks to the right and up, and towards the viewer: view space looks along -z, so a punch forward is a negative z. |
+| `y` | `f32` |  |
+| `z` | `f32` |  |
+| `pitch` | `f32` | Degrees about the view axes. |
+| `yaw` | `f32` |  |
+| `roll` | `f32` |  |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `get-state` | `func() -> hand-state` | The hand's state, as of the game's last push: the game pushes once per rendered frame, before the frame hooks run. Before the first push (the title screen, the first frames) every field is zero, false or none. |
+| `set-offset` | `func(offset: hand-transform)` | Sets this mod's hand offset, until its next call or `clear-offset`. There is one hand: the latest call across the running mods wins. The game clamps what it applies: translation to ±1 block per axis, rotation to ±60 degrees per axis, and a non-finite field reads as 0. |
+| `clear-offset` | `func()` | Takes this mod's hand offset back. Another mod's offset is not this call's to clear. |
 
 ## `audio-events`
 

@@ -96,6 +96,9 @@ mod render_bindings {
     wasmtime::component::bindgen!({
         path: "../horizon-mod-sdk/wit",
         world: "render-host",
+        // As the other worlds: `Mods::hand_offset` and the tests
+        // compare the hand's transform by value.
+        additional_derives: [PartialEq],
     });
 }
 use render_bindings::horizon::mods::input;
@@ -109,6 +112,13 @@ pub use render_bindings::horizon::mods::render::{
     SpriteShape, TextShape, WorldBox, WorldLine, WorldPoint, WorldShape, Zoom as ModZoom,
 };
 use render_bindings::{RenderHost, horizon::mods::render};
+use render_bindings::horizon::mods::hand;
+/// The first-person hand's state and the offset a mod sets on it
+/// (WIT `interface hand`, API 16): a `render` extension, hosted with
+/// the render world.
+pub use render_bindings::horizon::mods::hand::{
+    HandState as ModHandState, HandTransform as ModHandTransform, SwingKind as ModSwingKind,
+};
 /// Capability `recipes`'s imports (docs/mods.md): the game's recipes and items.
 mod recipes_bindings {
     wasmtime::component::bindgen!({
@@ -512,6 +522,9 @@ pub struct RecipePage {
     pub recipes: Vec<BrowserRecipe>,
 }
 static BROWSER_VERSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// The order `hand.set-offset` calls happened in, across mods (API
+/// 16): there is one hand, so the newest stamp wins.
+static HAND_OFFSET_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// Items a panel may hold, and events kept for `browser.poll`.
 const BROWSER_ITEMS: usize = 8192;
 /// `recipes.place` and `give` calls a hook call may make.
@@ -559,6 +572,15 @@ struct State {
     /// Capability `audio`'s shared reverb character (wet gain, decay
     /// seconds), when the mod sets one (API 15).
     sound_env: Option<(f32, f32)>,
+    /// The first-person hand's state the game last pushed (API 16):
+    /// [`Mods::set_hand_state`] writes it into every running mod's
+    /// store before the frame hooks, and `hand.get-state` reads it.
+    /// The zero state until the first push.
+    hand_state: ModHandState,
+    /// This mod's hand offset (API 16) and the order it was set in:
+    /// the running mod with the newest stamp drives the one hand
+    /// ([`Mods::hand_offset`]). Kept clamped by the host call.
+    hand_offset: Option<(u64, ModHandTransform)>,
     /// How many times this mod called `set-camera`: the game re-reads
     /// the look whenever the winning mod's count moves, so a mod
     /// calling `set-camera` every tick with fixed angles keeps the
@@ -832,6 +854,8 @@ impl Mods {
             fog: None,
             camera: None,
             sound_env: None,
+            hand_state: zero_hand_state(),
+            hand_offset: None,
             camera_seq: 0,
             aggregate_camera: None,
             aggregate_is_mine: false,
@@ -1498,6 +1522,39 @@ impl Mods {
         run.store.data().sound_env
     }
 
+    /// The first-person hand's state for this frame (API 16): the
+    /// game pushes it once per rendered frame, before the frame
+    /// hooks run, and a mod reads it with `hand.get-state` in any
+    /// hook. Written into the running mods' stores at once, as
+    /// `browser_event` writes its events: the frame hooks that
+    /// follow in the same frame read this push, not a stale one.
+    pub fn set_hand_state(&mut self, state: ModHandState) {
+        for run in self.entries.iter_mut().filter_map(|e| e.run.as_mut()) {
+            run.store.data_mut().hand_state = state.clone();
+        }
+    }
+    /// Back to the zero hand state (API 16): the game calls this
+    /// while the hand is not being posed (the title screen, third
+    /// person, sleeping), so a mod never reads a stale frame as the
+    /// current one.
+    pub fn clear_hand_state(&mut self) {
+        for run in self.entries.iter_mut().filter_map(|e| e.run.as_mut()) {
+            run.store.data_mut().hand_state = zero_hand_state();
+        }
+    }
+    /// The hand offset the game applies at pose time (API 16): the
+    /// one the running mods set most recently with
+    /// `hand.set-offset`, already clamped by the host call. None
+    /// when no running mod sets one; a stopped mod's offset is
+    /// dropped with its store, as its camera and gamma are.
+    pub fn hand_offset(&self) -> Option<ModHandTransform> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref()?.store.data().hand_offset.as_ref())
+            .max_by_key(|(seq, _)| *seq)
+            .map(|(_, offset)| offset.clone())
+    }
+
     /// The first running mod driving a camera, if any.
     fn camera_winner(&self) -> Option<usize> {
         self.entries.iter().position(|e| {
@@ -1773,6 +1830,58 @@ fn clip_widgets(widgets: Vec<UiWidget>) -> Vec<UiWidget> {
             }
         })
         .collect()
+}
+
+/// The hand state before the game's first push (API 16): nothing
+/// swings, nothing is held, the look is level — what `hand.get-state`
+/// reads on the title screen.
+fn zero_hand_state() -> ModHandState {
+    ModHandState {
+        swinging: false,
+        swing_progress: 0.0,
+        swing_kind: ModSwingKind::Other,
+        equip_progress: 0.0,
+        yaw: 0.0,
+        pitch: 0.0,
+        look_delta_yaw: 0.0,
+        look_delta_pitch: 0.0,
+        bob_phase: 0.0,
+        bob_amount: 0.0,
+        held_item: None,
+        using_item: false,
+        two_handed: false,
+    }
+}
+
+/// `hand.set-offset`'s limits (API 16): a translation of a block
+/// per axis and a turn of 60 degrees per axis are far past what a
+/// feel mod needs, and a non-finite field reads as 0, so a NaN
+/// never poisons the pose matrix.
+const HAND_TRANSLATION_MAX: f32 = 1.0;
+const HAND_ROTATION_MAX: f32 = 60.0;
+fn clamp_hand_transform(offset: ModHandTransform) -> ModHandTransform {
+    let finite = |v: f32, max: f32| if v.is_finite() { v.clamp(-max, max) } else { 0.0 };
+    ModHandTransform {
+        x: finite(offset.x, HAND_TRANSLATION_MAX),
+        y: finite(offset.y, HAND_TRANSLATION_MAX),
+        z: finite(offset.z, HAND_TRANSLATION_MAX),
+        pitch: finite(offset.pitch, HAND_ROTATION_MAX),
+        yaw: finite(offset.yaw, HAND_ROTATION_MAX),
+        roll: finite(offset.roll, HAND_ROTATION_MAX),
+    }
+}
+
+impl hand::Host for State {
+    fn get_state(&mut self) -> ModHandState {
+        self.hand_state.clone()
+    }
+    fn set_offset(&mut self, offset: ModHandTransform) {
+        let seq = HAND_OFFSET_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.hand_offset = Some((seq, clamp_hand_transform(offset)));
+    }
+    fn clear_offset(&mut self) {
+        self.hand_offset = None;
+    }
 }
 
 impl audio::Host for State {

@@ -26,7 +26,8 @@
 //! read-only, the player's own inventory and the open container; `entity` —
 //! read-only, the living mobs around the player and the entity under the
 //! crosshair; `render` — its HUD shapes and world lines and boxes
-//! (depth-tested, API level 11); a server mod `storage` and `players`).
+//! (depth-tested, API level 11), and the first-person hand's pose
+//! through [`hand`] (API level 16); a server mod `storage` and `players`).
 //! Server mods: [`server`].
 //!
 //! Widgets (capability `ui`): a mod shows a screen it owns with
@@ -48,9 +49,10 @@ pub use exports::horizon::mods::audio_events::{
 pub use exports::horizon::mods::events::{Guest as __Guest, Registration};
 pub use exports::horizon::mods::ui_events::Guest as __UiEventsGuest;
 pub use horizon::mods::{
-    audio, browser, chat, command, entity, game, hud, input, inventory, log, recipes, render,
-    storage, ui, world,
+    audio, browser, chat, command, entity, game, hand, hud, input, inventory, log, recipes,
+    render, storage, ui, world,
 };
+pub use horizon::mods::hand::{HandState, HandTransform, SwingKind};
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for
 /// are called; the others may stay as their defaults.

@@ -1,10 +1,11 @@
 //! A mod for the runtime's tests: `/spin` loops forever, `/panic` panics,
 //! `/grow` asks for a gigabyte, `/hello` chats, `/save` and `/load` exercise
 //! capability `storage` on a fixed key, `/save_key <key> <text>` exercises
-//! it on an arbitrary key (for the quota and key-count limits); `tick` and
-//! `frame` do nothing, to measure the cost of a call.
+//! it on an arbitrary key (for the quota and key-count limits); `/handstate`,
+//! `/handset` and `/handclear` exercise capability `render`'s hand (API 16);
+//! `tick` and `frame` do nothing, to measure the cost of a call.
 use horizon_mod_sdk::{
-    Mod, Registration, SoundAdjustment, SoundQuery, audio, chat, storage,
+    HandTransform, Mod, Registration, SoundAdjustment, SoundQuery, audio, chat, hand, storage,
 };
 
 struct Guest {
@@ -13,11 +14,22 @@ struct Guest {
 
 impl Mod for Guest {
     fn init() -> Result<(Self, Registration), String> {
-        let hooks = ["spin", "panic", "grow", "hello", "save", "load", "save_key"]
-            .into_iter()
-            .fold(Registration::new(), Registration::command)
-            .on_tick()
-            .on_frame();
+        let hooks = [
+            "spin",
+            "panic",
+            "grow",
+            "hello",
+            "save",
+            "load",
+            "save_key",
+            "handstate",
+            "handset",
+            "handclear",
+        ]
+        .into_iter()
+        .fold(Registration::new(), Registration::command)
+        .on_tick()
+        .on_frame();
         Ok((Guest { ticks: 0 }, hooks))
     }
     fn tick(&mut self, _tick: u64) {
@@ -59,6 +71,42 @@ impl Mod for Guest {
                     .ok_or("Usage: /save_key <key> <text>")?;
                 storage::set(key, text.as_bytes())?;
                 Ok(Some("saved".into()))
+            }
+            "handstate" => {
+                let s = hand::get_state();
+                Ok(Some(format!(
+                    "swing {} {:.2} {:?} equip {:.2} look {:.1} {:.1} d {:.1} {:.1} \
+                     bob {:.1} {:.1} item {} using {} two {}",
+                    s.swinging,
+                    s.swing_progress,
+                    s.swing_kind,
+                    s.equip_progress,
+                    s.yaw,
+                    s.pitch,
+                    s.look_delta_yaw,
+                    s.look_delta_pitch,
+                    s.bob_phase,
+                    s.bob_amount,
+                    s.held_item.as_deref().unwrap_or("none"),
+                    s.using_item,
+                    s.two_handed
+                )))
+            }
+            "handset" => {
+                // Past every limit the host clamps to, and a NaN.
+                hand::set_offset(HandTransform {
+                    x: 2.5,
+                    y: -0.25,
+                    z: 0.5,
+                    pitch: 120.0,
+                    yaw: f32::NAN,
+                    roll: -30.0,
+                });
+                Ok(Some("set".into()))
+            }
+            "handclear" => {
+                hand::clear_offset();
+                Ok(Some("cleared".into()))
             }
             _ => {
                 chat::show(&format!("hello {args} after {} ticks", self.ticks));

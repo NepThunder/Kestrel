@@ -168,6 +168,27 @@ pub fn item_pose(left: bool, inverse_height: f32, attack: f32, pose: ItemPose) -
     m
 }
 
+/// A mod's hand offset (SDK API 16) as a view-space pose: the
+/// translation in blocks, then the turn about X (pitch), Y (yaw)
+/// and Z (roll), in degrees. The game multiplies it into both the
+/// arm's and the item's poses after the vanilla pose, so the hand
+/// and what it holds move as one. Not vanilla's: Horizon's own.
+/// The host clamps the values before they reach this.
+pub fn hand_offset_matrix(
+    x: f32,
+    y: f32,
+    z: f32,
+    pitch: f32,
+    yaw: f32,
+    roll: f32,
+) -> glam::Mat4 {
+    use glam::{Mat4, Vec3};
+    Mat4::from_translation(Vec3::new(x, y, z))
+        * Mat4::from_rotation_x(pitch.to_radians())
+        * Mat4::from_rotation_y(yaw.to_radians())
+        * Mat4::from_rotation_z(roll.to_radians())
+}
+
 /// How `submitArmWithItem` holds a stack with a `minecraft:map_id`: in both
 /// hands when it is the main hand's and the off hand is empty
 /// (`renderTwoHandedMap`), else in its own hand (`renderOneHandedMap`).

@@ -188,7 +188,7 @@ impl Capability {
             }
             Capability::Ui => "show its own screens and a settings page",
             Capability::Render => {
-                "draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it and turn off distance fog"
+                "draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it, turn off distance fog and move your hand and held item in first person"
             }
             Capability::Input => {
                 "see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys"
@@ -220,6 +220,10 @@ impl Capability {
         // A recipe viewer's panel is part of capability `ui`.
         if interface == "browser" {
             return Ok(Some(Capability::Ui));
+        }
+        // The first-person hand's pose (API 16) is part of `render`.
+        if interface == "hand" {
+            return Ok(Some(Capability::Render));
         }
         Capability::ALL
             .into_iter()

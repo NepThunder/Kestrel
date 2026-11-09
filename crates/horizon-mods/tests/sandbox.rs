@@ -19,8 +19,8 @@ id = "test_guest"
 name = "Test Guest"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["chat", "storage", "audio"]
-experimental = ["audio"]
+capabilities = ["chat", "storage", "audio", "render"]
+experimental = ["audio", "render"]
 "#;
 const UI_MANIFEST: &str = r#"
 id = "test_ui_guest"
@@ -185,6 +185,55 @@ fn sound_hook_adjusts_and_sets_the_environment() {
     assert_eq!(mods.sound_environment(), Some((0.3, 2.5)));
 }
 
+/// Capability `render`'s hand (API 16): the game pushes the hand's
+/// state before the hooks, the mod reads it back as pushed, and the
+/// offset it sets comes back clamped until it clears it.
+#[test]
+fn hand_state_flows_and_the_offset_is_clamped_and_cleared() {
+    let mut mods = load("horizon_mods_test_guest.kmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert_eq!(mods.hand_offset(), None);
+    mods.set_hand_state(horizon_mods::ModHandState {
+        swinging: true,
+        swing_progress: 0.5,
+        swing_kind: horizon_mods::ModSwingKind::Attack,
+        equip_progress: 0.75,
+        yaw: 170.5,
+        pitch: -20.5,
+        look_delta_yaw: 3.5,
+        look_delta_pitch: -1.5,
+        bob_phase: -12.5,
+        bob_amount: 0.5,
+        held_item: Some("minecraft:diamond_sword".into()),
+        using_item: false,
+        two_handed: false,
+    });
+    assert!(mods.command("handstate"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "swing true 0.50 SwingKind::Attack equip 0.75 look 170.5 -20.5 d 3.5 -1.5 \
+                   bob -12.5 0.5 item minecraft:diamond_sword using false two false"
+                .into(),
+            error: false,
+        }]
+    );
+    // The guest sets an x of 2.5 blocks, a pitch of 120 degrees and
+    // a NaN yaw: the game clamps the offset it hands back.
+    assert!(mods.command("handset"));
+    mods.drain();
+    let offset = mods.hand_offset().expect("the guest set an offset");
+    assert_eq!(
+        (
+            offset.x, offset.y, offset.z, offset.pitch, offset.yaw, offset.roll
+        ),
+        (1.0, -0.25, 0.5, 60.0, 0.0, -30.0)
+    );
+    assert!(mods.command("handclear"));
+    mods.drain();
+    assert_eq!(mods.hand_offset(), None);
+}
+
 #[test]
 fn coords_hud_draws_and_answers() {
     let mut mods = load("coords_hud.kmod");
@@ -250,7 +299,7 @@ fn undeclared_capabilities_are_refused() {
 /// from the functions they import.
 #[test]
 fn a_mod_for_a_newer_horizon_is_refused() {
-    use horizon_mods::api_level::{LEVEL, imports, needed};
+    use horizon_mods::api_level::{imports, needed};
     use wit_parser::{ManglingAndAbi, Resolve};
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let wit = std::fs::read_to_string(root.join("crates/horizon-mod-sdk/wit/horizon.wit"))
@@ -286,8 +335,8 @@ id = "too_new"
 name = "Too New"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world", "inventory", "entity"]
-experimental = ["ui", "render", "input", "recipes", "inventory", "entity"]
+capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world", "inventory", "entity", "audio"]
+experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audio"]
 "#;
     std::fs::write(dir.join("horizon-mod.toml"), manifest).unwrap();
     std::fs::write(dir.join("mod.wasm"), wasm).unwrap();
@@ -315,7 +364,7 @@ experimental = ["ui", "render", "input", "recipes", "inventory", "entity"]
     // The gamma probe brightens (`render.set-gamma`, level 13).
     assert_eq!(level("gamma_probe.kmod"), 13);
     // The camera probe moves the camera (`render.set-camera`, level 14).
-    assert_eq!(level("camera_probe.kmod"), LEVEL);
+    assert_eq!(level("camera_probe.kmod"), 14);
 }
 
 #[test]
