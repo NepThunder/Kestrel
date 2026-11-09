@@ -87,9 +87,10 @@ use render_bindings::horizon::mods::input;
 pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, ItemUse};
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
-    Corner as RenderCorner, FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape,
-    Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, Shape, SpriteShape,
-    TextShape, WorldBox, WorldLine, WorldPoint, WorldShape, Zoom as ModZoom,
+    CameraOverride as ModCameraOverride, CameraPose as ModCameraPose, Corner as RenderCorner,
+    FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape, Minimap as ModMinimap,
+    Point as RenderPoint, QuadShape, Rect as RenderRect, ScreenPoint as ModScreenPoint, Shape,
+    SpriteShape, TextShape, WorldBox, WorldLine, WorldPoint, WorldShape, Zoom as ModZoom,
 };
 use render_bindings::{RenderHost, horizon::mods::render};
 /// Capability `recipes`'s imports (docs/mods.md): the game's recipes and items.
@@ -205,6 +206,12 @@ pub struct Snapshot {
     pub gamma: f32,
     /// The player's stored Fog setting (`render.get-fog`'s fallback).
     pub fog: bool,
+    /// The camera the last frame rendered from (capability `render`'s
+    /// `get-camera` / `project`): the mod override when one is active,
+    /// else the player's own camera, with the effective field of view.
+    /// None before the first frame renders, and on the title screen
+    /// until the game fills in the panorama's pose.
+    pub camera: Option<SnapshotCamera>,
 }
 
 impl Default for Snapshot {
@@ -230,8 +237,24 @@ impl Default for Snapshot {
             targeted: None,
             gamma: 0.5,
             fog: true,
+            camera: None,
         }
     }
+}
+
+/// The camera a frame renders from, as the game fills it into the
+/// [`Snapshot`] for `render.get-camera` / `render.project`: the position
+/// and look in blocks and degrees, and the effective field of view
+/// (the zoomed one, as the player sees it).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SnapshotCamera {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub roll: f32,
+    pub fov: f32,
 }
 
 /// Capability `recipes`'s tables: `items` in the registry's order, which
@@ -510,12 +533,25 @@ struct State {
     gamma: Option<f32>,
     /// Capability `render`'s distance-fog flag, when the mod sets one.
     fog: Option<bool>,
+    /// Capability `render`'s camera override, when the mod sets one.
+    camera: Option<ModCameraOverride>,
+    /// How many times this mod called `set-camera`: the game re-reads
+    /// the look whenever the winning mod's count moves, so a mod
+    /// calling `set-camera` every tick with fixed angles keeps the
+    /// mouse from drifting it, while a mod that calls only on change
+    /// leaves the mouse look alone.
+    camera_seq: u64,
     /// The strongest gamma / fog-off the other running mods asked for
     /// when this mod's current call started, so `get-gamma` / `get-fog`
     /// read the effective value, not just this mod's own (`Mods::call`
     /// refreshes them before every call).
     aggregate_gamma: Option<f32>,
     aggregate_fog_off: bool,
+    /// The camera the first running mod drives when this mod's current
+    /// call started (`Mods::call` refreshes it before every call), so
+    /// `get-camera` / `project` read the effective camera even before
+    /// this mod sets anything of its own.
+    aggregate_camera: Option<ModCameraOverride>,
     input: InputState,
     browser: BrowserState,
     /// Capability `storage`'s folder; made on first `set`.
@@ -726,6 +762,9 @@ impl Mods {
             far_terrain: None,
             gamma: None,
             fog: None,
+            camera: None,
+            camera_seq: 0,
+            aggregate_camera: None,
             aggregate_gamma: None,
             aggregate_fog_off: false,
             input: InputState::default(),
@@ -879,9 +918,13 @@ impl Mods {
         // so the mod's getters read the effective value even before it
         // sets anything of its own.
         let (aggregate_gamma, aggregate_fog_off) = (self.gamma_except(i), self.fog_off_except(i));
+        // The camera aggregate is the winning override, whoever holds
+        // it — including this mod, when it already does.
+        let aggregate_camera = self.camera().map(|(camera, _)| camera);
         let entry = &mut self.entries[i];
         let run = entry.run.as_mut()?;
         run.store.data_mut().snapshot = self.snapshot.clone();
+        run.store.data_mut().aggregate_camera = aggregate_camera;
         run.store.data_mut().aggregate_gamma = aggregate_gamma;
         run.store.data_mut().aggregate_fog_off = aggregate_fog_off;
         run.store.data_mut().storage_budget = STORAGE_WRITE_BUDGET;
@@ -1335,6 +1378,14 @@ impl Mods {
         self.entries
             .iter()
             .find_map(|e| e.run.as_ref()?.store.data().far_terrain)
+    }
+    /// The camera the first running mod drives (capability `render`),
+    /// with the call count of the `set-camera` that set it.
+    pub fn camera(&self) -> Option<(ModCameraOverride, u64)> {
+        self.entries.iter().find_map(|e| {
+            let data = e.run.as_ref()?.store.data();
+            data.camera.map(|camera| (camera, data.camera_seq))
+        })
     }
     /// The strongest gamma a running mod asks for (capability `render`).
     pub fn gamma(&self) -> Option<f32> {
@@ -2120,6 +2171,163 @@ fn strongest_gamma(values: impl Iterator<Item = f32>) -> Option<f32> {
 fn any_fog_off(mut values: impl Iterator<Item = bool>) -> bool {
     values.any(|fog| !fog)
 }
+/// `render.set-camera`'s distance cap, in blocks from the player's feet:
+/// a freecam cannot scout past it. The offset is scaled back to the cap,
+/// so the camera stops at the sphere instead of snapping back to the
+/// player.
+const CAMERA_DISTANCE_MAX: f64 = 64.0;
+/// The player's eye above their feet, for a freelook camera and for
+/// `get-camera`'s fallback when the last frame's camera is unknown.
+const CAMERA_EYE_HEIGHT: f64 = 1.62;
+/// `render.set-camera`'s value with the look wrapped/clamped and the
+/// position capped at [`CAMERA_DISTANCE_MAX`] from `feet` (the player's
+/// feet, when the game knows them): None when a non-finite position
+/// drops the whole call — the previous override, if any, stays.
+fn sanitize_camera(camera: ModCameraOverride, feet: Option<[f64; 3]>) -> Option<ModCameraOverride> {
+    let position = match camera.position {
+        None => None,
+        Some(p) if p.x.is_finite() && p.y.is_finite() && p.z.is_finite() => {
+            Some(cap_camera_position(p, feet))
+        }
+        Some(_) => return None,
+    };
+    // Yaw wraps (a mod turning past 180 keeps turning); pitch and roll
+    // clamp; a non-finite look reads as 0.0 for that field, so a NaN
+    // never poisons the view matrix.
+    let yaw = if camera.yaw.is_finite() {
+        (camera.yaw + 180.0).rem_euclid(360.0) - 180.0
+    } else {
+        0.0
+    };
+    let finite = |v: f32, lo: f32, hi: f32| if v.is_finite() { v.clamp(lo, hi) } else { 0.0 };
+    Some(ModCameraOverride {
+        position,
+        yaw,
+        pitch: finite(camera.pitch, -90.0, 90.0),
+        roll: finite(camera.roll, -180.0, 180.0),
+    })
+}
+/// A freecam position scaled back to the [`CAMERA_DISTANCE_MAX`] sphere
+/// around `feet`, when it is past it.
+fn cap_camera_position(p: WorldPoint, feet: Option<[f64; 3]>) -> WorldPoint {
+    let Some(feet) = feet else { return p };
+    let offset = [p.x - feet[0], p.y - feet[1], p.z - feet[2]];
+    let len = (offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2]).sqrt();
+    if len > CAMERA_DISTANCE_MAX {
+        let s = CAMERA_DISTANCE_MAX / len;
+        WorldPoint {
+            x: feet[0] + offset[0] * s,
+            y: feet[1] + offset[1] * s,
+            z: feet[2] + offset[2] * s,
+        }
+    } else {
+        p
+    }
+}
+/// The camera `get-camera` / `project` read: the last frame's rendered
+/// camera when the game filled one in, else the winning override, else
+/// this mod's own just-set override, else the player's own eye.
+fn effective_camera(
+    snapshot_camera: Option<SnapshotCamera>,
+    aggregate_camera: Option<ModCameraOverride>,
+    own_camera: Option<ModCameraOverride>,
+    player: Option<&Player>,
+) -> Option<SnapshotCamera> {
+    if let Some(camera) = snapshot_camera {
+        return Some(camera);
+    }
+    let pose = |camera: ModCameraOverride| {
+        let (x, y, z) = match camera.position {
+            Some(p) => (p.x, p.y, p.z),
+            // Freelook: the camera stays at the player's eye.
+            None => player.map_or((0.0, 0.0, 0.0), |p| (p.x, p.y + CAMERA_EYE_HEIGHT, p.z)),
+        };
+        SnapshotCamera {
+            x,
+            y,
+            z,
+            yaw: camera.yaw,
+            pitch: camera.pitch,
+            roll: camera.roll,
+            // The game's fill carries the zoomed field of view; before
+            // the first frame there is no zoom to read, so the default.
+            fov: 70.0,
+        }
+    };
+    aggregate_camera.or(own_camera).map(pose).or_else(|| {
+        player.map(|p| SnapshotCamera {
+            x: p.x,
+            y: p.y + CAMERA_EYE_HEIGHT,
+            z: p.z,
+            yaw: p.yaw,
+            pitch: p.pitch,
+            roll: 0.0,
+            fov: 70.0,
+        })
+    })
+}
+/// `render.project`'s world-to-screen projection, through `camera`:
+/// the locator bar's (`Camera.getViewRotationProjectionMatrix`, through
+/// view space), extended to the width with the aspect ratio and to the
+/// mod roll. No bob: a sub-degree wobble the label should not inherit.
+/// `visible` is false behind the camera; `x` and `y` are still given,
+/// so a mod can draw an off-screen arrow itself.
+fn project_point(camera: &SnapshotCamera, gui: (f32, f32), point: WorldPoint) -> ModScreenPoint {
+    if !(point.x.is_finite() && point.y.is_finite() && point.z.is_finite()) {
+        return ModScreenPoint {
+            x: 0.0,
+            y: 0.0,
+            visible: false,
+            depth: 0.0,
+        };
+    }
+    let (w, h) = (f64::from(gui.0), f64::from(gui.1));
+    let aspect = if h > 0.0 { w / h } else { 1.0 };
+    let fov = if camera.fov.is_finite() && (0.0..180.0).contains(&f64::from(camera.fov)) {
+        f64::from(camera.fov)
+    } else {
+        70.0
+    };
+    let focal = 1.0 / (fov / 2.0).to_radians().tan();
+    let o = [point.x - camera.x, point.y - camera.y, point.z - camera.z];
+    let (yaw, pitch) = (
+        f64::from(camera.yaw).to_radians(),
+        f64::from(camera.pitch).to_radians(),
+    );
+    let (sy, cy, sp, cp) = (yaw.sin(), yaw.cos(), pitch.sin(), pitch.cos());
+    // The locator bar's basis: forward and up from yaw and pitch, right
+    // as forward × up (the game's `Camera.left`, negated).
+    let forward = [-sy * cp, -sp, cy * cp];
+    let up0 = [-sy * sp, cp, cy * sp];
+    let cross = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let right0 = cross(forward, up0);
+    // Roll: the rendered pose rotates the view by -roll about the view
+    // direction (positive roll banks the horizon clockwise as the player
+    // sees it), so the basis rotates the same way.
+    let roll = -f64::from(camera.roll).to_radians();
+    let (sr, cr) = (roll.sin(), roll.cos());
+    let scale = |a: [f64; 3], s: f64| [a[0] * s, a[1] * s, a[2] * s];
+    let add = |a: [f64; 3], b: [f64; 3]| [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+    let right = add(scale(right0, cr), scale(up0, -sr));
+    let up = add(scale(right0, sr), scale(up0, cr));
+    let dot = |a: [f64; 3]| a[0] * o[0] + a[1] * o[1] + a[2] * o[2];
+    let depth = dot(forward);
+    // A point dead to the side has no depth: divide by a breath instead
+    // of zero, so it projects far off-screen rather than to infinity.
+    let d = if depth == 0.0 { 1e-9 } else { depth };
+    ModScreenPoint {
+        x: (((dot(right) * focal / (d * aspect) + 1.0) / 2.0) * w) as f32,
+        y: (((1.0 - dot(up) * focal / d) / 2.0) * h) as f32,
+        visible: depth > 0.0,
+        depth,
+    }
+}
 /// `set-far-terrain`'s distance in chunks, as the LOD Distance setting's.
 const FAR_TERRAIN_DISTANCE: (u32, u32) = (64, 1024);
 
@@ -2336,6 +2544,72 @@ impl render::Host for State {
     }
     fn set_fog(&mut self, enabled: bool) {
         self.fog = Some(enabled);
+    }
+    fn get_camera(&mut self) -> ModCameraPose {
+        // The effective camera: the last frame's rendered one (which is
+        // the mouse-updated look, when a camera is active), else the
+        // winning override, else the player's own eye. Before the first
+        // frame there is no rendered camera, and on the title screen no
+        // player, so the pose is all zeros there.
+        match effective_camera(
+            self.snapshot.camera,
+            self.aggregate_camera,
+            self.camera,
+            self.snapshot.player.as_ref(),
+        ) {
+            Some(c) => ModCameraPose {
+                x: c.x,
+                y: c.y,
+                z: c.z,
+                yaw: c.yaw,
+                pitch: c.pitch,
+                roll: c.roll,
+            },
+            None => ModCameraPose {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                yaw: 0.0,
+                pitch: 0.0,
+                roll: 0.0,
+            },
+        }
+    }
+    fn set_camera(&mut self, camera: Option<ModCameraOverride>) {
+        // An accepted call counts even when the value is unchanged: the
+        // game re-reads the look on every count, so a mod calling this
+        // every tick with fixed angles keeps the mouse from drifting it.
+        // A non-finite position drops the call instead, and the previous
+        // override stays — the count does not move for a dropped call.
+        match camera {
+            None => {
+                self.camera = None;
+                self.camera_seq += 1;
+            }
+            Some(camera) => {
+                let feet = self.snapshot.player.as_ref().map(|p| [p.x, p.y, p.z]);
+                if let Some(camera) = sanitize_camera(camera, feet) {
+                    self.camera = Some(camera);
+                    self.camera_seq += 1;
+                }
+            }
+        }
+    }
+    fn project(&mut self, point: WorldPoint) -> ModScreenPoint {
+        match effective_camera(
+            self.snapshot.camera,
+            self.aggregate_camera,
+            self.camera,
+            self.snapshot.player.as_ref(),
+        ) {
+            Some(camera) => project_point(&camera, self.snapshot.gui_size, point),
+            None => ModScreenPoint {
+                x: 0.0,
+                y: 0.0,
+                visible: false,
+                depth: 0.0,
+            },
+        }
     }
     fn frame_stats(&mut self) -> FrameRate {
         let (fps, min, low) = self.snapshot.frame;
@@ -2729,5 +3003,124 @@ mod tests {
         assert!(any_fog_off([true, false].into_iter()));
         assert!(!any_fog_off([true, true].into_iter()));
         assert!(!any_fog_off([].into_iter()));
+    }
+
+    fn camera_override(
+        position: Option<WorldPoint>,
+        yaw: f32,
+        pitch: f32,
+        roll: f32,
+    ) -> ModCameraOverride {
+        ModCameraOverride {
+            position,
+            yaw,
+            pitch,
+            roll,
+        }
+    }
+
+    fn point(x: f64, y: f64, z: f64) -> WorldPoint {
+        WorldPoint { x, y, z }
+    }
+
+    /// `set-camera` wraps yaw, clamps pitch and roll, and reads a
+    /// non-finite look as 0.0 for that field.
+    #[test]
+    fn set_camera_wraps_and_clamps_the_look() {
+        let camera = sanitize_camera(camera_override(None, 270.0, 120.0, 200.0), None).unwrap();
+        assert_eq!(camera.yaw, -90.0);
+        assert_eq!(camera.pitch, 90.0);
+        assert_eq!(camera.roll, 180.0);
+        assert!(camera.position.is_none());
+        let camera =
+            sanitize_camera(camera_override(None, f32::NAN, f32::NAN, f32::NAN), None).unwrap();
+        assert_eq!((camera.yaw, camera.pitch, camera.roll), (0.0, 0.0, 0.0));
+    }
+
+    /// A non-finite position drops the whole call, and a position past
+    /// the cap scales back to the 64-block sphere around the feet.
+    #[test]
+    fn set_camera_drops_a_non_finite_position_and_caps_the_distance() {
+        let feet = Some([0.5, 64.0, 0.5]);
+        assert!(
+            sanitize_camera(
+                camera_override(Some(point(f64::NAN, 64.0, 0.5)), 0.0, 0.0, 0.0),
+                feet
+            )
+            .is_none()
+        );
+        let camera = sanitize_camera(
+            camera_override(Some(point(200.5, 64.0, 0.5)), 0.0, 0.0, 0.0),
+            feet,
+        )
+        .unwrap();
+        let p = camera.position.unwrap();
+        assert!((p.x - 64.5).abs() < 1e-9 && p.y == 64.0 && p.z == 0.5);
+        let camera = sanitize_camera(
+            camera_override(Some(point(10.5, 64.0, 0.5)), 0.0, 0.0, 0.0),
+            feet,
+        )
+        .unwrap();
+        let p = camera.position.expect("within the cap: kept");
+        assert_eq!((p.x, p.y, p.z), (10.5, 64.0, 0.5));
+    }
+
+    /// The harness's camera: the player's eye at (0.5, 65.62, 0.5),
+    /// looking along +Z at fov 70 on a 427 × 240 GUI.
+    fn harness_camera() -> SnapshotCamera {
+        SnapshotCamera {
+            x: 0.5,
+            y: 65.62,
+            z: 0.5,
+            yaw: 0.0,
+            pitch: 0.0,
+            roll: 0.0,
+            fov: 70.0,
+        }
+    }
+
+    /// A point dead ahead projects to the screen centre; a point behind
+    /// the camera is not visible and has a negative depth; a point 90°
+    /// off-axis lands off-screen.
+    #[test]
+    fn project_puts_ahead_at_the_centre_and_behind_out_of_view() {
+        let camera = harness_camera();
+        let ahead = project_point(&camera, (427.0, 240.0), point(0.5, 65.62, 10.5));
+        assert!(ahead.visible);
+        assert!((ahead.x - 213.5).abs() < 0.01 && (ahead.y - 120.0).abs() < 0.01);
+        assert!((ahead.depth - 10.0).abs() < 1e-9);
+        let behind = project_point(&camera, (427.0, 240.0), point(0.5, 65.62, -9.5));
+        assert!(!behind.visible && behind.depth < 0.0);
+        let side = project_point(&camera, (427.0, 240.0), point(10.5, 65.62, 0.5));
+        assert!(!(-427.0..=854.0).contains(&side.x), "side x={}", side.x);
+    }
+
+    /// A point ahead and to the camera's right sits right of centre at
+    /// rest; rolling the view 90° clockwise moves it to the bottom
+    /// centre, and rolling it the other way moves it to the top centre.
+    #[test]
+    fn project_rolls_with_the_camera() {
+        let gui = (427.0, 240.0);
+        let ahead_right = point(-9.5, 65.62, 10.5);
+        let level = project_point(&harness_camera(), gui, ahead_right);
+        assert!(level.x > 213.5 && (level.y - 120.0).abs() < 0.01);
+        let mut rolled = harness_camera();
+        rolled.roll = 90.0;
+        let clockwise = project_point(&rolled, gui, ahead_right);
+        assert!((clockwise.x - 213.5).abs() < 0.01 && clockwise.y > 240.0);
+        rolled.roll = -90.0;
+        let counter = project_point(&rolled, gui, ahead_right);
+        assert!((counter.x - 213.5).abs() < 0.01 && counter.y < 0.0);
+    }
+
+    /// Turning the camera 90° turns the projection with it: the point
+    /// that was ahead and right is dead ahead again.
+    #[test]
+    fn project_follows_the_camera_yaw() {
+        let mut camera = harness_camera();
+        camera.yaw = 90.0;
+        let ahead = project_point(&camera, (427.0, 240.0), point(-9.5, 65.62, 0.5));
+        assert!(ahead.visible);
+        assert!((ahead.x - 213.5).abs() < 0.01 && (ahead.y - 120.0).abs() < 0.01);
     }
 }
