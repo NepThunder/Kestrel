@@ -192,12 +192,36 @@ pub fn fetch(file: &FileRef, folder: &Path, progress: &dyn Fn(f32)) -> Result<Pa
     if let Some(why) = refuse(file) {
         return Err(why);
     }
+    // The failure strings are player-facing and shown as a toast:
+    // keep each to one short line, with the status code kept so a
+    // failure report still names the exact error.
     let response = agent(&file.url)
         .get(&file.url)
         .call()
         .map_err(|e| match e {
-            ureq::Error::Status(code, _) => format!("{} answered {code}.", file.url),
-            ureq::Error::Transport(t) => format!("No connection: {t}"),
+            ureq::Error::Status(code, _) => {
+                let server = if file.url.starts_with("https://github.com/") {
+                    "GitHub"
+                } else if file.url.starts_with("https://cdn.modrinth.com/") {
+                    "Modrinth"
+                } else if file.url.contains("forgecdn.net") {
+                    "CurseForge"
+                } else {
+                    "The server"
+                };
+                if (500..600).contains(&code) {
+                    format!("{server} server error ({code}) — try again")
+                } else {
+                    format!("{server} couldn't send this file ({code})")
+                }
+            }
+            ureq::Error::Transport(_) => {
+                if file.url.starts_with("https://github.com/") {
+                    "Couldn't reach GitHub — try again".to_string()
+                } else {
+                    "Couldn't reach the server — try again".to_string()
+                }
+            }
         })?;
     save(file, response.into_reader(), folder, progress)
 }
