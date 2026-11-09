@@ -70,16 +70,35 @@ pub fn check_latest() -> Option<ReleaseInfo> {
     let releases = releases.as_array()?;
     let mut best: Option<ReleaseInfo> = None;
     for release in releases {
-        let tag = release.get("tag_name")?.as_str()?;
-        let build = parse_build(tag)?;
+        // Skip — never abort on — anything that is not a dev build:
+        // official releases carry `v<version>` tags, which `parse_build`
+        // rejects, and one such entry must not hide the dev builds
+        // behind it in the list.
+        let Some(tag) = release.get("tag_name").and_then(|t| t.as_str()) else {
+            continue;
+        };
+        let Some(build) = parse_build(tag) else {
+            continue;
+        };
         if build <= own || best.as_ref().is_some_and(|b| b.build >= build) {
             continue;
         }
-        let assets = release.get("assets")?.as_array()?;
-        let asset = assets
+        let Some(assets) = release.get("assets").and_then(|a| a.as_array()) else {
+            continue;
+        };
+        let Some(asset) = assets
             .iter()
-            .find(|a| a.get("name").and_then(|n| n.as_str()) == Some(APK_NAME))?;
-        let url = asset.get("browser_download_url")?.as_str()?.to_owned();
+            .find(|a| a.get("name").and_then(|n| n.as_str()) == Some(APK_NAME))
+        else {
+            continue;
+        };
+        let Some(url) = asset
+            .get("browser_download_url")
+            .and_then(|u| u.as_str())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
         let size = asset.get("size").and_then(|s| s.as_u64()).unwrap_or(0);
         best = Some(ReleaseInfo {
             build,
