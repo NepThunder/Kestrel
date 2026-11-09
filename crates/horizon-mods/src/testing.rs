@@ -10,8 +10,9 @@
 use crate::{
     BlockPos, Clock, Container, Corner, Entity, GameMode, InvStack, ModAction, ModActionTarget,
     ModArmPose, ModBlockTarget, ModEffect, ModEntityPoseState, ModEntityTarget, ModFace, ModHand,
-    ModItemUse, ModPoseSwingAnim, ModSelfState, Mods, Output, Panel, Player, PlayerInventory,
-    ServerPlayer, Snapshot, Status, Target, WorldDrawLine,
+    ModItemUse, ModPoseSwingAnim, ModScreenEvent, ModScreenState, ModSelfState, ModTradeList,
+    ModTradeOffer, ModTradeStack, Mods, Output, Panel, Player, PlayerInventory, ServerPlayer,
+    Snapshot, Status, Target, WorldDrawLine,
 };
 use serde::Deserialize;
 use std::{
@@ -91,6 +92,17 @@ pub struct TestGame {
     /// copied into the snapshot at every step, as the game fills
     /// it beside the raycast hit.
     pub action_target: Option<ModActionTarget>,
+    /// What the mod reads with `screen.state` (API 22): the open
+    /// screen, as the game's snapshot builder fills it beside
+    /// the open container. The `playing` state, nothing hovered,
+    /// until a test sets it; copied into the snapshot at every
+    /// step.
+    pub screen_state: ModScreenState,
+    /// What the mod reads with `screen.trades` (API 22): the
+    /// open merchant's offers. None until a test sets them, as
+    /// while no merchant screen is open; copied into the
+    /// snapshot with [`TestGame::screen_state`].
+    pub trades: Option<ModTradeList>,
     /// Every action the mod queued, oldest first, in the
     /// `expect.actions` spelling: the log of what the game would
     /// have performed, for a test to read back.
@@ -213,6 +225,17 @@ impl TestGame {
             last_input_ms: 0,
             pose_states: Vec::new(),
             action_target: None,
+            // The `playing` state over the trial window's whole
+            // GUI (427 x 240, as `snapshot`'s `gui_size`).
+            screen_state: ModScreenState {
+                id: "playing".into(),
+                menu: None,
+                title: None,
+                rect: (0.0, 0.0, 427.0, 240.0),
+                hovered_slot: None,
+                debug_open: false,
+            },
+            trades: None,
             actions: Vec::new(),
         };
         copy_mod(kmod, &copy)?;
@@ -283,6 +306,8 @@ impl TestGame {
             spyglass_zoom: self.spyglass_zoom,
             last_input_ms: self.last_input_ms,
             action_target: self.action_target.clone(),
+            screen_state: self.screen_state.clone(),
+            trades: self.trades.clone(),
             ..Snapshot::default()
         });
         // The game's per-frame pose push (API 20), played by the
@@ -995,6 +1020,115 @@ fn action_line(action: &ModAction) -> String {
     }
 }
 
+/// The open screen for a step (API 22), in the WIT record's
+/// shape: its id, the open menu's type and title, the panel's
+/// rect, the hovered slot and the debug overlay's state, and
+/// the merchant's offers when the screen is one.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct ScreenSet {
+    #[serde(default = "default_screen_id")]
+    id: String,
+    menu: Option<String>,
+    title: Option<String>,
+    #[serde(default = "default_screen_rect")]
+    rect: [f32; 4],
+    hovered_slot: Option<u32>,
+    #[serde(default)]
+    debug_open: bool,
+    trades: Option<TradeListSet>,
+}
+
+fn default_screen_id() -> String {
+    "playing".into()
+}
+
+fn default_screen_rect() -> [f32; 4] {
+    [0.0, 0.0, 427.0, 240.0]
+}
+
+/// A step's merchant offers (API 22).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct TradeListSet {
+    selected: Option<u32>,
+    #[serde(default)]
+    offers: Vec<TradeOfferSet>,
+}
+
+/// One of a step's merchant offers (API 22): the stacks it
+/// names at the counts the screen charges, its uses and
+/// whether it reads as tradeable.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct TradeOfferSet {
+    cost_a: TradeStackSet,
+    cost_b: Option<TradeStackSet>,
+    result: TradeStackSet,
+    #[serde(default)]
+    uses: u32,
+    #[serde(default)]
+    max_uses: u32,
+    #[serde(default)]
+    available: bool,
+}
+
+/// A stack a step's trade names (API 22).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct TradeStackSet {
+    #[serde(default)]
+    item: String,
+    #[serde(default)]
+    count: u32,
+    #[serde(default)]
+    components: String,
+}
+
+impl TradeStackSet {
+    fn to_stack(&self) -> ModTradeStack {
+        ModTradeStack {
+            item: if self.item.is_empty() {
+                "minecraft:air".into()
+            } else {
+                self.item.clone()
+            },
+            count: self.count,
+            components: self.components.clone(),
+        }
+    }
+}
+
+impl ScreenSet {
+    fn to_state(&self) -> ModScreenState {
+        ModScreenState {
+            id: self.id.clone(),
+            menu: self.menu.clone(),
+            title: self.title.clone(),
+            rect: (self.rect[0], self.rect[1], self.rect[2], self.rect[3]),
+            hovered_slot: self.hovered_slot,
+            debug_open: self.debug_open,
+        }
+    }
+    fn to_trades(&self) -> Option<ModTradeList> {
+        self.trades.as_ref().map(|t| ModTradeList {
+            offers: t
+                .offers
+                .iter()
+                .map(|o| ModTradeOffer {
+                    cost_a: o.cost_a.to_stack(),
+                    cost_b: o.cost_b.as_ref().map(TradeStackSet::to_stack),
+                    result: o.result.to_stack(),
+                    uses: o.uses,
+                    max_uses: o.max_uses,
+                    available: o.available,
+                })
+                .collect(),
+            selected: t.selected,
+        })
+    }
+}
+
 impl SelfSet {
     fn to_self_state(&self) -> ModSelfState {
         ModSelfState {
@@ -1045,7 +1179,8 @@ impl EntitySet {
 /// One step. Its parts happen in this order: `reload`, `title-screen`,
 /// `blocks`, `lights`, `join`, `player`, `clock`, `inventory`, `container`,
 /// `close-container`, `dead`, `entities`, `effects`, `self`, `can-zoom`,
-/// `spyglass`, `idle-ms`, `poses`, `target`, `multiplayer`, `ticks`,
+/// `spyglass`, `idle-ms`, `poses`, `target`, `screen`, `press-button`,
+/// `middle-click`, `middle-click-none`, `multiplayer`, `ticks`,
 /// `frames`, `chat`, `command`, `break`, `place`, `leave`; then the blocks the mod set are made, and `expect`
 /// is checked against what the mod showed and changed during the step.
 /// For a server mod, `player`, `chat`, `command`, `break` and `place` are
@@ -1098,6 +1233,22 @@ pub struct Step {
     /// step without it keeps the last one. (A script cannot clear
     /// it back to none — no probe needs to.)
     target: Option<ActionTargetSet>,
+    /// The open screen and the merchant's offers (API 22):
+    /// replaces both fixtures wholesale; a step without it keeps
+    /// the last ones. (A script cannot clear the offers back to
+    /// none — no probe needs to.)
+    screen: Option<ScreenSet>,
+    /// A button the mod declared is pressed (API 22): its id,
+    /// queued for the mod's `screen.poll` before the step's
+    /// ticks, as the game queues a real press.
+    press_button: Option<u32>,
+    /// The middle button goes down over this slot (API 22):
+    /// queued for the mod's `screen.poll` before the step's
+    /// ticks, as the game reports a real press.
+    middle_click: Option<u32>,
+    /// The middle button goes down over no slot (API 22).
+    #[serde(default)]
+    middle_click_none: bool,
     /// Multiplayer from this step on (capability `entity`): the list
     /// reads empty and health reads None, while the crosshair target
     /// still answers.
@@ -1158,6 +1309,9 @@ pub struct Expect {
     /// the spelling `action_line` gives them (capability
     /// `actions`, API 21).
     actions: Option<Vec<String>>,
+    /// The trade indices the mod chose during the step, in
+    /// order (capability `screen`, API 22).
+    select_trades: Option<Vec<u32>>,
     /// The mod is turned off during this step, for a reason holding this text.
     /// Without it, a mod that stops fails the test.
     stopped: Option<String>,
@@ -1260,6 +1414,15 @@ impl Step {
         }
         if self.target.is_some() {
             parts.push("target".to_string());
+        }
+        if self.screen.is_some() {
+            parts.push("screen".to_string());
+        }
+        if let Some(id) = self.press_button {
+            parts.push(format!("press button {id}"));
+        }
+        if self.middle_click.is_some() || self.middle_click_none {
+            parts.push("middle click".to_string());
         }
         if self.multiplayer {
             parts.push("multiplayer".to_string());
@@ -1382,6 +1545,19 @@ impl Step {
         if let Some(set) = &self.target {
             game.action_target = set.to_target();
         }
+        if let Some(set) = &self.screen {
+            game.screen_state = set.to_state();
+            game.trades = set.to_trades();
+        }
+        if let Some(id) = self.press_button {
+            game.mods.screen_event(0, ModScreenEvent::Button(id));
+        }
+        if let Some(slot) = self.middle_click {
+            game.mods.screen_middle_click(Some(slot));
+        }
+        if self.middle_click_none {
+            game.mods.screen_middle_click(None);
+        }
         if self.multiplayer {
             game.multiplayer = true;
         }
@@ -1474,6 +1650,16 @@ impl Step {
                 })
                 .collect();
             same("actions", want, &got)?;
+        }
+        if let Some(want) = &e.select_trades {
+            let got: Vec<u32> = out
+                .iter()
+                .filter_map(|o| match o {
+                    Output::SelectTrade { index, .. } => Some(*index),
+                    _ => None,
+                })
+                .collect();
+            same("select-trades", want, &got)?;
         }
         let feedback = |error: bool| {
             out.iter().rev().find_map(|o| match o {

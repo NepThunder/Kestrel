@@ -144,6 +144,19 @@ pub use render_bindings::horizon::mods::render::{
     QuadShape, Rect as RenderRect, ScreenPoint as ModScreenPoint, Shape, SpriteShape, TextShape,
     WorldBox, WorldLine, WorldPoint, WorldShape, Zoom as ModZoom,
 };
+use render_bindings::horizon::mods::screen;
+/// The game's own screens as a mod sees and decorates them
+/// (WIT `interface screen`, API 22): its own capability, hosted
+/// with the render world as the hand, the poses and the actions
+/// are. `ModScreenState` is the interface's `screen-state`
+/// record; the name collision with the game's own screens is
+/// the interface's, kept for the same reason the actions types
+/// keep theirs.
+pub use render_bindings::horizon::mods::screen::{
+    Anchor as ModAnchor, Highlight as ModHighlight, ScreenButton as ModScreenButton,
+    ScreenEvent as ModScreenEvent, ScreenState as ModScreenState, TradeList as ModTradeList,
+    TradeOffer as ModTradeOffer, TradeStack as ModTradeStack,
+};
 use render_bindings::{RenderHost, horizon::mods::render};
 /// Capability `recipes`'s imports (docs/mods.md): the game's recipes and items.
 mod recipes_bindings {
@@ -185,6 +198,16 @@ const QUIET_PER_CALL: usize = 256;
 /// API 21): a held button's own cadence bounds what a tick can
 /// spend, and the queue is a click queue, not a script.
 pub const ACTIONS_PER_CALL: usize = 8;
+/// Buttons one mod may declare across the game's screens
+/// (capability `screen`, API 22), and the marks one mod may set
+/// on the open screen: a declaration is a page of the screen's
+/// furniture, not a second screen.
+pub const SCREEN_BUTTONS: usize = 16;
+pub const SCREEN_HIGHLIGHTS: usize = 512;
+/// Screen events kept for one mod's `screen.poll` (API 22): the
+/// `browser` panel's queue discipline — a press the mod never
+/// polls for is not kept forever.
+pub const SCREEN_EVENTS: usize = 256;
 /// How far `game.raycast` sees, in blocks.
 pub const RAYCAST_MAX: f32 = 1024.0;
 /// How far `entity.targeted` sees, in blocks.
@@ -301,6 +324,18 @@ pub struct Snapshot {
     /// ([`Mods::wants_actions`]). None when nothing is hit, and
     /// on the title screen.
     pub action_target: Option<ModActionTarget>,
+    /// The open screen (capability `screen`, API 22): its id,
+    /// the open menu's type and title, its panel's rect, the
+    /// hovered slot and whether the debug overlay is open; the
+    /// game fills it beside [`Snapshot::open_container`], and
+    /// only while a mod reads it ([`Mods::wants_screen`]). The
+    /// `playing` state, nothing hovered, until a game fills it.
+    pub screen_state: ModScreenState,
+    /// The open merchant's offers (capability `screen`, API
+    /// 22), filled with [`Snapshot::screen_state`]; the
+    /// container record deliberately carries none. None while
+    /// no merchant screen is open.
+    pub trades: Option<ModTradeList>,
 }
 
 impl Default for Snapshot {
@@ -333,6 +368,15 @@ impl Default for Snapshot {
             spyglass_zoom: None,
             last_input_ms: 0,
             action_target: None,
+            screen_state: ModScreenState {
+                id: "playing".into(),
+                menu: None,
+                title: None,
+                rect: (0.0, 0.0, 0.0, 0.0),
+                hovered_slot: None,
+                debug_open: false,
+            },
+            trades: None,
         }
     }
 }
@@ -466,6 +510,12 @@ pub enum Output {
     /// these instead of acting on them where they drain: actions
     /// may only perform inside the input step.
     Action { mod_id: String, action: ModAction },
+    /// `screen.select-trade` (API 22): the merchant screen's own
+    /// trade choice, for the game to perform in the next tick
+    /// through the screen's own function — the dedicated packet,
+    /// never a slot click. The game collects these beside the
+    /// actions and drops one whose merchant has closed, silently.
+    SelectTrade { mod_id: String, index: u32 },
 }
 
 /// The game's world as capability `world` reads it during a call: the
@@ -490,6 +540,37 @@ pub trait WorldView: std::any::Any + Send {
 
 /// The view lent for the current calls, shared by every mod's store.
 type WorldSlot = Arc<Mutex<Option<Box<dyn WorldView>>>>;
+
+/// What capability `screen` pushed since the hooks last ran (API 22).
+#[derive(Default)]
+struct ScreenStore {
+    /// The buttons this mod declared on the game's screens
+    /// (`screen.set-buttons`), replaced wholesale by each call
+    /// and clamped by it ([`SCREEN_BUTTONS`]); the game resolves
+    /// them per open context ([`Mods::screen_buttons`]).
+    buttons: Vec<ModScreenButton>,
+    /// The slots this mod marks on the open screen
+    /// (`screen.set-highlights`), replaced wholesale by each
+    /// call and clamped by it ([`SCREEN_HIGHLIGHTS`]).
+    highlights: Vec<ModHighlight>,
+    /// What the player did on this mod's part of a screen,
+    /// for `screen.poll`: the game pushes, the mod drains,
+    /// capped at [`SCREEN_EVENTS`], oldest dropped.
+    events: std::collections::VecDeque<ModScreenEvent>,
+    /// This mod stands in for the game's debug overlay
+    /// (`screen.claim-debug`): the aggregate is any-mod
+    /// ([`Mods::debug_claimed`]), and a stopped mod's claim
+    /// dies with its store, as its own-body ask does.
+    debug_claimed: bool,
+}
+impl ScreenStore {
+    fn push(&mut self, event: ModScreenEvent) {
+        if self.events.len() == SCREEN_EVENTS {
+            self.events.pop_front();
+        }
+        self.events.push_back(event);
+    }
+}
 
 /// A mod's text panel, drawn every frame until it changes.
 #[derive(Clone, Debug)]
@@ -567,6 +648,8 @@ struct Running {
     reads_self: bool,
     /// It imports capability `actions` (API 21).
     reads_actions: bool,
+    /// It imports capability `screen` (API 22).
+    reads_screen: bool,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -748,6 +831,12 @@ struct State {
     /// skips it until the mod calls `set-held` again — a hold
     /// never resumes silently ([`Mods::release_held_buttons`]).
     held_latched: bool,
+    /// Capability `screen`'s declarations and events (API 22):
+    /// the buttons and highlights this mod put on the game's
+    /// screens, the presses the game queued for it, and its
+    /// debug claim. A stopped mod's declarations die with its
+    /// store, as its held buttons do.
+    screen: ScreenStore,
     /// The movement toggle options this mod last asked to set in the
     /// current call (API 18): `Mods::call` moves it into an
     /// [`Output::SetMovementToggles`] when the call ends, as it does
@@ -1039,6 +1128,7 @@ impl Mods {
             own_body: false,
             held: (false, false),
             held_latched: false,
+            screen: ScreenStore::default(),
             movement_toggles: None,
             camera_seq: 0,
             aggregate_camera: None,
@@ -1121,6 +1211,7 @@ impl Mods {
                 .iter()
                 .any(|f| f == "game.get-effects" || f == "game.get-self-state"),
             reads_actions: functions.iter().any(|f| f.starts_with("actions.")),
+            reads_screen: functions.iter().any(|f| f.starts_with("screen.")),
         }))
     }
 
@@ -1499,6 +1590,14 @@ impl Mods {
         self.entries
             .iter()
             .any(|e| e.run.as_ref().is_some_and(|r| r.reads_actions))
+    }
+    /// Some running mod imports capability `screen` (API 22):
+    /// the snapshot needs [`Snapshot::screen_state`] and
+    /// [`Snapshot::trades`].
+    pub fn wants_screen(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.reads_screen))
     }
     /// Some running mod has a `frame` hook: the game refreshes the snapshot
     /// every frame for it.
@@ -1919,6 +2018,93 @@ impl Mods {
                 data.held_latched = true;
             }
         }
+    }
+
+    /// The buttons the running mods declared for one open
+    /// context (capability `screen`, API 22): screen `screen`
+    /// with menu `menu` (none: a screen without one, or a mod's
+    /// menu-less button matches any). Mods in load order, each
+    /// in its declared order, the first eight across all of
+    /// them — the aggregate the game draws and hit-tests, so
+    /// the two always agree. Each is paired with its owner's
+    /// entry index, which is where its presses go
+    /// ([`Mods::screen_event`]).
+    pub fn screen_buttons(
+        &self,
+        screen: &str,
+        menu: Option<&str>,
+    ) -> Vec<(usize, ModScreenButton)> {
+        let mut out = Vec::new();
+        for (i, data) in self
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| e.run.as_ref().map(|r| (i, r.store.data())))
+        {
+            for button in &data.screen.buttons {
+                if button.screen == screen && button.menu.as_deref().is_none_or(|m| Some(m) == menu)
+                {
+                    out.push((i, button.clone()));
+                    if out.len() == 8 {
+                        return out;
+                    }
+                }
+            }
+        }
+        out
+    }
+    /// The slots the running mods mark on the open screen
+    /// (capability `screen`, API 22), every mod's list in load
+    /// order: the union the game draws. A stopped mod's marks
+    /// go with its store.
+    pub fn screen_highlights(&self) -> Vec<ModHighlight> {
+        let mut out = Vec::new();
+        for data in self
+            .entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .map(|r| r.store.data())
+        {
+            out.extend(data.screen.highlights.iter().copied());
+        }
+        out
+    }
+    /// The player did `event` on mod `owner`'s part of a
+    /// screen (API 22): queued for its `screen.poll`, the
+    /// `browser_event` shape.
+    pub fn screen_event(&mut self, owner: usize, event: ModScreenEvent) {
+        if let Some(run) = self.entries.get_mut(owner).and_then(|e| e.run.as_mut()) {
+            run.store.data_mut().screen.push(event);
+        }
+    }
+    /// The middle button went down over the open
+    /// inventory/container screen (API 22): every running
+    /// `screen` mod hears it, with the slot under the pointer
+    /// or none. Observed only — the press itself is the game's
+    /// to use as it always has.
+    pub fn screen_middle_click(&mut self, slot: Option<u32>) {
+        for run in self
+            .entries
+            .iter_mut()
+            .filter_map(|e| e.run.as_mut())
+            .filter(|r| r.reads_screen)
+        {
+            run.store
+                .data_mut()
+                .screen
+                .push(ModScreenEvent::MiddleClick(slot));
+        }
+    }
+    /// Whether any running mod stands in for the game's debug
+    /// overlay (capability `screen`, API 22): while one claims
+    /// it, the game does not draw its own debug entries. A
+    /// stopped mod's claim dies with its store, as its
+    /// own-body ask does.
+    pub fn debug_claimed(&self) -> bool {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .any(|r| r.store.data().screen.debug_claimed)
     }
 
     /// The first running mod driving a camera, if any.
@@ -2361,19 +2547,26 @@ impl State {
     /// Queues one action for the game to perform after this hook
     /// returns (API 21), unless the call already queued
     /// [`ACTIONS_PER_CALL`] — the `command.run` discipline: past
-    /// the cap the request is dropped, never deferred.
+    /// the cap the request is dropped, never deferred. The cap
+    /// is shared with `screen`'s trade choice (API 22): both
+    /// spend the player's clicks or items, so together they
+    /// stay a click's worth of intent, never a script.
     fn queue_action(&mut self, action: ModAction) {
-        let queued = self
-            .out
-            .iter()
-            .filter(|o| matches!(o, Output::Action { .. }))
-            .count();
-        if queued < ACTIONS_PER_CALL {
+        if self.queued_verbs() < ACTIONS_PER_CALL {
             self.out.push(Output::Action {
                 mod_id: self.id.clone(),
                 action,
             });
         }
+    }
+    /// The outputs this hook call has queued that spend the
+    /// player's clicks or items: `actions`' clicks (API 21)
+    /// and `screen`'s trade choices (API 22) together.
+    fn queued_verbs(&self) -> usize {
+        self.out
+            .iter()
+            .filter(|o| matches!(o, Output::Action { .. } | Output::SelectTrade { .. }))
+            .count()
     }
 }
 
@@ -2413,6 +2606,52 @@ impl actions::Host for State {
         }
         self.queue_action(ModAction::SelectSlot(slot));
         Ok(())
+    }
+}
+
+impl screen::Host for State {
+    fn state(&mut self) -> ModScreenState {
+        self.snapshot.screen_state.clone()
+    }
+    fn trades(&mut self) -> Option<ModTradeList> {
+        self.snapshot.trades.clone()
+    }
+    fn set_buttons(&mut self, mut buttons: Vec<ModScreenButton>) {
+        // The store is clamped here, at the door: at most
+        // SCREEN_BUTTONS declarations, labels cut to 64
+        // characters — what the context aggregate
+        // ([`Mods::screen_buttons`]) later reads back.
+        buttons.truncate(SCREEN_BUTTONS);
+        for button in &mut buttons {
+            button.label = clip_to(std::mem::take(&mut button.label), 64);
+        }
+        self.screen.buttons = buttons;
+    }
+    fn set_highlights(&mut self, mut slots: Vec<ModHighlight>) {
+        slots.truncate(SCREEN_HIGHLIGHTS);
+        self.screen.highlights = slots;
+    }
+    fn poll(&mut self) -> Vec<ModScreenEvent> {
+        self.screen.events.drain(..).collect()
+    }
+    fn select_trade(&mut self, index: u32) -> Result<(), String> {
+        // The one call-time fact the mod can be told: whether a
+        // merchant screen is open as of this tick. The index is
+        // judged when the choice performs, next tick, against
+        // the merchant that is still open then.
+        if self.snapshot.trades.is_none() {
+            return Err("no merchant screen is open".into());
+        }
+        if self.queued_verbs() < ACTIONS_PER_CALL {
+            self.out.push(Output::SelectTrade {
+                mod_id: self.id.clone(),
+                index,
+            });
+        }
+        Ok(())
+    }
+    fn claim_debug(&mut self, claimed: bool) {
+        self.screen.debug_claimed = claimed;
     }
 }
 

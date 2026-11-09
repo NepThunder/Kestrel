@@ -12,11 +12,15 @@
 //! and `/ownbody` capability `render`'s entity poses (API 20);
 //! `/acttarget`, `/actuse`, `/actattack`, `/acton`, `/actheld`,
 //! `/actslot` and `/actspam` capability `actions`' clicks (API 21);
-//! `tick` and `frame` do nothing, to measure the cost of a call.
+//! `/scrnstate`, `/scrnbuttons`, `/scrnhighlight`, `/scrntrade`,
+//! `/scrndebug` and `/scrnpoll` capability `screen`'s reads,
+//! declarations and events (API 22); `tick` and `frame` do
+//! nothing, to measure the cost of a call.
 use horizon_mod_sdk::{
-    ActionHand, ActionTarget, BlockTarget, Face, HandFov, HandFovMode, HandTransform, Mod,
-    PartOffset, PoseOffset, PoseTarget, Registration, SoundAdjustment, SoundQuery, SwingAnim,
-    actions, audio, chat, entity_pose, game, hand, input, render, storage,
+    ActionHand, ActionTarget, Anchor, BlockTarget, Face, HandFov, HandFovMode, HandTransform,
+    Highlight, Mod, PartOffset, PoseOffset, PoseTarget, Registration, ScreenButton, ScreenEvent,
+    SoundAdjustment, SoundQuery, SwingAnim, actions, audio, chat, entity_pose, game, hand, input,
+    render, screen, storage,
 };
 
 struct Guest {
@@ -58,6 +62,12 @@ impl Mod for Guest {
             "actheld",
             "actslot",
             "actspam",
+            "scrnstate",
+            "scrnbuttons",
+            "scrnhighlight",
+            "scrntrade",
+            "scrndebug",
+            "scrnpoll",
         ]
         .into_iter()
         .fold(Registration::new(), Registration::command)
@@ -439,6 +449,95 @@ impl Mod for Guest {
                     actions::use_();
                 }
                 Ok(Some("spammed".into()))
+            }
+            "scrnstate" => {
+                let s = screen::state();
+                let (x, y, w, h) = s.rect;
+                let trades = match screen::trades() {
+                    None => "trades - selected -".to_string(),
+                    Some(t) => {
+                        let first = t.offers.first().map_or("-".to_string(), |o| {
+                            format!(
+                                "first {} {} -> {} avail {}",
+                                o.cost_a.item, o.cost_a.count, o.result.item, o.available
+                            )
+                        });
+                        format!(
+                            "trades {} selected {} {first}",
+                            t.offers.len(),
+                            t.selected.map_or("-".into(), |i| i.to_string())
+                        )
+                    }
+                };
+                Ok(Some(format!(
+                    "screen {} menu {} title {} rect {:.1} {:.1} {:.1} {:.1} hovered {} \
+                     debug {} {trades}",
+                    s.id,
+                    s.menu.as_deref().unwrap_or("-"),
+                    s.title.as_deref().unwrap_or("-"),
+                    x,
+                    y,
+                    w,
+                    h,
+                    s.hovered_slot.map_or("-".into(), |i| i.to_string()),
+                    s.debug_open,
+                )))
+            }
+            "scrnbuttons" => {
+                // Seventeen declarations: the host stores sixteen.
+                let buttons: Vec<ScreenButton> = (1..=17)
+                    .map(|id| ScreenButton {
+                        id,
+                        screen: "inventory".into(),
+                        menu: None,
+                        anchor: Anchor::ContainerHead,
+                        label: format!("B{id}"),
+                        icon: None,
+                    })
+                    .collect();
+                screen::set_buttons(&buttons);
+                Ok(Some("declared".into()))
+            }
+            "scrnhighlight" => {
+                // 513 marks: the host keeps 512.
+                let marks: Vec<Highlight> = (0..=512)
+                    .map(|slot| Highlight {
+                        slot,
+                        color: 0xFF0000,
+                    })
+                    .collect();
+                screen::set_highlights(&marks);
+                Ok(Some("marked".into()))
+            }
+            "scrntrade" => {
+                // No merchant open: the call errs, and the error
+                // is the command's. One open: trade 0 is queued.
+                screen::select_trade(0)?;
+                Ok(Some("chose".into()))
+            }
+            "scrndebug" => {
+                let claimed = match args {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err("Usage: /scrndebug <on|off>".into()),
+                };
+                screen::claim_debug(claimed);
+                Ok(Some(if claimed {
+                    "debug on".into()
+                } else {
+                    "debug off".into()
+                }))
+            }
+            "scrnpoll" => {
+                let parts: Vec<String> = screen::poll()
+                    .iter()
+                    .map(|e| match e {
+                        ScreenEvent::Button(id) => format!("button {id}"),
+                        ScreenEvent::MiddleClick(Some(slot)) => format!("middle {slot}"),
+                        ScreenEvent::MiddleClick(None) => "middle none".into(),
+                    })
+                    .collect();
+                Ok(Some(format!("events [{}]", parts.join("; "))))
             }
             _ => {
                 chat::show(&format!("hello {args} after {} ticks", self.ticks));

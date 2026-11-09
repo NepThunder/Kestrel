@@ -305,6 +305,7 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
                     target.block_x, target.block_y, target.block_z, hand
                 ),
             },
+            Output::SelectTrade { index, .. } => format!("chose trade {index}"),
         });
     }
     let shapes = mods.hud_shapes().count();

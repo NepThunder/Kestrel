@@ -1,0 +1,38 @@
+# Screen (API 22): with no fixture no screen is open; a step's
+# paused screen then flows in; a declared button's press and a
+# middle click over a slot come back through `screen.poll`;
+# and a merchant screen reads with its menu type.
+[[step]]
+ticks = 1
+[step.expect]
+panel = ["screen playing"]
+
+[[step]]
+ticks = 1
+[step.screen]
+id = "paused"
+[step.expect]
+panel = ["screen paused"]
+
+[[step]]
+ticks = 1
+press-button = 1
+[step.expect]
+panel = ["screen paused", "pressed 1"]
+
+[[step]]
+ticks = 1
+middle-click = 300
+[step.expect]
+panel = ["screen paused", "middle 300"]
+
+[[step]]
+ticks = 1
+[step.screen]
+id = "inventory"
+menu = "minecraft:merchant"
+[step.screen.trades]
+selected = 0
+offers = [{ cost-a = { item = "minecraft:emerald", count = 5 }, result = { item = "minecraft:bread", count = 1 }, max-uses = 12, available = true }]
+[step.expect]
+panel = ["screen inventory minecraft:merchant", "middle 300"]

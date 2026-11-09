@@ -2023,6 +2023,11 @@ impl Game<'_> {
             self.draw_slot_item(batch, drag.as_ref(), i, &stack, ox + sx, oy + sy);
         }
         self.draw_hovered_slot_highlight(batch, true, ox, oy);
+        // Capability `screen` (API 22): the mods' slot marks and
+        // buttons, over the slots and under the carried stack
+        // and the tooltips.
+        self.draw_mod_screen_highlights(batch, ox, oy);
+        self.draw_mod_screen_buttons(batch);
         if let Some(slot) = self.slot_at(batch, self.cursor.0, self.cursor.1)
             && tooltip.is_none()
             && tooltip_stack.is_none()
@@ -2054,7 +2059,11 @@ impl Game<'_> {
     ) {
         self.galactic(batch, text, x, y, max, color);
     }
-    fn slot_position_any(&self, i: usize) -> Option<(f32, f32)> {
+    /// A slot's panel-local position, a station's own layout
+    /// first, then the inventory's. Shared with the mods' slot
+    /// highlights (`screen.set-highlights`, API 22), which mark
+    /// slots on station screens too.
+    pub(super) fn slot_position_any(&self, i: usize) -> Option<(f32, f32)> {
         self.station_slot_position(i)
             .or_else(|| (i < 36).then(|| self.slot_position(i)))
     }

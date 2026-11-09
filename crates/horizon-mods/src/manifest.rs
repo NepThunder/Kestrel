@@ -121,9 +121,17 @@ pub enum Capability {
     /// takes. Its own capability, not `input`'s: acting spends
     /// items and breaks blocks, as `command`'s acting does.
     Actions,
+    /// The game's own screens, seen and decorated (interface
+    /// `screen`, API 22): which screen is open and what it
+    /// holds, buttons the game places on them for the player to
+    /// press, slot highlights, the debug surface's tenancy, and
+    /// the merchant's trade choice. Its own capability, not
+    /// `ui`'s: `select-trade` spends items, and an item-moving
+    /// verb sets the consent bar for the whole interface.
+    Screen,
 }
 impl Capability {
-    pub const ALL: [Capability; 16] = [
+    pub const ALL: [Capability; 17] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -140,6 +148,7 @@ impl Capability {
         Capability::Entity,
         Capability::Audio,
         Capability::Actions,
+        Capability::Screen,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -167,6 +176,7 @@ impl Capability {
             Capability::Entity => "entity",
             Capability::Audio => "audio",
             Capability::Actions => "actions",
+            Capability::Screen => "screen",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -182,6 +192,7 @@ impl Capability {
                 | Capability::Entity
                 | Capability::Audio
                 | Capability::Actions
+                | Capability::Screen
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -217,6 +228,9 @@ impl Capability {
             Capability::Actions => {
                 "act as you in the world: use and place with the item in your hand, attack, and choose your hotbar slot — only what your own clicks could do, at the speed your own clicks could do it"
             }
+            Capability::Screen => {
+                "see which of the game's screens is open and what it holds, put its buttons on those screens for you to press, highlight slots, stand in for the debug screen, and choose a villager's trade for you — a trade moves your items, as clicking the trade yourself would"
+            }
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -251,6 +265,13 @@ impl Capability {
         if interface == "actions" {
             return Ok(Some(Capability::Actions));
         }
+        // The game's own screens (API 22) are their own
+        // capability too, not `ui`'s: the reads are presentation,
+        // but the interface's trade choice spends items, and a
+        // shipped `ui` mod consented to neither half.
+        if interface == "screen" {
+            return Ok(Some(Capability::Screen));
+        }
         Capability::ALL
             .into_iter()
             .filter(|c| *c != Capability::Registries)
@@ -278,6 +299,7 @@ impl fmt::Display for Capability {
             Capability::Entity => "entity",
             Capability::Audio => "audio",
             Capability::Actions => "actions",
+            Capability::Screen => "screen",
         };
         f.write_str(name)
     }

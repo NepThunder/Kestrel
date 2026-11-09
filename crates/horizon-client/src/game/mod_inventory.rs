@@ -225,8 +225,10 @@ fn is_player_slot(i: usize) -> bool {
 
 /// A stack's components beyond its item's, as vanilla's item syntax writes
 /// them (`[minecraft:potion_contents={potion:"minecraft:swiftness"}]`), or "".
-/// Same helper as the recipes host's (`game/native_recipes.rs`).
-fn components(s: &ItemStack) -> String {
+/// Same helper as the recipes host's (`game/native_recipes.rs`); shared
+/// with the merchant's trade stacks (`screen.trades`, API 22), which
+/// spell a stack the same way.
+pub(super) fn components(s: &ItemStack) -> String {
     let Some(Tag::Compound(entries)) = horizon_client::item_data::encode_components(s) else {
         return String::new();
     };

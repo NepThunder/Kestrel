@@ -950,6 +950,190 @@ interface actions {
     select-slot: func(slot: u32) -> result<_, string>;
 }
 
+/// Capability `screen` (experimental: the manifest needs
+/// `experimental = ["screen"]`): the game's own screens, as a
+/// mod may see and decorate them. Which screen is open and what
+/// it holds; buttons of the mod's that the game places on the
+/// screens named below and the player presses; highlights over
+/// slots; the merchant's offers and its own trade choice; and
+/// the debug screen's surface. Nothing here moves a stack
+/// between slots, edits a menu or draws free pixels over a
+/// screen: the game keeps the layout, as it does for `ui`.
+interface screen {
+    /// The open screen, as of this tick. `playing` while no
+    /// screen is open; `title` on the title screen.
+    record screen-state {
+        /// `playing`, `paused`, `inventory`, `creative`,
+        /// `options`, ..., `title`: the game's own screen ids,
+        /// the ones its hooks have always used.
+        id: string,
+        /// The type of the menu the server opened for this
+        /// screen (`minecraft:generic_9x3`, `minecraft:furnace`,
+        /// `minecraft:merchant`, a mount's own id, ...). None on
+        /// a screen without one — the player's own inventory,
+        /// creative, pause — and on the title.
+        menu: option<string>,
+        /// The open menu's title, as plain text, when the server
+        /// gave one.
+        title: option<string>,
+        /// The screen's container panel in GUI pixels (x, y,
+        /// width, height); the whole window for a screen with
+        /// none.
+        rect: tuple<f32, f32, f32, f32>,
+        /// The slot the pointer rests on, in `inventory`'s
+        /// numbering, when it rests on one of the open screen's
+        /// slots.
+        hovered-slot: option<u32>,
+        /// The game's debug overlay (F3) is open. It is not a
+        /// screen: it can be open over `playing` or a screen.
+        debug-open: bool,
+    }
+
+    /// The open screen. On the title screen the id is `title`
+    /// and everything else is empty; a mod's own screen and
+    /// another mod's screen both read as `mod`.
+    state: func() -> screen-state;
+
+    /// A stack a trade names, as `browser.stack` spells it:
+    /// its id, a count, and its components beyond the item's
+    /// own in vanilla's item syntax, or "".
+    record trade-stack {
+        item: string,
+        count: u32,
+        components: string,
+    }
+
+    /// One of the merchant's offers. `cost-a`'s count is the
+    /// count the screen charges (the base count with the
+    /// demand and special-price adjustments the villager
+    /// applies), not the offer's base count.
+    record trade-offer {
+        cost-a: trade-stack,
+        cost-b: option<trade-stack>,
+        %result: trade-stack,
+        /// Trades completed with this offer.
+        uses: u32,
+        /// Trades the offer allows before it locks.
+        max-uses: u32,
+        /// The payments are staged or takeable now and the
+        /// offer is not locked: what the screen shows as an
+        /// offer the player can trade.
+        available: bool,
+    }
+
+    /// The merchant screen's offers, while one is open.
+    record trade-list {
+        offers: list<trade-offer>,
+        /// The offer the screen has selected (the one a trade
+        /// choice or a result take acts on), when one is.
+        selected: option<u32>,
+    }
+
+    /// The open merchant's offers; none while no merchant
+    /// screen is open. (The container record `inventory` reads
+    /// deliberately carries no offers; they live here.)
+    trades: func() -> option<trade-list>;
+
+    /// Where on its screen the game puts a button. The game
+    /// computes the place from the screen's own geometry, as
+    /// it does for its own extra buttons; a button whose
+    /// anchor does not fit its screen is not drawn.
+    enum anchor {
+        /// Beside the open container's title (a chest's, the
+        /// merchant's, ...), where the game's sort button sits.
+        container-head,
+        /// Beside the "Inventory" label of the inventory part
+        /// of the screen.
+        inventory-head,
+        /// In the pause menu's column of buttons, after its
+        /// own.
+        menu-column,
+        /// In the title screen's row of buttons.
+        title-row,
+    }
+
+    /// A button of the mod's on one of the game's screens.
+    record screen-button {
+        /// The mod's own name for the button; `poll` echoes it.
+        id: u32,
+        /// The screen it belongs to: `inventory`, `paused` or
+        /// `title` in v1.
+        screen: string,
+        /// Only while this menu type is open (a chest's buttons
+        /// are not a furnace's). None: every open of `screen`.
+        menu: option<string>,
+        anchor: anchor,
+        /// Its label, up to 64 characters.
+        label: string,
+        /// An item whose icon leads the label
+        /// (`minecraft:diamond`, `<mod>:<path>`); none for a
+        /// text-only button. A mod cannot draw its own sprite
+        /// here.
+        icon: option<string>,
+    }
+
+    /// Replaces the mod's declared buttons, on every screen:
+    /// at most 16; for one screen-and-menu context the first
+    /// 8 that fit are drawn, in this order, and a declaration
+    /// survives until replaced or the mod stops. Declare them
+    /// once (in `init`, or when settings change), not per
+    /// frame.
+    set-buttons: func(buttons: list<screen-button>);
+
+    /// A slot of the open screen to mark, in `inventory`'s
+    /// numbering, and the mark's colour (0xRRGGBB, drawn
+    /// translucent over the slot, under its stack's tooltip).
+    record highlight {
+        slot: u32,
+        color: u32,
+    }
+
+    /// Replaces the slots this mod marks on the open
+    /// inventory/container screen: at most 512. They belong to
+    /// the screen that is open when they are drawn — the game
+    /// draws none once it closes, and a list set for one
+    /// screen is not carried onto the next. An empty list
+    /// clears them.
+    set-highlights: func(slots: list<highlight>);
+
+    /// What the player did on this mod's part of a screen.
+    variant screen-event {
+        /// A button the mod declared was pressed: its `id`.
+        /// The press is the player's own; the game has already
+        /// kept it from the screen's slots.
+        button(u32),
+        /// The middle button went down over the open
+        /// inventory/container screen: the slot under the
+        /// pointer, in `inventory`'s numbering, or none over
+        /// no slot. Observed, never consumed: the game's own
+        /// use of the press (a creative clone) still happens.
+        middle-click(option<u32>),
+    }
+
+    /// What the player did since the last poll, at most 256
+    /// kept.
+    poll: func() -> list<screen-event>;
+
+    /// Chooses the merchant's trade `index`, as clicking the
+    /// offer on the merchant screen does: the game sends the
+    /// selection and the server stages the payments and the
+    /// result from the player's inventory. Taking the result
+    /// is a slot click, and is not this call. Performed after
+    /// the hook returns, in the next tick, only while the
+    /// merchant screen is still open; dropped then if it is
+    /// not, or the index names no offer. Errs only when no
+    /// merchant screen is open as of this tick.
+    select-trade: func(index: u32) -> result<_, string>;
+
+    /// Stands in for the game's debug overlay (F3): while any
+    /// running mod claims it, the game does not draw its own
+    /// debug entries, and whether it is open is `state`'s
+    /// `debug-open` for every mod. The claiming mod draws its
+    /// replacement with its own `hud`/`render` surfaces. The
+    /// claim ends when the mod calls this with false or stops.
+    claim-debug: func(claimed: bool);
+}
+
 /// Capability `render` (API 20): player models' poses. The game
 /// hands the mod every drawn player's pose inputs each frame —
 /// the local player's first — and the mod hands back per-part
@@ -1725,6 +1909,7 @@ world horizon-ui-mod {
     import hand;
     import entity-pose;
     import actions;
+    import screen;
     export ui-events;
     export audio-events;
 }
@@ -1750,13 +1935,17 @@ world audio-host {
 /// `entity-pose` rides along the same way. API 21's `actions` is
 /// hosted here too — the frame/tick-adjacent client surfaces live
 /// in this world — but it is its own capability, not render's:
-/// acting is not presentation.
+/// acting is not presentation. API 22's `screen` likewise: its
+/// reads are presentation, but `select-trade` spends items, so
+/// the interface is its own capability with a consent line that
+/// names both halves.
 world render-host {
     import render;
     import input;
     import hand;
     import entity-pose;
     import actions;
+    import screen;
 }
 
 /// The game's side of capability `recipes` (imports only).

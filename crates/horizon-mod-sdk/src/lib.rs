@@ -45,6 +45,18 @@
 //! crosshair rests on, and `use`, `use_on_block`, `attack`,
 //! `set_held` and `select_slot` perform them as the player,
 //! through the same path a real click takes.
+//! `screen` (its own capability, API level 22, experimental)
+//! sees the game's own screens: [`screen::state`] and
+//! [`screen::trades`] read which screen is open and what it
+//! holds — the open menu's type, title, panel and hovered
+//! slot, the debug overlay's state, the merchant's offers at
+//! their charged counts — and `set_buttons`, `set_highlights`,
+//! `claim_debug` and `select_trade` put the mod's part on
+//! those screens: buttons the game places and the player
+//! presses (heard through [`screen::poll`]), slot marks, the
+//! debug surface's tenancy, and the merchant's trade choice,
+//! performed by the game as clicking the offer would. No stack
+//! moves here; that line is a later district's.
 //! Server mods: [`server`].
 //!
 //! Widgets (capability `ui`): a mod shows a screen it owns with
@@ -68,6 +80,10 @@ pub use exports::horizon::mods::ui_events::Guest as __UiEventsGuest;
 pub use horizon::mods::actions::{
     BlockTarget, CrosshairTarget as ActionTarget, EntityTarget, Face, Hand as ActionHand,
 };
+pub use horizon::mods::screen::{
+    Anchor, Highlight, ScreenButton, ScreenEvent, ScreenState, TradeList, TradeOffer,
+    TradeStack,
+};
 pub use horizon::mods::entity_pose::{
     ArmPose, EntityPoseState, ItemUse, PartOffset, PoseOffset, PoseTarget,
 };
@@ -76,7 +92,7 @@ pub use horizon::mods::hand::{HandState, HandTransform, SwingAnim, SwingKind};
 pub use horizon::mods::render::{HandFov, HandFovMode};
 pub use horizon::mods::{
     actions, audio, browser, chat, command, entity, entity_pose, game, hand, hud, input, inventory,
-    log, recipes, render, storage, ui, world,
+    log, recipes, render, screen, storage, ui, world,
 };
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for

@@ -528,7 +528,7 @@ impl Game<'_> {
         });
     }
     /// `MerchantMenu.tryMoveItems` for the selected offer (the select trade packet).
-    fn try_move_items(&mut self, index: usize) {
+    pub(super) fn try_move_items(&mut self, index: usize) {
         if self.remote.is_some() {
             // ServerboundSelectTradePacket; the server moves the items.
             if let Some(m) = self.station.as_mut().and_then(|s| s.merchant.as_mut()) {
@@ -879,6 +879,11 @@ impl Game<'_> {
             self.draw_slot_item(batch, drag.as_ref(), i, &stack, ox + sx, oy + sy);
         }
         self.draw_hovered_slot_highlight(batch, true, ox, oy);
+        // Capability `screen` (API 22): the mods' slot marks and
+        // buttons, over the slots and under the carried stack
+        // and the tooltip.
+        self.draw_mod_screen_highlights(batch, ox, oy);
+        self.draw_mod_screen_buttons(batch);
         if let Some(slot) = self.slot_at(batch, self.cursor.0, self.cursor.1)
             && tooltip.is_none()
         {

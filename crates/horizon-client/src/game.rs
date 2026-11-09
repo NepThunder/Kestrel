@@ -192,6 +192,8 @@ mod mod_inventory;
 mod mod_panel;
 mod mod_render;
 #[cfg(feature = "mods")]
+mod mod_screen;
+#[cfg(feature = "mods")]
 mod mod_self;
 #[cfg(feature = "mods")]
 mod mod_world_shapes;
@@ -8167,6 +8169,9 @@ impl Game<'_> {
                     self.settings.file.bool("hideSplashTexts"),
                 );
             }
+            // The mods' title buttons (capability `screen`,
+            // API 22), under the toasts as the title's own are.
+            self.draw_mod_title_buttons(&mut batch);
             self.draw_toasts(&mut batch, false);
             self.draw_tutorial_toasts(&mut batch, false);
             self.draw_pack_toasts(&mut batch, false);
@@ -9009,6 +9014,11 @@ impl Game<'_> {
         self.draw_inventory_slots(batch, ox, oy);
         self.draw_hovered_slot_highlight(batch, true, ox, oy);
         self.draw_sort_buttons(batch, ox, oy);
+        // Capability `screen` (API 22): the mods' slot marks and
+        // buttons ride the same point of the draw — over the
+        // slots, under the carried stack and the tooltips.
+        self.draw_mod_screen_highlights(batch, ox, oy);
+        self.draw_mod_screen_buttons(batch);
         self.draw_recipe_book(batch);
         let effect_tip = if self.container.is_none() && self.craft_size == 2 && !self.mount_active()
         {
@@ -9847,6 +9857,12 @@ impl Game<'_> {
             return;
         }
         if !right && self.sort_press() {
+            return;
+        }
+        // A mod's declared button (capability `screen`, API 22):
+        // the press is the player's, for the mod alone, at the
+        // sort button's own point of the order.
+        if !right && self.mod_screen_press() {
             return;
         }
         if self.native_screen_press(right) {
@@ -17648,6 +17664,13 @@ impl Game<'_> {
                         .map(|r| [r.config.width, r.config.height])
                         .unwrap_or([1, 1]);
                     let b = HudBatch::new(size);
+                    // A mod's title button (capability `screen`,
+                    // API 22): the press is the mod's alone, and
+                    // the title never sees it.
+                    if self.mod_title_press(b.width, b.height) {
+                        self.audio.play_button_click();
+                        return Ok(());
+                    }
                     let atlas = &self.gui.atlas;
                     let shift = self.has_shift_down();
                     let (action, sound) = self.title.as_mut().map_or((Action::None, false), |t| {
@@ -17731,6 +17754,12 @@ impl Game<'_> {
                         Screen::Inventory | Screen::Creative
                             if !matches!(button, MouseButton::Left | MouseButton::Right) =>
                         {
+                            // Capability `screen` (API 22): a middle
+                            // press is observed for the mods, never
+                            // consumed — the pick below still runs.
+                            if pressed && button == MouseButton::Middle {
+                                self.mod_screen_middle_click();
+                            }
                             // AbstractContainerScreen: another button clicks
                             // a slot only as the pick block key (its hotbar
                             // keys were handled above).

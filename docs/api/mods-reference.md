@@ -23,6 +23,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `entity` | [`entity`](#entity) | see the mobs around you and the entity you look at |
 | `audio` | [`audio`](#audio) | change how sounds play around you |
 | `actions` | [`actions`](#actions) | act as you in the world: use and place with the item in your hand, attack, and choose your hotbar slot — only what your own clicks could do, at the speed your own clicks could do it |
+| `screen` | [`screen`](#screen) | see which of the game's screens is open and what it holds, put its buttons on those screens for you to press, highlight slots, stand in for the debug screen, and choose a villager's trade for you — a trade moves your items, as clicking the trade yourself would |
 
 ## World `horizon-mod`
 
@@ -42,7 +43,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `audio`, `hand`, `entity-pose`, `actions`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `audio`, `hand`, `entity-pose`, `actions`, `screen`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
 - Exports (what the mod provides): `ui-events`, `audio-events`, `events`
 
 ## World `ui-host`
@@ -61,9 +62,9 @@ The game's side of capability `audio` (API 15) beyond `horizon-mod`: a second wo
 
 ## World `render-host`
 
-The game's side of capability `render` (imports only). API 16's `hand` rides along: it is a render extension, checked against the `render` capability, not one of its own. API 20's `entity-pose` rides along the same way. API 21's `actions` is hosted here too — the frame/tick-adjacent client surfaces live in this world — but it is its own capability, not render's: acting is not presentation.
+The game's side of capability `render` (imports only). API 16's `hand` rides along: it is a render extension, checked against the `render` capability, not one of its own. API 20's `entity-pose` rides along the same way. API 21's `actions` is hosted here too — the frame/tick-adjacent client surfaces live in this world — but it is its own capability, not render's: acting is not presentation. API 22's `screen` likewise: its reads are presentation, but `select-trade` spends items, so the interface is its own capability with a consent line that names both halves.
 
-- Imports (what the game offers): `render`, `input`, `hand`, `entity-pose`, `actions`
+- Imports (what the game offers): `render`, `input`, `hand`, `entity-pose`, `actions`, `screen`
 - Exports (what the mod provides): 
 
 ## World `recipes-host`
@@ -760,6 +761,109 @@ What is under the crosshair now, block or entity, in the game's own pick order (
 | `attack` | `func()` | One click of the attack button, exactly as the player clicking: an entity under the crosshair is attacked, a block under it starts (or, in creative, completes) being mined, air is swung at. Holding the button is `set-held`; this is the click alone. |
 | `set-held` | `func(attack: bool, use: bool)` | Holds the attack and/or use buttons down for the mod, as if the player held them: held use repeats at the game's own cadence (every 4 ticks, never while an item is in use), held attack keeps mining the block under the crosshair and swings at what it meets. Either button the player is really holding is unaffected — this adds a second, virtual holder of the same buttons, and the game reads a button as down while either holds it. The hold ends when the mod calls this with both false, when the mod stops, when a screen opens, or when the world is left; it does not survive any of those. |
 | `select-slot` | `func(slot: u32) -> result<_, string>` | Chooses hotbar slot 0 to 8, as the hotbar keys or the wheel do: the server is told in the same tick's step, and a claimed use in progress ends, as on a real switch. Errs on a slot outside 0 to 8. |
+
+## `screen`
+
+Access: capability `screen`.
+
+Capability `screen` (experimental: the manifest needs `experimental = ["screen"]`): the game's own screens, as a mod may see and decorate them. Which screen is open and what it holds; buttons of the mod's that the game places on the screens named below and the player presses; highlights over slots; the merchant's offers and its own trade choice; and the debug screen's surface. Nothing here moves a stack between slots, edits a menu or draws free pixels over a screen: the game keeps the layout, as it does for `ui`.
+
+### record `screen-state`
+
+The open screen, as of this tick. `playing` while no screen is open; `title` on the title screen.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `string` | `playing`, `paused`, `inventory`, `creative`, `options`, ..., `title`: the game's own screen ids, the ones its hooks have always used. |
+| `menu` | `option<string>` | The type of the menu the server opened for this screen (`minecraft:generic_9x3`, `minecraft:furnace`, `minecraft:merchant`, a mount's own id, ...). None on a screen without one — the player's own inventory, creative, pause — and on the title. |
+| `title` | `option<string>` | The open menu's title, as plain text, when the server gave one. |
+| `rect` | `tuple<f32, f32, f32, f32>` | The screen's container panel in GUI pixels (x, y, width, height); the whole window for a screen with none. |
+| `hovered-slot` | `option<u32>` | The slot the pointer rests on, in `inventory`'s numbering, when it rests on one of the open screen's slots. |
+| `debug-open` | `bool` | The game's debug overlay (F3) is open. It is not a screen: it can be open over `playing` or a screen. |
+
+### record `trade-stack`
+
+A stack a trade names, as `browser.stack` spells it: its id, a count, and its components beyond the item's own in vanilla's item syntax, or "".
+
+| Field | Type | |
+| --- | --- | --- |
+| `item` | `string` |  |
+| `count` | `u32` |  |
+| `components` | `string` |  |
+
+### record `trade-offer`
+
+One of the merchant's offers. `cost-a`'s count is the count the screen charges (the base count with the demand and special-price adjustments the villager applies), not the offer's base count.
+
+| Field | Type | |
+| --- | --- | --- |
+| `cost-a` | `trade-stack` |  |
+| `cost-b` | `option<trade-stack>` |  |
+| `result` | `trade-stack` |  |
+| `uses` | `u32` | Trades completed with this offer. |
+| `max-uses` | `u32` | Trades the offer allows before it locks. |
+| `available` | `bool` | The payments are staged or takeable now and the offer is not locked: what the screen shows as an offer the player can trade. |
+
+### record `trade-list`
+
+The merchant screen's offers, while one is open.
+
+| Field | Type | |
+| --- | --- | --- |
+| `offers` | `list<trade-offer>` |  |
+| `selected` | `option<u32>` | The offer the screen has selected (the one a trade choice or a result take acts on), when one is. |
+
+### enum `anchor`
+
+Where on its screen the game puts a button. The game computes the place from the screen's own geometry, as it does for its own extra buttons; a button whose anchor does not fit its screen is not drawn.
+
+| Case | |
+| --- | --- |
+| `container-head` | Beside the open container's title (a chest's, the merchant's, ...), where the game's sort button sits. |
+| `inventory-head` | Beside the "Inventory" label of the inventory part of the screen. |
+| `menu-column` | In the pause menu's column of buttons, after its own. |
+| `title-row` | In the title screen's row of buttons. |
+
+### record `screen-button`
+
+A button of the mod's on one of the game's screens.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `u32` | The mod's own name for the button; `poll` echoes it. |
+| `screen` | `string` | The screen it belongs to: `inventory`, `paused` or `title` in v1. |
+| `menu` | `option<string>` | Only while this menu type is open (a chest's buttons are not a furnace's). None: every open of `screen`. |
+| `anchor` | `anchor` |  |
+| `label` | `string` | Its label, up to 64 characters. |
+| `icon` | `option<string>` | An item whose icon leads the label (`minecraft:diamond`, `<mod>:<path>`); none for a text-only button. A mod cannot draw its own sprite here. |
+
+### record `highlight`
+
+A slot of the open screen to mark, in `inventory`'s numbering, and the mark's colour (0xRRGGBB, drawn translucent over the slot, under its stack's tooltip).
+
+| Field | Type | |
+| --- | --- | --- |
+| `slot` | `u32` |  |
+| `color` | `u32` |  |
+
+### variant `screen-event`
+
+What the player did on this mod's part of a screen.
+
+| Case | Payload | |
+| --- | --- | --- |
+| `button` | `u32` | A button the mod declared was pressed: its `id`. The press is the player's own; the game has already kept it from the screen's slots. |
+| `middle-click` | `option<u32>` | The middle button went down over the open inventory/container screen: the slot under the pointer, in `inventory`'s numbering, or none over no slot. Observed, never consumed: the game's own use of the press (a creative clone) still happens. |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `state` | `func() -> screen-state` | The open screen. On the title screen the id is `title` and everything else is empty; a mod's own screen and another mod's screen both read as `mod`. |
+| `trades` | `func() -> option<trade-list>` | The open merchant's offers; none while no merchant screen is open. (The container record `inventory` reads deliberately carries no offers; they live here.) |
+| `set-buttons` | `func(buttons: list<screen-button>)` | Replaces the mod's declared buttons, on every screen: at most 16; for one screen-and-menu context the first 8 that fit are drawn, in this order, and a declaration survives until replaced or the mod stops. Declare them once (in `init`, or when settings change), not per frame. |
+| `set-highlights` | `func(slots: list<highlight>)` | Replaces the slots this mod marks on the open inventory/container screen: at most 512. They belong to the screen that is open when they are drawn — the game draws none once it closes, and a list set for one screen is not carried onto the next. An empty list clears them. |
+| `poll` | `func() -> list<screen-event>` | What the player did since the last poll, at most 256 kept. |
+| `select-trade` | `func(index: u32) -> result<_, string>` | Chooses the merchant's trade `index`, as clicking the offer on the merchant screen does: the game sends the selection and the server stages the payments and the result from the player's inventory. Taking the result is a slot click, and is not this call. Performed after the hook returns, in the next tick, only while the merchant screen is still open; dropped then if it is not, or the index names no offer. Errs only when no merchant screen is open as of this tick. |
+| `claim-debug` | `func(claimed: bool)` | Stands in for the game's debug overlay (F3): while any running mod claims it, the game does not draw its own debug entries, and whether it is open is `state`'s `debug-open` for every mod. The claiming mod draws its replacement with its own `hud`/`render` surfaces. The claim ends when the mod calls this with false or stops. |
 
 ## `entity-pose`
 

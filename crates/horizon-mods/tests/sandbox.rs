@@ -20,8 +20,8 @@ id = "test_guest"
 name = "Test Guest"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "storage", "audio", "render", "input", "actions"]
-experimental = ["audio", "render", "input", "actions"]
+capabilities = ["game-read", "chat", "storage", "audio", "render", "input", "actions", "screen"]
+experimental = ["audio", "render", "input", "actions", "screen"]
 "#;
 const UI_MANIFEST: &str = r#"
 id = "test_ui_guest"
@@ -73,6 +73,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "action-probe",
                 "-p",
+                "screen-probe",
+                "-p",
                 "horizon-mods-test-guest",
                 "-p",
                 "horizon-mods-test-ui-guest",
@@ -108,6 +110,7 @@ fn mods_dir() -> &'static Path {
             ("zoom_probe", example("zoom-probe")),
             ("pose_probe", example("pose-probe")),
             ("action_probe", example("action-probe")),
+            ("screen_probe", example("screen-probe")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
         ];
@@ -646,6 +649,187 @@ fn actions_queue_in_order_clamp_and_drop() {
     assert_eq!(mods.held_buttons(), (false, false));
 }
 
+/// Capability `screen` (API 22): the snapshot's screen state and
+/// merchant offers reach the mod verbatim, at the charged counts;
+/// button declarations clamp at the store and resolve per
+/// context (the first eight in load order), highlights clamp at
+/// 512, presses and middle clicks drain through `poll` in order
+/// behind the 256 cap, a trade choice queues as its own output
+/// and errs at call time with no merchant open, and the debug
+/// claim and the declarations die with a stopped mod.
+#[test]
+fn screen_state_buttons_and_poll_flow() {
+    use horizon_mods::{
+        ModScreenEvent, ModScreenState, ModTradeList, ModTradeOffer, ModTradeStack,
+    };
+    let mut mods = load("horizon_mods_test_guest.kmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let feedback = |mods: &mut Mods| -> Vec<(String, bool)> {
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Feedback { text, error } => Some((text, error)),
+                _ => None,
+            })
+            .collect()
+    };
+    // The default snapshot: no screen open, no merchant.
+    mods.set_snapshot(player());
+    assert!(mods.command("scrnstate"));
+    assert_eq!(
+        feedback(&mut mods),
+        [(
+            "screen playing menu - title - rect 0.0 0.0 0.0 0.0 hovered - debug false \
+             trades - selected -"
+                .to_string(),
+            false
+        )]
+    );
+    // A trade choice with no merchant open errs at call time
+    // and queues nothing.
+    assert!(mods.command("scrntrade"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "no merchant screen is open".into(),
+            error: true,
+        }]
+    );
+    // The fixture's merchant state reads back verbatim: the
+    // menu type, the plain title, the panel, the hovered slot,
+    // and the offers at their charged counts.
+    let stack = |item: &str, count: u32| ModTradeStack {
+        item: item.into(),
+        count,
+        components: String::new(),
+    };
+    let mut snapshot = player();
+    snapshot.screen_state = ModScreenState {
+        id: "inventory".into(),
+        menu: Some("minecraft:merchant".into()),
+        title: Some("Novice".into()),
+        rect: (75.0, 17.0, 276.0, 166.0),
+        hovered_slot: Some(300),
+        debug_open: false,
+    };
+    snapshot.trades = Some(ModTradeList {
+        offers: vec![
+            ModTradeOffer {
+                cost_a: stack("minecraft:emerald", 5),
+                cost_b: None,
+                result: stack("minecraft:bread", 1),
+                uses: 0,
+                max_uses: 12,
+                available: true,
+            },
+            ModTradeOffer {
+                cost_a: stack("minecraft:emerald", 9),
+                cost_b: Some(stack("minecraft:book", 1)),
+                result: stack("minecraft:enchanted_book", 1),
+                uses: 12,
+                max_uses: 12,
+                available: false,
+            },
+        ],
+        selected: Some(0),
+    });
+    mods.set_snapshot(snapshot);
+    assert!(mods.command("scrnstate"));
+    assert_eq!(
+        feedback(&mut mods),
+        [(
+            "screen inventory menu minecraft:merchant title Novice rect 75.0 17.0 276.0 \
+             166.0 hovered 300 debug false trades 2 selected 0 first minecraft:emerald 5 \
+             -> minecraft:bread avail true"
+                .to_string(),
+            false
+        )]
+    );
+    // With the merchant open, the choice queues as its own
+    // output, ahead of the command's success feedback.
+    assert!(mods.command("scrntrade"));
+    assert_eq!(
+        mods.drain(),
+        [
+            Output::SelectTrade {
+                mod_id: "test_guest".into(),
+                index: 0,
+            },
+            Output::Feedback {
+                text: "chose".into(),
+                error: false,
+            },
+        ]
+    );
+    // Seventeen declarations store sixteen; the context
+    // aggregate draws the first eight, for the screen they
+    // name and no other.
+    assert!(mods.command("scrnbuttons"));
+    mods.drain();
+    let resolved = mods.screen_buttons("inventory", None);
+    assert_eq!(
+        resolved.iter().map(|(_, b)| b.id).collect::<Vec<_>>(),
+        [1, 2, 3, 4, 5, 6, 7, 8]
+    );
+    assert!(resolved.iter().all(|(owner, _)| *owner == 0));
+    // A menu-less button matches a menu context too.
+    assert_eq!(
+        mods.screen_buttons("inventory", Some("minecraft:merchant"))
+            .len(),
+        8
+    );
+    assert!(mods.screen_buttons("paused", None).is_empty());
+    // 513 marks keep 512.
+    assert!(mods.command("scrnhighlight"));
+    mods.drain();
+    let marks = mods.screen_highlights();
+    assert_eq!(marks.len(), 512);
+    assert_eq!((marks[0].slot, marks[0].color), (0, 0xFF0000));
+    assert_eq!(marks[511].slot, 511);
+    // Presses and middle clicks drain in order; a second poll
+    // is empty.
+    mods.screen_event(0, ModScreenEvent::Button(7));
+    mods.screen_middle_click(Some(300));
+    mods.screen_middle_click(None);
+    assert!(mods.command("scrnpoll"));
+    assert_eq!(
+        feedback(&mut mods),
+        [(
+            "events [button 7; middle 300; middle none]".to_string(),
+            false
+        )]
+    );
+    assert!(mods.command("scrnpoll"));
+    assert_eq!(feedback(&mut mods), [("events []".to_string(), false)]);
+    // The queue keeps the newest 256: of 300 presses the first
+    // polled is the 45th pushed.
+    for id in 0..300 {
+        mods.screen_event(0, ModScreenEvent::Button(id));
+    }
+    assert!(mods.command("scrnpoll"));
+    let (text, error) = &feedback(&mut mods)[0];
+    assert!(!error);
+    assert!(text.starts_with("events [button 44;"), "{text}");
+    assert_eq!(text.matches("button").count(), 256);
+    // The debug claim reads back, and a stopped mod's claim
+    // and declarations die with it.
+    assert!(!mods.debug_claimed());
+    assert!(mods.command("scrndebug on"));
+    mods.drain();
+    assert!(mods.debug_claimed());
+    assert!(mods.command("panic"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Stopped {
+            name: "Test Guest".into(),
+            reason: "it crashed (a panic)".into(),
+        }]
+    );
+    assert!(!mods.debug_claimed());
+    assert!(mods.screen_buttons("inventory", None).is_empty());
+    assert!(mods.screen_highlights().is_empty());
+}
+
 /// Capability `game-read`'s self reads (API 18): the snapshot's
 /// effects and self-state reach the mod verbatim — an infinite
 /// effect's -1 among them, and the mount's health —, both read
@@ -1094,8 +1278,8 @@ id = "too_new"
 name = "Too New"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world", "inventory", "entity", "audio", "actions"]
-experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audio", "actions"]
+capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world", "inventory", "entity", "audio", "actions", "screen"]
+experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audio", "actions", "screen"]
 "#;
     std::fs::write(dir.join("horizon-mod.toml"), manifest).unwrap();
     std::fs::write(dir.join("mod.wasm"), wasm).unwrap();
@@ -1132,6 +1316,8 @@ experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audi
     assert_eq!(level("pose_probe.kmod"), 20);
     // The action probe reads the crosshair's target (`actions.target`, level 21).
     assert_eq!(level("action_probe.kmod"), 21);
+    // The screen probe reads the open screen (`screen.state`, level 22).
+    assert_eq!(level("screen_probe.kmod"), 22);
 }
 
 #[test]

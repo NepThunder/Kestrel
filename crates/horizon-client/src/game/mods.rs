@@ -127,6 +127,16 @@ pub(super) struct ModsState {
     /// [`horizon_mods::ACTIONS_PER_CALL`] per mod awaiting.
     #[cfg(feature = "mods")]
     pub(super) pending_actions: Vec<(String, ModAction)>,
+    /// Capability `screen`'s queued trade choices (API 22), in
+    /// request order across mods: collected and performed with
+    /// the actions (`Game::perform_mod_actions`), through the
+    /// merchant screen's own `try_move_items` — never a slot
+    /// click — and dropped when the merchant has closed or the
+    /// index names no offer, at most
+    /// [`horizon_mods::ACTIONS_PER_CALL`] per mod awaiting, as
+    /// the runtime caps the verb per call.
+    #[cfg(feature = "mods")]
+    pub(super) pending_trades: Vec<(String, u32)>,
     /// The view's zoom ratio (API 19), for `render.set-hand-fov`:
     /// 1 unzoomed, easing toward 1/factor beside the FOV ease in
     /// `tick_fov` (`Game::tick_mod_zoom_ratio`). None until the
@@ -160,6 +170,35 @@ fn mod_face_normal(face: ModFace) -> [i32; 3] {
 fn use_on_block_matches(hit_pos: [i32; 3], hit_face: [i32; 3], target: &ModBlockTarget) -> bool {
     hit_pos == [target.block_x, target.block_y, target.block_z]
         && hit_face == mod_face_normal(target.face)
+}
+
+/// Whether a queued trade choice performs (API 22): a merchant
+/// session is open at performance time and the index names one
+/// of its offers — the whole of the drain's gate, judged then,
+/// not when the choice was queued.
+#[cfg(feature = "mods")]
+fn mod_trade_performs(offers: Option<usize>, index: u32) -> bool {
+    offers.is_some_and(|n| (index as usize) < n)
+}
+
+#[cfg(all(test, feature = "mods"))]
+mod screen_tests {
+    use super::mod_trade_performs;
+
+    /// The trade drain's gate (API 22): an open merchant and an
+    /// index inside its offers performs; a closed merchant or
+    /// an index past the last offer drops the choice.
+    #[test]
+    fn a_trade_choice_performs_only_on_an_open_merchant_in_range() {
+        assert!(mod_trade_performs(Some(3), 0));
+        assert!(mod_trade_performs(Some(3), 2));
+        // Past the last offer: dropped.
+        assert!(!mod_trade_performs(Some(3), 3));
+        // An open merchant with no offers names nothing.
+        assert!(!mod_trade_performs(Some(0), 0));
+        // The merchant closed since the choice was queued.
+        assert!(!mod_trade_performs(None, 0));
+    }
 }
 
 #[cfg(all(test, feature = "mods"))]
@@ -474,6 +513,30 @@ impl Game<'_> {
         (false, false)
     }
     pub(super) fn drain_mod_actions_in_frame(&mut self) {}
+    /// API 22: no mod runs, so no screen carries a mod's buttons
+    /// or marks, no press is ever a mod's, the sort buttons are
+    /// never suppressed and the debug overlay is never claimed.
+    pub(super) fn mod_screen_event_button(&mut self, _owner: usize, _id: u32) {}
+    pub(super) fn mod_screen_middle_click(&mut self) {}
+    pub(super) fn mod_screen_press(&mut self) -> bool {
+        false
+    }
+    pub(super) fn draw_mod_screen_buttons(&self, _batch: &mut HudBatch) {}
+    pub(super) fn draw_mod_screen_highlights(&self, _batch: &mut HudBatch, _ox: f32, _oy: f32) {}
+    pub(super) fn draw_mod_pause_buttons(&self, _batch: &mut HudBatch, _row3: bool) {}
+    pub(super) fn mod_pause_press(&mut self, _w: f32, _h: f32, _row3: bool) -> bool {
+        false
+    }
+    pub(super) fn mod_title_press(&mut self, _w: f32, _h: f32) -> bool {
+        false
+    }
+    pub(super) fn draw_mod_title_buttons(&self, _batch: &mut HudBatch) {}
+    pub(super) fn mod_sort_suppressed(&self, _container_area: bool) -> bool {
+        false
+    }
+    pub(super) fn mod_debug_claimed(&self) -> bool {
+        false
+    }
     pub(super) fn lend_client_world(&mut self) -> bool {
         false
     }
@@ -847,6 +910,7 @@ impl Game<'_> {
         let (inventory, open_container) = self.mod_inventory();
         let (entities, targeted) = self.mod_entities();
         let (effects, self_state) = self.mod_self_reads();
+        let (screen_state, trades) = self.mod_screen_reads();
         Snapshot {
             player,
             clock,
@@ -875,6 +939,8 @@ impl Game<'_> {
             spyglass_zoom: self.mod_spyglass_zoom(),
             last_input_ms: self.last_input.elapsed().as_millis() as u64,
             action_target: self.mod_action_target(),
+            screen_state,
+            trades,
         }
     }
     /// The camera the last frame rendered from, for `get-camera` /
@@ -1555,6 +1621,22 @@ impl Game<'_> {
                     }
                     continue;
                 }
+                Output::SelectTrade { mod_id, index } => {
+                    // The trade choice rides with the actions
+                    // (API 22): it performs in the tick's input
+                    // step through the merchant screen's own
+                    // function, never as a slot click here.
+                    let queued = self
+                        .mods
+                        .pending_trades
+                        .iter()
+                        .filter(|(id, _)| *id == mod_id)
+                        .count();
+                    if queued < horizon_mods::ACTIONS_PER_CALL {
+                        self.mods.pending_trades.push((mod_id, index));
+                    }
+                    continue;
+                }
             };
             self.add_mod_chat_line(line);
         }
@@ -1589,11 +1671,37 @@ impl Game<'_> {
                 ModAction::UseOnBlock { target, hand } => self.remote_use_on_block(&target, hand),
             }
         }
+        self.perform_mod_trades();
+    }
+    /// Performs the queued trade choices (capability `screen`,
+    /// API 22) in this tick's input step, beside the actions:
+    /// each goes through the merchant screen's own
+    /// `try_move_items` — the dedicated selection the screen's
+    /// own click sends, never a slot click — and one whose
+    /// merchant has closed, or whose index names no offer of
+    /// the session open now, is dropped silently, as a stale
+    /// action is.
+    pub(super) fn perform_mod_trades(&mut self) {
+        for (_, index) in std::mem::take(&mut self.mods.pending_trades) {
+            if mod_trade_performs(self.mod_merchant_session(), index) {
+                self.try_move_items(index as usize);
+            }
+        }
+    }
+    /// The open merchant session's offer count (API 22), when
+    /// one is open: the drain gate's whole view of the session.
+    fn mod_merchant_session(&self) -> Option<usize> {
+        self.station
+            .as_ref()
+            .and_then(|s| s.merchant.as_ref())
+            .map(|m| m.session.offers.len())
     }
     /// Drops the queued mod actions unperformed (API 21): the
-    /// input step's `ready` gate failed.
+    /// input step's `ready` gate failed. The queued trade
+    /// choices (API 22) drop with them.
     pub(super) fn clear_mod_actions(&mut self) {
         self.mods.pending_actions.clear();
+        self.mods.pending_trades.clear();
     }
     /// The buttons the running mods hold down (API 21), read once
     /// per tick at the input step and OR'd with the player's own
@@ -1647,6 +1755,7 @@ impl Game<'_> {
     /// does.
     pub(super) fn drain_mod_actions_in_frame(&mut self) {
         let pending = std::mem::take(&mut self.mods.pending_actions);
+        let trades = std::mem::take(&mut self.mods.pending_trades);
         let ready = self.screen == Screen::Playing
             && self.title.is_none()
             && self.sleeping.is_none()
@@ -1660,6 +1769,15 @@ impl Game<'_> {
                 ModAction::Attack => self.attack_clicks += 1,
                 ModAction::SelectSlot(slot) => self.selected = slot as usize,
                 ModAction::UseOnBlock { .. } => {}
+            }
+        }
+        // The trade choices (API 22) share the queue and its
+        // gates; performing one is the screen's own function,
+        // which runs the menu session on this path itself — no
+        // path-specific code of the district's is added here.
+        for (_, index) in trades {
+            if mod_trade_performs(self.mod_merchant_session(), index) {
+                self.try_move_items(index as usize);
             }
         }
     }

@@ -47,8 +47,10 @@ impl Screen {
 /// The pause menu grid's origin: GridLayout of two 98px columns (padding 4),
 /// aligned at (0.5, 0.25). `row3`: the full-width row at y + 122 that holds
 /// the `pause_screen_additions` button, or the `minecraft:server_links` one
-/// when the tag is empty (`PauseScreen.getCustomAdditions`).
-fn pause_grid(w: f32, h: f32, row3: bool) -> (f32, f32) {
+/// when the tag is empty (`PauseScreen.getCustomAdditions`). Shared with
+/// the mods' pause buttons (`game/mod_screen.rs`, API 22), which start
+/// below the grid's own rows.
+pub(super) fn pause_grid(w: f32, h: f32, row3: bool) -> (f32, f32) {
     let (grid_w, grid_h) = (212.0, 166.0 + if row3 { 24.0 } else { 0.0 });
     (((w - grid_w) * 0.5).floor(), ((h - grid_h) * 0.25).floor())
 }
@@ -256,6 +258,9 @@ impl Game<'_> {
                 tooltip = Some(Text::translate("menu.custom_options.tooltip", &[]));
             }
         }
+        // The mods' own buttons (capability `screen`, API 22),
+        // after the menu's own rows, in the same dress.
+        self.draw_mod_pause_buttons(batch, links || additions.is_some());
         for (i, (x, y, sprite)) in pause_icons(w, h, links, additions.is_some())
             .into_iter()
             .enumerate()
@@ -371,6 +376,13 @@ impl Game<'_> {
         };
         let links = !self.server_links().is_empty();
         let additions = self.pause_screen_additions();
+        // A mod's button (capability `screen`, API 22) is the
+        // mod's alone: the press is queued for it and the menu's
+        // own hit test never sees it.
+        if self.mod_pause_press(w, h, links || additions.is_some()) {
+            self.audio.play_button_click();
+            return Ok(());
+        }
         let icons = pause_icons(w, h, links, additions.is_some());
         let friends = icons[FRIENDS_ICON];
         let hit = pause_buttons(w, h, self.external_server(), links, additions.is_some())

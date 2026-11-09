@@ -35,6 +35,15 @@ use winit::{event::MouseButton, keyboard::KeyCode};
 /// A sort button's side in GUI pixels.
 const SORT_BUTTON: f32 = 9.0;
 
+/// Which of the sort buttons' areas a button serves (capability
+/// `screen`, API 22): the container's button sorts the open
+/// container's slots (the 300..500 range `sort_buttons`
+/// collects), the inventory's the player's own (9..36) — the
+/// classification the mod-button suppression asks by.
+fn sort_area_is_container(slots: &[usize]) -> bool {
+    slots.iter().any(|s| (300..500).contains(s))
+}
+
 #[derive(Default)]
 pub(super) struct Tweaks {
     drag: Option<Drag>,
@@ -396,10 +405,15 @@ impl Game<'_> {
         buttons
     }
     /// The sort buttons: a bordered square with three bars, lighter under
-    /// the cursor.
+    /// the cursor. While a mod's buttons serve an area (capability
+    /// `screen`, API 22), the game's own button for that area is not
+    /// drawn — the mods' sit where it sat.
     pub(super) fn draw_sort_buttons(&self, batch: &mut HudBatch, ox: f32, oy: f32) {
         let atlas = &self.gui.atlas;
-        for ((x, y), _) in self.sort_buttons() {
+        for ((x, y), slots) in self.sort_buttons() {
+            if self.mod_sort_suppressed(sort_area_is_container(&slots)) {
+                continue;
+            }
             let (x, y) = (ox + x, oy + y);
             let (cx, cy) = self.cursor;
             let hovered = cx >= x && cx < x + SORT_BUTTON && cy >= y && cy < y + SORT_BUTTON;
@@ -431,7 +445,14 @@ impl Game<'_> {
         let batch = HudBatch::new([r.config.width, r.config.height]);
         let (ox, oy) = self.inventory_origin(&batch);
         let (cx, cy) = self.cursor;
-        let hit = self.sort_buttons().into_iter().find(|((x, y), _)| {
+        let hit = self.sort_buttons().into_iter().find(|((x, y), slots)| {
+            // A suppressed area's button takes no press either
+            // (API 22): the mods' buttons sit where it sat, and
+            // `inventory_press` asks them first — a press here
+            // would land on the same pixels twice.
+            if self.mod_sort_suppressed(sort_area_is_container(slots)) {
+                return false;
+            }
             let (x, y) = (ox + x, oy + y);
             cx >= x && cx < x + SORT_BUTTON && cy >= y && cy < y + SORT_BUTTON
         });

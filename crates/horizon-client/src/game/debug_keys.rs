@@ -294,6 +294,10 @@ impl Game<'_> {
         if self.title.is_some()
             || !self.debug_entries.any_enabled(self.debug, reduced)
             || (self.ui.hide_gui && !screen_open)
+            // A mod stands in for the debug overlay (capability
+            // `screen`, API 22): the game's own entries are not
+            // drawn while one claims the surface.
+            || self.mod_debug_claimed()
         {
             return;
         }

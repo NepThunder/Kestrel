@@ -1,0 +1,9 @@
+id = "screen_probe"
+name = "Screen Probe"
+version = "0.1.0"
+description = "Prototype for screen: shows the open screen and declares buttons on the pause and inventory screens."
+authors = ["Horizon"]
+api = "0.1"
+side = "client"
+capabilities = ["hud", "screen"]
+experimental = ["screen"]
