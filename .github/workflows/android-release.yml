@@ -1,0 +1,119 @@
+# Official Kestrel release build: arm64 public distribution APK.
+# Runs manually on the android branch of this fork. Builds a public,
+# non-debuggable release candidate with tools/android_prepare.py tables
+# (original resources download from Mojang), signed with the dedicated
+# release signing identity (ANDROID_RELEASE_KEYSTORE_BASE64) so every
+# official release installs over the previous one. Publishes a real
+# GitHub release (not a prerelease), marked latest. No
+# KESTREL_BUILD_NUMBER is set: official builds never offer the dev
+# channel's kestrel-build-* releases as updates.
+name: Android release (Kestrel, official)
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version (the app versionName in build.gradle must match)
+        type: string
+        required: true
+        default: "0.1.0"
+permissions:
+  contents: write
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      HORIZON_TELEMETRY_URL: "off"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            target: aarch64-linux-android
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Restore dedicated release signing identity
+        env:
+          RELEASE_KEYSTORE: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          python3 - <<'PY'
+          import base64, os
+          from pathlib import Path
+          value = os.environ.get('RELEASE_KEYSTORE', '')
+          if not value:
+              raise SystemExit('Set ANDROID_RELEASE_KEYSTORE_BASE64 first')
+          path = Path('.local/android/debug.keystore')
+          path.parent.mkdir(parents=True, exist_ok=True)
+          path.write_bytes(base64.b64decode(value, validate=True))
+          path.chmod(0o600)
+          PY
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+      - name: Set up Rust 1.95 and Android target
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+          rustup target add ${{ matrix.target }}
+      - name: Install Android SDK packages
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
+      - name: Download Gradle 8.14
+        run: |
+          curl -L -o gradle-8.14-all.zip https://services.gradle.org/distributions/gradle-8.14-all.zip
+          unzip -q gradle-8.14-all.zip
+          ./gradle-8.14/bin/gradle --version
+      - name: Prepare engine resources
+        run: python3 tools/android_prepare.py --java-home "$JAVA_HOME"
+      # Gradle 8.14 cannot run on JDK 25 (Unsupported class file major
+      # version 69). Prepare keeps JDK 25, the Gradle build uses JDK 17.
+      - name: Set up JDK 17 for Gradle
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Build official APK (${{ matrix.abi }})
+        run: python3 tools/android_build.py --public --release-candidate --abi ${{ matrix.abi }} --sdk "$ANDROID_HOME" --java-home "$JAVA_HOME" --gradle "$GITHUB_WORKSPACE/gradle-8.14/bin/gradle"
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ matrix.abi }}
+          path: .local/android/apk/${{ matrix.abi }}/*.apk
+          if-no-files-found: error
+      - name: Remove signing key
+        if: always()
+        run: rm -f .local/android/debug.keystore
+  release:
+    needs: apk
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: apks
+      - name: Create official release with APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -R apks
+          cp apks/apk-arm64-v8a/*.apk kestrel-arm64-v8a.apk
+          gh release create "v${{ inputs.version }}" --latest --target "${{ github.sha }}" \
+            --title "Kestrel ${{ inputs.version }}" \
+            --notes "Official release. Built from android commit ${{ github.sha }}. Package com.kestrel.android, arm64-v8a." \
+            kestrel-arm64-v8a.apk
