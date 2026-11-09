@@ -8,11 +8,13 @@
 //! movement toggle write (API 18); `/zoomstate`, `/hidehud`, `/handfov`
 //! and `/fpscap` capability `render`'s zoom truth, HUD hide, hand FOV
 //! and frame-rate cap, and `/idle` capability `input`'s idle clock
-//! (API 19); `tick` and
+//! (API 19); `/posestates`, `/poseoffset`, `/poseclear`, `/posescale`
+//! and `/ownbody` capability `render`'s entity poses (API 20); `tick` and
 //! `frame` do nothing, to measure the cost of a call.
 use horizon_mod_sdk::{
-    HandFov, HandFovMode, HandTransform, Mod, Registration, SoundAdjustment, SoundQuery, SwingAnim,
-    audio, chat, game, hand, input, render, storage,
+    HandFov, HandFovMode, HandTransform, Mod, PartOffset, PoseOffset, PoseTarget, Registration,
+    SoundAdjustment, SoundQuery, SwingAnim, audio, chat, entity_pose, game, hand, input, render,
+    storage,
 };
 
 struct Guest {
@@ -42,6 +44,11 @@ impl Mod for Guest {
             "handfov",
             "fpscap",
             "idle",
+            "posestates",
+            "poseoffset",
+            "poseclear",
+            "posescale",
+            "ownbody",
         ]
         .into_iter()
         .fold(Registration::new(), Registration::command)
@@ -243,6 +250,109 @@ impl Mod for Guest {
                 Ok(Some("capped".into()))
             }
             "idle" => Ok(Some(format!("idle {}", input::last_input_ms()))),
+            "posestates" => {
+                let lines: Vec<String> = entity_pose::get_pose_states()
+                    .iter()
+                    .map(|s| {
+                        let using = s.using.as_ref().map_or("none".into(), |u| {
+                            format!("{}:{}:{}", u.off_hand, u.item, u.ticks)
+                        });
+                        format!(
+                            "{} {} self {} walk {:.2} {:.2} head {:.1} {:.1} swing {:.2} {:?} \
+                             off {} arms {:?} {:?} hands {} {} using {} flags {} {} {:.2} {} {} {} {}",
+                            s.id,
+                            s.kind,
+                            s.self_,
+                            s.walk_pos,
+                            s.walk_speed,
+                            s.head_yaw,
+                            s.head_pitch,
+                            s.swing_progress,
+                            s.swing_anim,
+                            s.swing_off_hand,
+                            s.main_arm_pose,
+                            s.off_arm_pose,
+                            s.main_hand.as_deref().unwrap_or("none"),
+                            s.off_hand.as_deref().unwrap_or("none"),
+                            using,
+                            s.crouching,
+                            s.riding,
+                            s.swim_amount,
+                            s.gliding,
+                            s.sleeping,
+                            s.sprinting,
+                            s.on_ground
+                        )
+                    })
+                    .collect();
+                Ok(Some(format!("poses [{}]", lines.join("; "))))
+            }
+            "poseoffset" => {
+                // `/poseoffset <yaw>`: past every limit the host
+                // clamps to on self (a 270° pitch, a NaN pivot,
+                // a 2-block pivot), and a plain one on entity 42.
+                let yaw: f32 = args.parse().map_err(|_| "Usage: /poseoffset <yaw>")?;
+                entity_pose::set_pose_offset(
+                    PoseTarget::SelfPlayer,
+                    &PoseOffset {
+                        parts: vec![
+                            PartOffset {
+                                part: "right_arm".into(),
+                                x: 2.0,
+                                y: 0.25,
+                                z: f32::NAN,
+                                pitch: 270.0,
+                                yaw,
+                                roll: -30.0,
+                            },
+                            PartOffset {
+                                part: "head".into(),
+                                x: 0.0,
+                                y: 0.0,
+                                z: 0.0,
+                                pitch: 0.0,
+                                yaw: 0.0,
+                                roll: 0.0,
+                            },
+                        ],
+                        hidden: vec!["left_leg".into()],
+                    },
+                );
+                entity_pose::set_pose_offset(
+                    PoseTarget::Entity(42),
+                    &PoseOffset {
+                        parts: vec![PartOffset {
+                            part: "body".into(),
+                            x: 0.0,
+                            y: 0.0,
+                            z: 0.0,
+                            pitch: 90.0,
+                            yaw: 0.0,
+                            roll: 0.0,
+                        }],
+                        hidden: Vec::new(),
+                    },
+                );
+                Ok(Some("set".into()))
+            }
+            "poseclear" => {
+                entity_pose::clear_pose_offset(PoseTarget::SelfPlayer);
+                Ok(Some("cleared".into()))
+            }
+            "posescale" => {
+                let scale: f32 = args.parse().map_err(|_| "Usage: /posescale <f32>")?;
+                entity_pose::set_pose_scale(PoseTarget::SelfPlayer, scale);
+                Ok(Some("scaled".into()))
+            }
+            "ownbody" => {
+                let shown = match args {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err("Usage: /ownbody <on|off>".into()),
+                };
+                entity_pose::set_first_person_body(shown);
+                Ok(Some(if shown { "body on".into() } else { "body off".into() }))
+            }
             _ => {
                 chat::show(&format!("hello {args} after {} ticks", self.ticks));
                 Ok(None)

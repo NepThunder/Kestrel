@@ -8,8 +8,9 @@
 //! test written in TOML, `tests/<name>.toml` in the mod's folder: steps, each
 //! saying what happens and what the mod must have shown by then.
 use crate::{
-    BlockPos, Clock, Container, Corner, Entity, GameMode, InvStack, ModEffect, ModSelfState, Mods,
-    Output, Panel, Player, PlayerInventory, ServerPlayer, Snapshot, Status, Target, WorldDrawLine,
+    BlockPos, Clock, Container, Corner, Entity, GameMode, InvStack, ModArmPose, ModEffect,
+    ModEntityPoseState, ModItemUse, ModPoseSwingAnim, ModSelfState, Mods, Output, Panel, Player,
+    PlayerInventory, ServerPlayer, Snapshot, Status, Target, WorldDrawLine,
 };
 use serde::Deserialize;
 use std::{
@@ -77,6 +78,12 @@ pub struct TestGame {
     /// What the mod reads with `input.last-input-ms` (API 19): the
     /// idle clock. 0 until a test sets it, as at the moment of input.
     pub last_input_ms: u64,
+    /// What the mod reads with `entity-pose.get-pose-states`
+    /// (API 20): the drawn players' pose states, the local player
+    /// first. Empty until a test sets them, as on the title
+    /// screen; copied into the mod's store at every snapshot, as
+    /// the game pushes them every frame.
+    pub pose_states: Vec<ModEntityPoseState>,
 }
 
 /// The world a script's mod reads: [`TestGame::world`] and
@@ -193,6 +200,7 @@ impl TestGame {
             can_zoom: false,
             spyglass_zoom: None,
             last_input_ms: 0,
+            pose_states: Vec::new(),
         };
         copy_mod(kmod, &copy)?;
         game.start()?;
@@ -263,6 +271,10 @@ impl TestGame {
             last_input_ms: self.last_input_ms,
             ..Snapshot::default()
         });
+        // The game's per-frame pose push (API 20), played by the
+        // harness at the same point: the fixture goes into the
+        // mod's store whole, before whatever the step does next.
+        self.mods.set_pose_states(self.pose_states.clone());
     }
 
     /// The mob under the crosshair, as the game's snapshot builder finds
@@ -746,6 +758,120 @@ pub struct MountSet {
     max_health: f32,
 }
 
+/// One drawn player's pose state for a step (API 20), in the WIT
+/// record's shape: the walk and head inputs, the swing, each
+/// hand's arm pose (named as the WIT enum spells it), the held
+/// items, the item in use and the pose flags.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct PoseSet {
+    #[serde(default)]
+    id: u32,
+    #[serde(default)]
+    kind: String,
+    #[serde(default, rename = "self")]
+    self_player: bool,
+    #[serde(default)]
+    walk_pos: f32,
+    #[serde(default)]
+    walk_speed: f32,
+    #[serde(default)]
+    head_yaw: f32,
+    #[serde(default)]
+    head_pitch: f32,
+    #[serde(default)]
+    swing_progress: f32,
+    #[serde(default)]
+    swing_anim: String,
+    #[serde(default)]
+    swing_off_hand: bool,
+    #[serde(default)]
+    main_arm_pose: String,
+    #[serde(default)]
+    off_arm_pose: String,
+    main_hand: Option<String>,
+    off_hand: Option<String>,
+    using: Option<ItemUseSet>,
+    #[serde(default)]
+    crouching: bool,
+    #[serde(default)]
+    riding: bool,
+    #[serde(default)]
+    swim_amount: f32,
+    #[serde(default)]
+    gliding: bool,
+    #[serde(default)]
+    sleeping: bool,
+    #[serde(default)]
+    sprinting: bool,
+    #[serde(default)]
+    on_ground: bool,
+}
+
+/// A step's item in use (API 20): the hand, the item, the ticks.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct ItemUseSet {
+    #[serde(default)]
+    off_hand: bool,
+    item: String,
+    #[serde(default)]
+    ticks: u32,
+}
+
+impl PoseSet {
+    fn to_state(&self) -> ModEntityPoseState {
+        let arm = |name: &str| match name {
+            "item" => ModArmPose::Item,
+            "block" => ModArmPose::Block,
+            "bow" => ModArmPose::Bow,
+            "crossbow-hold" => ModArmPose::CrossbowHold,
+            "crossbow-charge" => ModArmPose::CrossbowCharge,
+            "throw-trident" => ModArmPose::ThrowTrident,
+            "toot-horn" => ModArmPose::TootHorn,
+            "spear" => ModArmPose::Spear,
+            "brush" => ModArmPose::Brush,
+            _ => ModArmPose::Empty,
+        };
+        ModEntityPoseState {
+            id: self.id,
+            kind: if self.kind.is_empty() {
+                "minecraft:player".into()
+            } else {
+                self.kind.clone()
+            },
+            self_: self.self_player,
+            walk_pos: self.walk_pos,
+            walk_speed: self.walk_speed,
+            head_yaw: self.head_yaw,
+            head_pitch: self.head_pitch,
+            swing_progress: self.swing_progress,
+            swing_anim: match self.swing_anim.as_str() {
+                "whack" => ModPoseSwingAnim::Whack,
+                "stab" => ModPoseSwingAnim::Stab,
+                _ => ModPoseSwingAnim::None,
+            },
+            swing_off_hand: self.swing_off_hand,
+            main_arm_pose: arm(&self.main_arm_pose),
+            off_arm_pose: arm(&self.off_arm_pose),
+            main_hand: self.main_hand.clone(),
+            off_hand: self.off_hand.clone(),
+            using: self.using.as_ref().map(|u| ModItemUse {
+                off_hand: u.off_hand,
+                item: u.item.clone(),
+                ticks: u.ticks,
+            }),
+            crouching: self.crouching,
+            riding: self.riding,
+            swim_amount: self.swim_amount,
+            gliding: self.gliding,
+            sleeping: self.sleeping,
+            sprinting: self.sprinting,
+            on_ground: self.on_ground,
+        }
+    }
+}
+
 impl SelfSet {
     fn to_self_state(&self) -> ModSelfState {
         ModSelfState {
@@ -796,7 +922,7 @@ impl EntitySet {
 /// One step. Its parts happen in this order: `reload`, `title-screen`,
 /// `blocks`, `lights`, `join`, `player`, `clock`, `inventory`, `container`,
 /// `close-container`, `dead`, `entities`, `effects`, `self`, `can-zoom`,
-/// `spyglass`, `idle-ms`, `multiplayer`, `ticks`,
+/// `spyglass`, `idle-ms`, `poses`, `multiplayer`, `ticks`,
 /// `frames`, `chat`, `command`, `break`, `place`, `leave`; then the blocks the mod set are made, and `expect`
 /// is checked against what the mod showed and changed during the step.
 /// For a server mod, `player`, `chat`, `command`, `break` and `place` are
@@ -842,6 +968,9 @@ pub struct Step {
     /// Milliseconds since the player's last input (API 19): replaces
     /// the fixture; a step without it keeps the last one.
     idle_ms: Option<u64>,
+    /// The drawn players' pose states (API 20): replaces the
+    /// fixture wholesale; a step without it keeps the last one.
+    poses: Option<Vec<PoseSet>>,
     /// Multiplayer from this step on (capability `entity`): the list
     /// reads empty and health reads None, while the crosshair target
     /// still answers.
@@ -995,6 +1124,9 @@ impl Step {
         if self.idle_ms.is_some() {
             parts.push("idle-ms".to_string());
         }
+        if self.poses.is_some() {
+            parts.push("poses".to_string());
+        }
         if self.multiplayer {
             parts.push("multiplayer".to_string());
         }
@@ -1109,6 +1241,9 @@ impl Step {
         }
         if let Some(ms) = self.idle_ms {
             game.last_input_ms = ms;
+        }
+        if let Some(set) = &self.poses {
+            game.pose_states = set.iter().map(PoseSet::to_state).collect();
         }
         if self.multiplayer {
             game.multiplayer = true;

@@ -36,6 +36,10 @@
 //! spyglass's own zoom, hides the HUD, makes the hand's field of
 //! view follow the zoom and caps the frame rate, and `input` reads
 //! the time since the player's last input (API level 19).
+//! `render` also poses player models through [`entity_pose`]:
+//! every drawn player's pose inputs each frame, per-part offsets
+//! folded into the finished vanilla pose, a pose scale, and the
+//! player's own body in first person (API level 20).
 //! Server mods: [`server`].
 //!
 //! Widgets (capability `ui`): a mod shows a screen it owns with
@@ -56,13 +60,16 @@ pub use exports::horizon::mods::audio_events::{
 };
 pub use exports::horizon::mods::events::{Guest as __Guest, Registration};
 pub use exports::horizon::mods::ui_events::Guest as __UiEventsGuest;
-pub use horizon::mods::{
-    audio, browser, chat, command, entity, game, hand, hud, input, inventory, log, recipes,
-    render, storage, ui, world,
+pub use horizon::mods::entity_pose::{
+    ArmPose, EntityPoseState, ItemUse, PartOffset, PoseOffset, PoseTarget,
 };
 pub use horizon::mods::game::{Effect, Mount, SelfState};
 pub use horizon::mods::hand::{HandState, HandTransform, SwingAnim, SwingKind};
 pub use horizon::mods::render::{HandFov, HandFovMode};
+pub use horizon::mods::{
+    audio, browser, chat, command, entity, entity_pose, game, hand, hud, input, inventory, log,
+    recipes, render, storage, ui, world,
+};
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for
 /// are called; the others may stay as their defaults.
@@ -86,7 +93,11 @@ pub trait Mod: Sized + 'static {
     /// Only the first mod in load order that implements this is ever
     /// asked. The default is no change.
     fn sound(&mut self, _query: &SoundQuery) -> SoundAdjustment {
-        SoundAdjustment { gain: 1.0, lowpass: 0.0, reverb: 0.0 }
+        SoundAdjustment {
+            gain: 1.0,
+            lowpass: 0.0,
+            reverb: 0.0,
+        }
     }
     /// A row of one of the mod's `list` widgets was picked (capability
     /// `ui`): the widget's `id` and the row.
@@ -182,8 +193,11 @@ macro_rules! export_mod {
             }
             impl $crate::__AudioEventsGuest for Export {
                 fn sound(query: $crate::SoundQuery) -> $crate::SoundAdjustment {
-                    let mut out =
-                        $crate::SoundAdjustment { gain: 1.0, lowpass: 0.0, reverb: 0.0 };
+                    let mut out = $crate::SoundAdjustment {
+                        gain: 1.0,
+                        lowpass: 0.0,
+                        reverb: 0.0,
+                    };
                     with(|m| out = $crate::Mod::sound(m, &query));
                     out
                 }

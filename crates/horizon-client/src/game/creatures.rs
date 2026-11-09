@@ -5992,6 +5992,9 @@ impl Game<'_> {
                 Vec::new()
             };
             let body = out.len();
+            // The mods' pose fold for this model (API 20): NONE
+            // for everything but a posed player or mannequin.
+            let fold = self.mod_pose_fold(mob);
             let render = if layers_only {
                 horizon_client::mobs::render::render_layers
             } else {
@@ -6005,6 +6008,7 @@ impl Game<'_> {
                 packed,
                 self.res.mob_data(),
                 &armor,
+                &fold,
                 out,
             );
             // HDR output: mobs that are light shine by their kind, as blocks do (entity.wgsl
@@ -6024,14 +6028,14 @@ impl Game<'_> {
                 // the others have no `isInvisible` check.
                 let chest = mob.extra.chest.as_deref();
                 if !layers_only {
-                    self.player_cape_geometry(mob, chest, camera, alpha as f32, packed, out);
+                    self.player_cape_geometry(mob, chest, camera, alpha as f32, packed, &fold, out);
                 }
                 if let Some((_, name)) = self
                     .remote_player_names()
                     .into_iter()
                     .find(|(id, _)| *id == mob.id)
                 {
-                    self.player_ears_geometry(mob, &name, camera, alpha as f32, packed, out);
+                    self.player_ears_geometry(mob, &name, camera, alpha as f32, packed, &fold, out);
                 }
                 self.player_elytra_geometry(mob, chest, camera, alpha as f32, packed, out);
                 self.shoulder_parrots_geometry(mob, camera, alpha as f32, packed, out);

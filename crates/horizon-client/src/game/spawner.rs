@@ -553,6 +553,7 @@ impl Game<'_> {
                 &lookup,
                 packed,
                 self.res.mob_data(),
+                &horizon_client::mobs::anim::PoseFold::NONE,
                 out,
             );
         }

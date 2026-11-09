@@ -2970,6 +2970,8 @@ impl Game<'_> {
             );
             let light = self.world.light(probe[0], probe[1], probe[2]);
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
+            // The mods' pose fold for the guest's model (API 20).
+            let fold = self.mod_pose_fold(m);
             horizon_client::mobs::render::render_with(
                 m,
                 alpha as f32,
@@ -2981,6 +2983,7 @@ impl Game<'_> {
                     || self.worn_armor_layers(m),
                     |g| self.stack_armor_layers(&g.armor),
                 ),
+                &fold,
                 out,
             );
             self.player_elytra_geometry(
@@ -2992,13 +2995,13 @@ impl Game<'_> {
                 out,
             );
             if let Some(g) = host.hub.guest(*conn) {
-                self.player_ears_geometry(m, &g.name, camera, alpha as f32, packed, out);
+                self.player_ears_geometry(m, &g.name, camera, alpha as f32, packed, &fold, out);
             }
             self.spin_attack_geometry(m, camera, alpha as f32, packed, out);
             if let Some(g) = host.hub.guest(*conn) {
                 self.stuck_in_body_geometry(m, g.entity_id, camera, alpha as f32, packed, out);
             }
-            self.held_item_geometry(m, camera, alpha, packed, true, out);
+            self.held_item_geometry(m, camera, alpha, packed, true, &fold, out);
             self.player_pumpkin_geometry(
                 m,
                 host.hub.guest(*conn).and_then(|g| g.armor[0].as_ref()),

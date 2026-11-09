@@ -1,0 +1,9 @@
+id = "pose_probe"
+name = "Pose Probe"
+version = "0.1.0"
+description = "Prototype for entity poses: shows your own pose state and mirrors your swing onto your model's arm."
+authors = ["Horizon"]
+api = "0.1"
+side = "client"
+capabilities = ["hud", "render"]
+experimental = ["render"]

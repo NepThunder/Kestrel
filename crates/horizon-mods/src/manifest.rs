@@ -178,7 +178,9 @@ impl Capability {
     /// What the player reads before turning the mod on: "May <this>".
     pub fn describe(self) -> &'static str {
         match self {
-            Capability::GameRead => "see your position, health and the time, your active effects, movement and mount, and change your sprint and sneak toggle options",
+            Capability::GameRead => {
+                "see your position, health and the time, your active effects, movement and mount, and change your sprint and sneak toggle options"
+            }
             Capability::Chat => "show you chat messages",
             Capability::Hud => "draw text on your screen",
             Capability::Storage => "save its own settings to disk",
@@ -188,7 +190,7 @@ impl Capability {
             }
             Capability::Ui => "show its own screens and a settings page",
             Capability::Render => {
-                "draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it, turn off distance fog, move your hand and held item in first person, hide the whole HUD, make the hand's field of view follow the zoom and cap the frame rate"
+                "draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it, turn off distance fog, move your hand and held item in first person, hide the whole HUD, make the hand's field of view follow the zoom, cap the frame rate and shift how player models are posed"
             }
             Capability::Input => {
                 "see the keys you hold, your clicks and how long since you last gave input, take over the use button on its own items and the mouse wheel, and add keys"
@@ -223,6 +225,11 @@ impl Capability {
         }
         // The first-person hand's pose (API 16) is part of `render`.
         if interface == "hand" {
+            return Ok(Some(Capability::Render));
+        }
+        // Player models' poses (API 20) are part of `render` too:
+        // the `entity` capability's contract is read-only.
+        if interface == "entity-pose" {
             return Ok(Some(Capability::Render));
         }
         Capability::ALL

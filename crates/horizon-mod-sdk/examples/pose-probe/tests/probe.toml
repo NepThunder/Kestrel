@@ -1,0 +1,25 @@
+# Entity poses (API 20): with no fixtures there are no pose
+# states and no panel; a step's own poses then flow in — your
+# swing at half progress (mirrored onto your arm by the probe)
+# and another player nearby.
+[[step]]
+ticks = 1
+[step.expect]
+panel = []
+
+[[step]]
+ticks = 1
+[[step.poses]]
+id = 1
+kind = "minecraft:player"
+self = true
+swing-progress = 0.5
+swing-anim = "whack"
+main-hand = "minecraft:iron_sword"
+[[step.poses]]
+id = 42
+kind = "minecraft:player"
+walk-pos = 1.5
+walk-speed = 0.5
+[step.expect]
+panel = ["swing 0.50 whack", "players 2"]

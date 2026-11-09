@@ -172,6 +172,68 @@ impl Poses {
         self.hidden.contains(&part.name)
     }
 }
+/// A mod's pose shift for one player model (API 20), resolved by
+/// the game from the winning mod's writes: per-part deltas in the
+/// pose's own units (pivots in model units, rotations in radians),
+/// how much of the vanilla pose applies, and the parts to hide.
+/// The renderer folds it into a draw's poses after [`setup`] has
+/// run; [`PoseFold::NONE`] is the fold of a draw no mod poses.
+#[derive(Clone, Debug)]
+pub struct PoseFold {
+    /// (part name, [pivot x, y, z, pitch, yaw, roll]) deltas.
+    pub parts: Vec<(String, [f32; 6])>,
+    /// Part names hidden outright (the part and its children).
+    pub hidden: Vec<String>,
+    /// How much of the vanilla pose applies: 1 is vanilla in
+    /// full, 0 none of it (the rest pose plus the deltas).
+    pub scale: f32,
+}
+impl PoseFold {
+    pub const NONE: PoseFold = PoseFold {
+        parts: Vec::new(),
+        hidden: Vec::new(),
+        scale: 1.0,
+    };
+    /// No shift at all: a draw with this fold pays nothing for it.
+    pub fn is_none(&self) -> bool {
+        self.parts.is_empty() && self.hidden.is_empty() && self.scale == 1.0
+    }
+}
+impl Default for PoseFold {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+/// Folds a mod's pose shift into `p` after [`setup`] has posed it
+/// (API 20): each part's pivot and rotation first lerps from its
+/// rest pose (in `rest`, the Poses as [`Poses::reset`] filled
+/// them) toward the posed value by the fold's scale, then the
+/// part deltas add, then the hidden parts hide. The scale slots
+/// are not the fold's: a baby's size is not animation.
+pub fn fold(p: &mut Poses, rest: &Poses, fold: &PoseFold) {
+    if fold.is_none() {
+        return;
+    }
+    if fold.scale != 1.0 {
+        for (name, pose) in &mut p.map {
+            let Some(r) = rest.map.get(name) else {
+                continue;
+            };
+            for i in 0..6 {
+                pose[i] = r[i] + (pose[i] - r[i]) * fold.scale;
+            }
+        }
+    }
+    for (name, d) in &fold.parts {
+        let q = p.get(name);
+        for i in 0..6 {
+            q[i] += d[i];
+        }
+    }
+    for name in &fold.hidden {
+        p.visible(name, false);
+    }
+}
 /// The LivingEntityRenderState values setupAnim reads.
 #[derive(Clone, Copy, Debug)]
 pub struct State {
@@ -343,6 +405,56 @@ impl ArmPose {
     fn affects_offhand(self) -> bool {
         self.two_handed() || self == Self::ThrowTrident
     }
+}
+/// `AvatarRenderer.getArmPose` for a player's two hands: what the
+/// pose code decides each hand's arm is doing, from the held items
+/// and the use state — (main hand's pose, off hand's pose). `setup`'s
+/// player arm poses by exactly this, and the pose states mods read
+/// (API 20) report it, so the two can never disagree. `swing` is
+/// the frame's swing progress (a charged crossbow reads as held
+/// only once no swing runs).
+pub fn player_arm_poses(m: &Mob, swing: f32) -> (ArmPose, ArmPose) {
+    let using_main = m.extra.using_item > 0 && !m.extra.using_off_hand;
+    let using_off = m.extra.using_item > 0 && m.extra.using_off_hand;
+    // An arm holding a spear (at rest too).
+    let main_spear = m
+        .extra
+        .main_hand
+        .as_deref()
+        .and_then(crate::spear::Kinetic::of);
+    let off_spear = m
+        .extra
+        .off_hand
+        .as_deref()
+        .and_then(crate::spear::Kinetic::of);
+    let main = match m.extra.main_hand.as_deref() {
+        Some(_) if using_main && m.extra.blocking => ArmPose::Block,
+        Some("minecraft:bow") if using_main => ArmPose::Bow,
+        Some("minecraft:trident") if using_main => ArmPose::ThrowTrident,
+        Some("minecraft:goat_horn") if using_main => ArmPose::TootHorn,
+        Some("minecraft:crossbow") if using_main && !m.extra.charged => ArmPose::CrossbowCharge,
+        Some("minecraft:crossbow") if m.extra.charged && swing == 0.0 => ArmPose::CrossbowHold,
+        Some("minecraft:brush") if using_main => ArmPose::Brush,
+        Some(_) if main_spear.is_some() => ArmPose::Spear,
+        Some(_) => ArmPose::Item,
+        None => ArmPose::Empty,
+    };
+    let off = if m.extra.off_hand.is_some() && !main.affects_offhand() {
+        if off_spear.is_some() {
+            ArmPose::Spear
+        } else if using_off && m.extra.blocking {
+            ArmPose::Block
+        } else if using_off && m.extra.off_hand.as_deref() == Some("minecraft:goat_horn") {
+            ArmPose::TootHorn
+        } else if using_off && m.extra.off_hand.as_deref() == Some("minecraft:brush") {
+            ArmPose::Brush
+        } else {
+            ArmPose::Item
+        }
+    } else {
+        ArmPose::Empty
+    };
+    (main, off)
 }
 /// `AnimationUtils.animateCrossbowHold`.
 pub(super) fn crossbow_hold(p: &mut Poses, hx: f32, hy: f32, in_right: bool) {
@@ -779,8 +891,6 @@ pub fn setup(
             } else {
                 ArmPose::Empty
             };
-            let using_main = m.extra.using_item > 0 && !m.extra.using_off_hand;
-            let using_off = m.extra.using_item > 0 && m.extra.using_off_hand;
             // AvatarRenderer.getArmPose: an arm holding a spear (at rest too).
             let spear_in = |hand: &Option<std::sync::Arc<str>>| {
                 hand.as_deref()
@@ -789,40 +899,13 @@ pub fn setup(
             };
             let (main_spear, off_spear) =
                 (spear_in(&m.extra.main_hand), spear_in(&m.extra.off_hand));
-            let pose = if player {
-                match m.extra.main_hand.as_deref() {
-                    Some(_) if using_main && m.extra.blocking => ArmPose::Block,
-                    Some("minecraft:bow") if using_main => ArmPose::Bow,
-                    Some("minecraft:trident") if using_main => ArmPose::ThrowTrident,
-                    Some("minecraft:goat_horn") if using_main => ArmPose::TootHorn,
-                    Some("minecraft:crossbow") if using_main && !m.extra.charged => {
-                        ArmPose::CrossbowCharge
-                    }
-                    Some("minecraft:crossbow") if m.extra.charged && s.swing == 0.0 => {
-                        ArmPose::CrossbowHold
-                    }
-                    Some("minecraft:brush") if using_main => ArmPose::Brush,
-                    Some(_) if main_spear.is_some() => ArmPose::Spear,
-                    Some(_) => ArmPose::Item,
-                    None => ArmPose::Empty,
-                }
+            // A player's hands classify by `player_arm_poses` — the
+            // same helper the mods' pose states read (API 20), so a
+            // state can never disagree with the pose it describes.
+            let (pose, off) = if player {
+                player_arm_poses(m, s.swing)
             } else {
-                right
-            };
-            let off = if player && m.extra.off_hand.is_some() && !pose.affects_offhand() {
-                if off_spear.is_some() {
-                    ArmPose::Spear
-                } else if using_off && m.extra.blocking {
-                    ArmPose::Block
-                } else if using_off && m.extra.off_hand.as_deref() == Some("minecraft:goat_horn") {
-                    ArmPose::TootHorn
-                } else if using_off && m.extra.off_hand.as_deref() == Some("minecraft:brush") {
-                    ArmPose::Brush
-                } else {
-                    ArmPose::Item
-                }
-            } else {
-                ArmPose::Empty
+                (right, ArmPose::Empty)
             };
             let mut h = if m.main_arm_left() {
                 Hum::new(off, pose)
@@ -1007,6 +1090,111 @@ mod flight_pose_tests {
         player_model_visibility(&mut p, 1 << 6, false);
         assert!(!p.hidden.contains("body") && !p.hidden.contains("left_leg"));
         assert!(p.hidden.contains("hat"));
+    }
+    /// The pose fold (API 20): a fold of scale 1 leaves a posed
+    /// draw byte-identical, scale 0 returns exactly the rest pose
+    /// `reset` filled, and the scale lerps the pivot and rotation
+    /// slots only — never a part's size.
+    #[test]
+    fn pose_fold_scales_between_the_rest_and_vanilla_poses() {
+        let rest = Poses {
+            map: [("head", [0.0, 1.0, 2.0, 0.1, 0.2, 0.3, 1.0, 1.0, 1.0])]
+                .into_iter()
+                .map(|(n, p)| (n.to_string(), p))
+                .collect(),
+            dummy: [0.0; 9],
+            skipped: Default::default(),
+            hidden: Default::default(),
+        };
+        let posed = [2.0, 5.0, 8.0, 1.1, 2.2, 3.3, 2.0, 2.0, 2.0];
+        let mut p = rest.clone();
+        p.map.insert("head".into(), posed);
+        fold(&mut p, &rest, &PoseFold::NONE);
+        assert_eq!(p.map["head"], posed, "no fold, no change");
+        fold(
+            &mut p,
+            &rest,
+            &PoseFold {
+                parts: Vec::new(),
+                hidden: Vec::new(),
+                scale: 1.0,
+            },
+        );
+        assert_eq!(p.map["head"], posed, "scale 1 is byte-identical vanilla");
+        fold(
+            &mut p,
+            &rest,
+            &PoseFold {
+                parts: Vec::new(),
+                hidden: Vec::new(),
+                scale: 0.0,
+            },
+        );
+        assert_eq!(
+            p.map["head"],
+            [0.0, 1.0, 2.0, 0.1, 0.2, 0.3, 2.0, 2.0, 2.0],
+            "scale 0 is the rest pose; the size slots stay the pose's"
+        );
+        let mut p = rest.clone();
+        p.map.insert("head".into(), posed);
+        fold(
+            &mut p,
+            &rest,
+            &PoseFold {
+                parts: Vec::new(),
+                hidden: Vec::new(),
+                scale: 0.5,
+            },
+        );
+        assert_eq!(
+            p.map["head"],
+            [1.0, 3.0, 5.0, 0.6, 1.2, 1.8, 2.0, 2.0, 2.0],
+            "scale lerps rest to vanilla halfway"
+        );
+    }
+    /// The pose fold's writes (API 20): a part delta adds in the
+    /// pose's own units after the scale, a hidden part lands in
+    /// the hidden set, and a name the model does not have is a
+    /// no-op.
+    #[test]
+    fn pose_fold_offsets_add_and_hidden_parts_hide() {
+        let mut p = Poses {
+            map: ["head", "hat"]
+                .into_iter()
+                .map(|n| (n.to_string(), [0.0; 9]))
+                .collect(),
+            dummy: [0.0; 9],
+            skipped: Default::default(),
+            hidden: Default::default(),
+        };
+        let rest = p.clone();
+        fold(
+            &mut p,
+            &rest,
+            &PoseFold {
+                parts: vec![
+                    ("head".into(), [16.0, 0.0, -8.0, 0.5, 0.25, -0.125]),
+                    ("cape".into(), [1.0; 6]),
+                ],
+                hidden: vec!["hat".into(), "cape".into()],
+                scale: 1.0,
+            },
+        );
+        assert_eq!(
+            p.map["head"],
+            [16.0, 0.0, -8.0, 0.5, 0.25, -0.125, 0.0, 0.0, 0.0]
+        );
+        assert!(p.hidden.contains("hat"));
+        assert!(!p.hidden.contains("cape"), "an unknown name hides nothing");
+        let dummy: ([f32; 6], [f32; 3]) = (
+            p.dummy[..6].try_into().unwrap(),
+            p.dummy[6..].try_into().unwrap(),
+        );
+        assert_eq!(
+            dummy,
+            ([1.0; 6], [0.0; 3]),
+            "an unknown part's delta lands in the dummy slot and is ignored"
+        );
     }
     #[test]
     fn blocking_arm_follows_the_head_with_limits_in_both_hands() {

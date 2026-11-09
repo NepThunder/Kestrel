@@ -14,7 +14,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `command` | [`command`](#command) | run commands as you, with your permissions |
 | `registries` | data files (`assets/`, `data/`), no interface | add blocks, items, mob effects and entity types to your worlds |
 | `ui` | [`ui`](#ui) | show its own screens and a settings page |
-| `render` | [`render`](#render) | draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it, turn off distance fog, move your hand and held item in first person, hide the whole HUD, make the hand's field of view follow the zoom and cap the frame rate |
+| `render` | [`render`](#render) | draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it, turn off distance fog, move your hand and held item in first person, hide the whole HUD, make the hand's field of view follow the zoom, cap the frame rate and shift how player models are posed |
 | `input` | [`input`](#input) | see the keys you hold, your clicks and how long since you last gave input, take over the use button on its own items and the mouse wheel, and add keys |
 | `players` | [`players`](#players) | see who is on the server and message them |
 | `world` | [`world`](#world) | read the world's blocks, and change them where the game runs the world |
@@ -41,7 +41,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `audio`, `hand`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `audio`, `hand`, `entity-pose`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
 - Exports (what the mod provides): `ui-events`, `audio-events`, `events`
 
 ## World `ui-host`
@@ -60,9 +60,9 @@ The game's side of capability `audio` (API 15) beyond `horizon-mod`: a second wo
 
 ## World `render-host`
 
-The game's side of capability `render` (imports only). API 16's `hand` rides along: it is a render extension, checked against the `render` capability, not one of its own.
+The game's side of capability `render` (imports only). API 16's `hand` rides along: it is a render extension, checked against the `render` capability, not one of its own. API 20's `entity-pose` rides along the same way.
 
-- Imports (what the game offers): `render`, `input`, `hand`
+- Imports (what the game offers): `render`, `input`, `hand`, `entity-pose`
 - Exports (what the mod provides): 
 
 ## World `recipes-host`
@@ -688,6 +688,118 @@ A shift of the hand's pose, in view space: the game applies the translation, the
 | `clear-offset` | `func()` | Takes this mod's hand offset back. Another mod's offset is not this call's to clear. |
 | `get-swing-anim` | `func() -> swing-anim` | The swing animation playing now (API 17), as of the game's last push, read the way `get-state` reads the hand state. |
 | `set-swing-scale` | `func(scale: f32)` | How much of the vanilla swing pose applies (API 17): 1.0 is vanilla in full, 0.0 is none of it — the mod's own offset, driven by the swing's progress, is the whole animation — and up to 2.0 exaggerates the vanilla swing. The base equip pose is never scaled, only the swing's own terms, so 0.0 leaves the hand exactly at its rest pose. Poses that are not swings (using, charging, eating, ...) are never scaled. There is one swing: the latest call across the running mods wins, as with the offset, and a stopped mod's value is dropped with it. The game clamps to 0.0..=2.0 and a non-finite value reads as 1.0. Writing 1.0 hands the swing back to vanilla; there is no separate clear. |
+
+## `entity-pose`
+
+Access: not granted by any capability.
+
+Capability `render` (API 20): player models' poses. The game hands the mod every drawn player's pose inputs each frame — the local player's first — and the mod hands back per-part offsets the game folds into the finished vanilla pose, the hand district's bargain carried to whole bodies. A pose scale says how much of the vanilla pose applies at all: at 0 the model stands in its rest pose and the mod's offsets are the whole animation. Only players (and mannequins) are posed; the shifts are cosmetic on this client only — they never move a hitbox, a camera or another player's screen.
+
+### variant `pose-target`
+
+Which posed player a state or a write is about: the mod's own player, or another player (or mannequin) by the entity id `entity.entities` and the pose states use.
+
+| Case | Payload | |
+| --- | --- | --- |
+| `self-player` |  |  |
+| `entity` | `u32` |  |
+
+### enum `arm-pose`
+
+What one hand's arm is doing, as the pose code decides it (`HumanoidModel`'s arm poses, exactly the engine's own classification — not inferred from the held item).
+
+| Case | |
+| --- | --- |
+| `empty` |  |
+| `item` |  |
+| `block` |  |
+| `bow` |  |
+| `crossbow-hold` |  |
+| `crossbow-charge` |  |
+| `throw-trident` |  |
+| `toot-horn` |  |
+| `spear` |  |
+| `brush` |  |
+
+### record `item-use`
+
+The hand using an item: which one, the item, and how long it has been in use, in ticks.
+
+| Field | Type | |
+| --- | --- | --- |
+| `off-hand` | `bool` |  |
+| `item` | `string` |  |
+| `ticks` | `u32` |  |
+
+### enum `swing-anim`
+
+The engine's own swing animation (the `hand` interface's enum, re-declared: WIT interfaces cannot share types): which pose the game's swing state is playing — a `whack` for the plain swing, a `stab` for a spear's jab, and `none` while no swing runs.
+
+| Case | |
+| --- | --- |
+| `none` |  |
+| `whack` |  |
+| `stab` |  |
+
+### record `entity-pose-state`
+
+One player model's pose inputs this frame: the values the game's own pose code reads, at the partial tick the frame is composed with. Only players are listed: the local player first (`self` set), then the other players the client is drawing, nearest first, at most 32.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `u32` |  |
+| `kind` | `string` |  |
+| `self` | `bool` |  |
+| `walk-pos` | `f32` | Walk cycle: the position the leg swing reads and its speed, 0 while riding or standing (vanilla zeroes both for a passenger). |
+| `walk-speed` | `f32` |  |
+| `head-yaw` | `f32` | Head yaw relative to the body, and head pitch, degrees — the head pose's own inputs. |
+| `head-pitch` | `f32` |  |
+| `swing-progress` | `f32` | The swing's progress, 0 to 1 (0 while no swing runs), of the arm that swings; `swing-anim` is the engine's own kind (the API 17 enum: none / whack / stab), and `swing-off-hand` says the off hand's arm swings. |
+| `swing-anim` | `swing-anim` |  |
+| `swing-off-hand` | `bool` |  |
+| `main-arm-pose` | `arm-pose` |  |
+| `off-arm-pose` | `arm-pose` |  |
+| `main-hand` | `option<string>` |  |
+| `off-hand` | `option<string>` |  |
+| `using` | `option<item-use>` | An item in use (eating, drinking, drawing a bow, blocking, charging a spear...), if either hand is. |
+| `crouching` | `bool` |  |
+| `riding` | `bool` | Riding any vehicle or mount. |
+| `swim-amount` | `f32` | The swim stroke's amount, 0 to 1 (0 out of the swim pose); gliding is elytra fall-flying. |
+| `gliding` | `bool` |  |
+| `sleeping` | `bool` |  |
+| `sprinting` | `bool` |  |
+| `on-ground` | `bool` |  |
+
+### record `part-offset`
+
+One part's shift: rotation added to the part's posed rotation (degrees), and its pivot moved (blocks). Part names are the model's own: for a player, `head`, `hat`, `body`, `jacket`, `right-arm`, `left-arm`, `right-sleeve`, `left-sleeve`, `right-leg`, `left-leg`, `right-pants`, `left-pants`, and `cape` on the cape. A name the model does not have is ignored. (`root` is not a part: a whole-model shift is the `body` pivot's job in this rig, whose children carry the limbs.)
+
+| Field | Type | |
+| --- | --- | --- |
+| `part` | `string` |  |
+| `x` | `f32` |  |
+| `y` | `f32` |  |
+| `z` | `f32` |  |
+| `pitch` | `f32` |  |
+| `yaw` | `f32` |  |
+| `roll` | `f32` |  |
+
+### record `pose-offset`
+
+A whole pose offset for one target: the parts to shift and the parts to hide outright (a hidden part and its children do not draw, as when a spectator's body hides). Setting an offset replaces the caller's previous one for that target whole.
+
+| Field | Type | |
+| --- | --- | --- |
+| `parts` | `list<part-offset>` |  |
+| `hidden` | `list<string>` |  |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `get-pose-states` | `func() -> list<entity-pose-state>` | This frame's pose states, the local player first. Empty on the title screen. |
+| `set-pose-offset` | `func(target: pose-target, offset: pose-offset)` | Shifts one target's pose (see `pose-offset`). One offset per target applies: the latest call by any running mod wins that target, as the hand's one offset wins the hand. Rotations clamp to ±180 degrees an axis, pivots to ±0.5 blocks an axis, non-finite numbers read as 0. A stopped mod's offsets go with it. |
+| `clear-pose-offset` | `func(target: pose-target)` | Drops the caller's offset for a target (another mod's offset for it is untouched). |
+| `set-pose-scale` | `func(target: pose-target, scale: f32)` | How much of the vanilla pose applies to a target: 1 is vanilla (the default), 0 is none of it — the model stands in its rest pose and the mod's offset is the animation. Clamped to 0..=2, non-finite reads as 1. Latest writer wins per target, as the offsets; writing 1 releases it. |
+| `set-first-person-body` | `func(shown: bool)` | Shows the player's own body in first person while true (any running mod asking is enough): the whole model — body, armour, cape, elytra, held items — except the head and hat, which never draw in first person. Everything the pose offsets say applies to it. Third person is unaffected. |
 
 ## `audio-events`
 

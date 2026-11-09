@@ -85,12 +85,12 @@ mod audio_bindings {
         additional_derives: [PartialEq],
     });
 }
-use audio_bindings::{AudioHost, horizon::mods::audio};
 /// What the game asks a sound mod (WIT `interface audio-events`).
 pub use audio_bindings::exports::horizon::mods::audio_events::{
     SoundAdjustment as ModSoundAdjustment, SoundPosition as ModSoundPosition,
     SoundQuery as ModSoundQuery,
 };
+use audio_bindings::{AudioHost, horizon::mods::audio};
 /// Capability `render`'s imports (docs/mods.md): the game draws the shapes.
 mod render_bindings {
     wasmtime::component::bindgen!({
@@ -101,6 +101,26 @@ mod render_bindings {
         additional_derives: [PartialEq],
     });
 }
+use render_bindings::horizon::mods::entity_pose;
+/// Player models' pose states and the offsets a mod sets on them
+/// (WIT `interface entity-pose`, API 20): a `render` extension,
+/// hosted with the render world, as the hand is. The swing
+/// animation here is the entity-pose interface's own copy of the
+/// hand enum (WIT interfaces cannot share types).
+pub use render_bindings::horizon::mods::entity_pose::{
+    ArmPose as ModArmPose, EntityPoseState as ModEntityPoseState, ItemUse as ModItemUse,
+    PartOffset as ModPartOffset, PoseOffset as ModPoseOffset, PoseTarget as ModPoseTarget,
+    SwingAnim as ModPoseSwingAnim,
+};
+use render_bindings::horizon::mods::hand;
+/// The first-person hand's state and the offset a mod sets on it
+/// (WIT `interface hand`, API 16), and the swing animation the game
+/// pushes with it (API 17): a `render` extension, hosted with the
+/// render world.
+pub use render_bindings::horizon::mods::hand::{
+    HandState as ModHandState, HandTransform as ModHandTransform, SwingAnim as ModSwingAnim,
+    SwingKind as ModSwingKind,
+};
 use render_bindings::horizon::mods::input;
 /// Capability `input`'s records (WIT `interface input`).
 pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, ItemUse};
@@ -113,15 +133,6 @@ pub use render_bindings::horizon::mods::render::{
     WorldBox, WorldLine, WorldPoint, WorldShape, Zoom as ModZoom,
 };
 use render_bindings::{RenderHost, horizon::mods::render};
-use render_bindings::horizon::mods::hand;
-/// The first-person hand's state and the offset a mod sets on it
-/// (WIT `interface hand`, API 16), and the swing animation the game
-/// pushes with it (API 17): a `render` extension, hosted with the
-/// render world.
-pub use render_bindings::horizon::mods::hand::{
-    HandState as ModHandState, HandTransform as ModHandTransform, SwingAnim as ModSwingAnim,
-    SwingKind as ModSwingKind,
-};
 /// Capability `recipes`'s imports (docs/mods.md): the game's recipes and items.
 mod recipes_bindings {
     wasmtime::component::bindgen!({
@@ -570,6 +581,10 @@ static HAND_OFFSET_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 /// (API 17): there is one swing, so the newest stamp wins, as with
 /// the offset.
 static HAND_SWING_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// The order `entity-pose` writes happened in, across mods (API
+/// 20): one writer owns a target's pose, so the newest stamp wins,
+/// as with the hand's offset.
+static POSE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// Items a panel may hold, and events kept for `browser.poll`.
 const BROWSER_ITEMS: usize = 8192;
 /// `recipes.place` and `give` calls a hook call may make.
@@ -647,6 +662,26 @@ struct State {
     /// vanilla swing pose applies ([`Mods::swing_scale`]). Kept
     /// clamped by the host call.
     swing_scale: Option<(u64, f32)>,
+    /// Player models' pose states the game last pushed (API 20):
+    /// [`Mods::set_pose_states`] writes them into every running
+    /// mod's store before the frame hooks, and
+    /// `entity-pose.get-pose-states` reads them. Empty until the
+    /// first push.
+    pose_states: Vec<ModEntityPoseState>,
+    /// This mod's pose offsets (API 20), per target, each with the
+    /// order it was set in: one writer owns a target's pose wholly
+    /// ([`Mods::pose_offset`]). Kept clamped by the host call.
+    pose_offsets: std::collections::HashMap<PoseKey, (u64, ModPoseOffset)>,
+    /// This mod's pose scales (API 20), per target, each with the
+    /// order it was set in: resolved with the offsets, from the
+    /// same writer ([`Mods::pose_offset`]). Kept clamped by the
+    /// host call.
+    pose_scales: std::collections::HashMap<PoseKey, (u64, f32)>,
+    /// Whether this mod shows the player's own body in first
+    /// person (API 20): any running mod asking is enough
+    /// ([`Mods::own_body`]). The flag is the mod's own store's, so
+    /// a stopped mod's ask dies with it.
+    own_body: bool,
     /// The movement toggle options this mod last asked to set in the
     /// current call (API 18): `Mods::call` moves it into an
     /// [`Output::SetMovementToggles`] when the call ends, as it does
@@ -932,6 +967,10 @@ impl Mods {
             hand_offset: None,
             swing_anim: ModSwingAnim::None,
             swing_scale: None,
+            pose_states: Vec::new(),
+            pose_offsets: std::collections::HashMap::new(),
+            pose_scales: std::collections::HashMap::new(),
+            own_body: false,
             movement_toggles: None,
             camera_seq: 0,
             aggregate_camera: None,
@@ -1607,19 +1646,20 @@ impl Mods {
     /// The first running mod that hears sounds (capability `audio`,
     /// API 15): the only one ever asked, as with the camera.
     fn sound_winner(&self) -> Option<usize> {
-        self.entries.iter().position(|e| {
-            e.run
-                .as_ref()
-                .is_some_and(|run| run.audio.is_some())
-        })
+        self.entries
+            .iter()
+            .position(|e| e.run.as_ref().is_some_and(|run| run.audio.is_some()))
     }
 
     /// Ask the sound mod about one world sound. No sound mod, a trap
     /// or an out-of-fuel call all mean no change, and a failed call
     /// never disables the mod.
     pub fn adjust_sound(&mut self, query: &ModSoundQuery) -> ModSoundAdjustment {
-        const NO_CHANGE: ModSoundAdjustment =
-            ModSoundAdjustment { gain: 1.0, lowpass: 0.0, reverb: 0.0 };
+        const NO_CHANGE: ModSoundAdjustment = ModSoundAdjustment {
+            gain: 1.0,
+            lowpass: 0.0,
+            reverb: 0.0,
+        };
         let Some(i) = self.sound_winner() else {
             return NO_CHANGE;
         };
@@ -1697,6 +1737,77 @@ impl Mods {
             .filter_map(|e| e.run.as_ref()?.store.data().swing_scale.as_ref())
             .max_by_key(|(seq, _)| *seq)
             .map_or(1.0, |(_, scale)| *scale)
+    }
+
+    /// Player models' pose states for this frame (API 20): the
+    /// game pushes them once per rendered frame, before the frame
+    /// hooks run, and a mod reads them with
+    /// `entity-pose.get-pose-states` in any hook. Written into the
+    /// running mods' stores at once, as the hand state is.
+    pub fn set_pose_states(&mut self, states: Vec<ModEntityPoseState>) {
+        for run in self.entries.iter_mut().filter_map(|e| e.run.as_mut()) {
+            run.store.data_mut().pose_states.clone_from(&states);
+        }
+    }
+    /// Back to no pose states (API 20): the game calls this while
+    /// no player model is posed (the title screen), so a mod never
+    /// reads a stale frame as the current one.
+    pub fn clear_pose_states(&mut self) {
+        for run in self.entries.iter_mut().filter_map(|e| e.run.as_mut()) {
+            run.store.data_mut().pose_states.clear();
+        }
+    }
+    /// A target's pose shift (API 20): the offset and scale the
+    /// game folds into that player's pose, already clamped by the
+    /// host calls. One writer owns a target's pose wholly: the
+    /// running mod that wrote to the target most recently — by
+    /// either write — supplies both its offset (an empty one if it
+    /// set only a scale) and its scale (1.0 if it set only an
+    /// offset), exactly as two camera mods cannot share a camera.
+    /// None when no running mod wrote to the target; a stopped
+    /// mod's writes are dropped with its store, as its hand
+    /// offset is.
+    pub fn pose_offset(&self, target: ModPoseTarget) -> Option<(ModPoseOffset, f32)> {
+        let target = PoseKey::from(target);
+        let mut best: Option<(u64, ModPoseOffset, f32)> = None;
+        for data in self
+            .entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .map(|r| r.store.data())
+        {
+            let offset = data.pose_offsets.get(&target);
+            let scale = data.pose_scales.get(&target);
+            let stamp = match (offset, scale) {
+                (Some((o, _)), Some((s, _))) => (*o).max(*s),
+                (Some((o, _)), None) => *o,
+                (None, Some((s, _))) => *s,
+                (None, None) => continue,
+            };
+            if best.as_ref().is_none_or(|(b, _, _)| stamp > *b) {
+                best = Some((
+                    stamp,
+                    offset.map_or_else(
+                        || ModPoseOffset {
+                            parts: Vec::new(),
+                            hidden: Vec::new(),
+                        },
+                        |(_, o)| o.clone(),
+                    ),
+                    scale.map_or(1.0, |(_, s)| *s),
+                ));
+            }
+        }
+        best.map(|(_, offset, scale)| (offset, scale))
+    }
+    /// Whether any running mod shows the player's own body in
+    /// first person (API 20): the flag is the mod's own store's,
+    /// so a stopped mod's ask dies with it, as its HUD hide does.
+    pub fn own_body(&self) -> bool {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .any(|r| r.store.data().own_body)
     }
 
     /// The first running mod driving a camera, if any.
@@ -2004,7 +2115,13 @@ fn zero_hand_state() -> ModHandState {
 const HAND_TRANSLATION_MAX: f32 = 1.0;
 const HAND_ROTATION_MAX: f32 = 60.0;
 fn clamp_hand_transform(offset: ModHandTransform) -> ModHandTransform {
-    let finite = |v: f32, max: f32| if v.is_finite() { v.clamp(-max, max) } else { 0.0 };
+    let finite = |v: f32, max: f32| {
+        if v.is_finite() {
+            v.clamp(-max, max)
+        } else {
+            0.0
+        }
+    };
     ModHandTransform {
         x: finite(offset.x, HAND_TRANSLATION_MAX),
         y: finite(offset.y, HAND_TRANSLATION_MAX),
@@ -2039,6 +2156,93 @@ impl hand::Host for State {
             1.0
         };
         self.swing_scale = Some((seq, scale));
+    }
+}
+
+/// `entity-pose.set-pose-offset`'s limits (API 20): a turn of
+/// 180 degrees an axis and half a block of pivot are the whole
+/// range a pose can use, and a non-finite field reads as 0, so a
+/// NaN never poisons a pose matrix. The part list is capped at
+/// 24 entries and the hidden list at 16 names — sanity caps, as
+/// input's key cap: the player rig has 13 parts.
+const POSE_ROTATION_MAX: f32 = 180.0;
+const POSE_PIVOT_MAX: f32 = 0.5;
+const POSE_PARTS_MAX: usize = 24;
+const POSE_HIDDEN_MAX: usize = 16;
+fn clamp_pose_offset(offset: ModPoseOffset) -> ModPoseOffset {
+    let finite = |v: f32, max: f32| {
+        if v.is_finite() {
+            v.clamp(-max, max)
+        } else {
+            0.0
+        }
+    };
+    ModPoseOffset {
+        parts: offset
+            .parts
+            .into_iter()
+            .take(POSE_PARTS_MAX)
+            .map(|p| ModPartOffset {
+                part: p.part,
+                x: finite(p.x, POSE_PIVOT_MAX),
+                y: finite(p.y, POSE_PIVOT_MAX),
+                z: finite(p.z, POSE_PIVOT_MAX),
+                pitch: finite(p.pitch, POSE_ROTATION_MAX),
+                yaw: finite(p.yaw, POSE_ROTATION_MAX),
+                roll: finite(p.roll, POSE_ROTATION_MAX),
+            })
+            .collect(),
+        hidden: offset.hidden.into_iter().take(POSE_HIDDEN_MAX).collect(),
+    }
+}
+
+/// `entity-pose.set-pose-scale`'s clamp (API 20): 0.0..=2.0, and
+/// a non-finite value reads as 1.0 — vanilla in full, as the
+/// swing scale's clamp.
+fn clamp_pose_scale(scale: f32) -> f32 {
+    if scale.is_finite() {
+        scale.clamp(0.0, 2.0)
+    } else {
+        1.0
+    }
+}
+
+/// A pose write's target as the stores key it (API 20): the WIT
+/// `pose-target` variant in a hashable shape of our own (the
+/// generated variant carries no `Hash`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum PoseKey {
+    SelfPlayer,
+    Entity(u32),
+}
+impl From<ModPoseTarget> for PoseKey {
+    fn from(target: ModPoseTarget) -> Self {
+        match target {
+            ModPoseTarget::SelfPlayer => PoseKey::SelfPlayer,
+            ModPoseTarget::Entity(id) => PoseKey::Entity(id),
+        }
+    }
+}
+
+impl entity_pose::Host for State {
+    fn get_pose_states(&mut self) -> Vec<ModEntityPoseState> {
+        self.pose_states.clone()
+    }
+    fn set_pose_offset(&mut self, target: ModPoseTarget, offset: ModPoseOffset) {
+        let seq = POSE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.pose_offsets
+            .insert(target.into(), (seq, clamp_pose_offset(offset)));
+    }
+    fn clear_pose_offset(&mut self, target: ModPoseTarget) {
+        self.pose_offsets.remove(&PoseKey::from(target));
+    }
+    fn set_pose_scale(&mut self, target: ModPoseTarget, scale: f32) {
+        let seq = POSE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.pose_scales
+            .insert(target.into(), (seq, clamp_pose_scale(scale)));
+    }
+    fn set_first_person_body(&mut self, shown: bool) {
+        self.own_body = shown;
     }
 }
 

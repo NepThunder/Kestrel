@@ -4,7 +4,9 @@
 use horizon_mods::{
     BlockPos, Clock, Corner, GameMode, HeldItem, Hit, ModEffect, ModHandFov, ModHandFovMode,
     ModMount, ModSelfState, Mods, Output, Package, Player, Runs, ServerPlayer, Shape, Snapshot,
-    Status, manifest::componentize, testing::{Script, TestGame},
+    Status,
+    manifest::componentize,
+    testing::{Script, TestGame},
 };
 use std::{
     path::{Path, PathBuf},
@@ -67,6 +69,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "zoom-probe",
                 "-p",
+                "pose-probe",
+                "-p",
                 "horizon-mods-test-guest",
                 "-p",
                 "horizon-mods-test-ui-guest",
@@ -100,6 +104,7 @@ fn mods_dir() -> &'static Path {
             ("camera_probe", example("camera-probe")),
             ("self_probe", example("self-probe")),
             ("zoom_probe", example("zoom-probe")),
+            ("pose_probe", example("pose-probe")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
         ];
@@ -178,7 +183,11 @@ fn sound_hook_adjusts_and_sets_the_environment() {
     let query = horizon_mods::ModSoundQuery {
         event: "block.stone.break".into(),
         category: 4,
-        position: horizon_mods::ModSoundPosition { x: 1.0, y: 64.0, z: 2.0 },
+        position: horizon_mods::ModSoundPosition {
+            x: 1.0,
+            y: 64.0,
+            z: 2.0,
+        },
         looping: false,
         volume: 1.0,
         pitch: 1.0,
@@ -230,7 +239,12 @@ fn hand_state_flows_and_the_offset_is_clamped_and_cleared() {
     let offset = mods.hand_offset().expect("the guest set an offset");
     assert_eq!(
         (
-            offset.x, offset.y, offset.z, offset.pitch, offset.yaw, offset.roll
+            offset.x,
+            offset.y,
+            offset.z,
+            offset.pitch,
+            offset.yaw,
+            offset.roll
         ),
         (1.0, -0.25, 0.5, 60.0, 0.0, -30.0)
     );
@@ -298,6 +312,187 @@ fn swing_anim_flows_and_the_scale_is_clamped_and_dropped() {
         }]
     );
     assert_eq!(mods.swing_scale(), 1.0);
+}
+
+/// Capability `render`'s entity poses (API 20): the game pushes
+/// the pose states before the hooks and the mod reads them back
+/// verbatim; offsets come back clamped, one writer owns a target
+/// (the probe's later write wins, the guest's clear does not
+/// touch it), scales clamp, the own-body ask aggregates, and a
+/// stopped mod's writes drop with it.
+#[test]
+fn pose_states_flow_and_offsets_clamp_and_drop() {
+    use horizon_mods::{
+        ModArmPose, ModEntityPoseState, ModItemUse, ModPoseSwingAnim, ModPoseTarget,
+    };
+    let mut mods = Mods::load(
+        &[
+            mods_dir().join("horizon_mods_test_guest.kmod"),
+            mods_dir().join("pose_probe.kmod"),
+        ],
+        |_| true,
+        |_| false,
+    );
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert_eq!(mods.entries()[1].status, Status::Running);
+    assert_eq!(mods.pose_offset(ModPoseTarget::SelfPlayer), None);
+    assert!(!mods.own_body());
+    // Nothing pushed yet: no states.
+    assert!(mods.command("posestates"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "poses []".into(),
+            error: false,
+        }]
+    );
+    // Two pushed states read back verbatim.
+    let state = |id: u32, self_: bool| ModEntityPoseState {
+        id,
+        kind: "minecraft:player".into(),
+        self_,
+        walk_pos: 0.0,
+        walk_speed: 0.0,
+        head_yaw: 0.0,
+        head_pitch: 0.0,
+        swing_progress: 0.0,
+        swing_anim: ModPoseSwingAnim::None,
+        swing_off_hand: false,
+        main_arm_pose: ModArmPose::Empty,
+        off_arm_pose: ModArmPose::Empty,
+        main_hand: None,
+        off_hand: None,
+        using: None,
+        crouching: false,
+        riding: false,
+        swim_amount: 0.0,
+        gliding: false,
+        sleeping: false,
+        sprinting: false,
+        on_ground: false,
+    };
+    let mut me = state(7, true);
+    me.walk_pos = 1.25;
+    me.walk_speed = 0.5;
+    me.head_yaw = -30.5;
+    me.head_pitch = 12.5;
+    me.swing_progress = 0.5;
+    me.swing_anim = ModPoseSwingAnim::Whack;
+    me.main_arm_pose = ModArmPose::Item;
+    me.main_hand = Some("minecraft:iron_sword".into());
+    me.using = Some(ModItemUse {
+        off_hand: false,
+        item: "minecraft:iron_sword".into(),
+        ticks: 3,
+    });
+    me.swim_amount = 0.25;
+    me.sprinting = true;
+    me.on_ground = true;
+    mods.set_pose_states(vec![me, state(42, false)]);
+    assert!(mods.command("posestates"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "poses [7 minecraft:player self true walk 1.25 0.50 head -30.5 12.5 \
+                   swing 0.50 SwingAnim::Whack off false arms ArmPose::Item ArmPose::Empty \
+                   hands minecraft:iron_sword none \
+                   using false:minecraft:iron_sword:3 flags false false 0.25 false false true true; \
+                   42 minecraft:player self false walk 0.00 0.00 head 0.0 0.0 swing 0.00 SwingAnim::None \
+                   off false arms ArmPose::Empty ArmPose::Empty hands none none using none \
+                   flags false false 0.00 false false false false]"
+                .into(),
+            error: false,
+        }]
+    );
+    // The guest sets an x of 2 blocks, a pitch of 270 degrees and
+    // a NaN z on self: the aggregate hands back the clamps. Its
+    // entity-42 offset stands as set.
+    assert!(mods.command("poseoffset 33"));
+    mods.drain();
+    let (offset, scale) = mods
+        .pose_offset(ModPoseTarget::SelfPlayer)
+        .expect("the guest set an offset");
+    assert_eq!(scale, 1.0);
+    assert_eq!(offset.parts.len(), 2);
+    let arm = &offset.parts[0];
+    assert_eq!(arm.part, "right_arm");
+    assert_eq!(
+        (arm.x, arm.y, arm.z, arm.pitch, arm.yaw, arm.roll),
+        (0.5, 0.25, 0.0, 180.0, 33.0, -30.0)
+    );
+    assert_eq!(offset.hidden, ["left_leg"]);
+    let (entity, _) = mods
+        .pose_offset(ModPoseTarget::Entity(42))
+        .expect("the guest set an entity offset");
+    assert_eq!(entity.parts[0].part, "body");
+    assert_eq!(entity.parts[0].pitch, 90.0);
+    // The probe ticks on the pushed swing: its later write wins
+    // the self target (the mirror of a 0.5 whack: pitch -45,
+    // roll 10 on the right arm).
+    mods.tick(1);
+    mods.drain();
+    let (offset, _) = mods
+        .pose_offset(ModPoseTarget::SelfPlayer)
+        .expect("the probe set an offset");
+    assert_eq!(offset.parts.len(), 1);
+    assert_eq!(offset.parts[0].part, "right_arm");
+    assert_eq!((offset.parts[0].pitch, offset.parts[0].roll), (-45.0, 10.0));
+    // The guest clears its own offset: the holder's is untouched.
+    assert!(mods.command("poseclear"));
+    mods.drain();
+    let (offset, _) = mods
+        .pose_offset(ModPoseTarget::SelfPlayer)
+        .expect("the probe's offset stands");
+    assert_eq!(offset.parts[0].pitch, -45.0);
+    // The guest's scale write makes it the holder, wholly: the
+    // resolved offset is its (empty) one, the scale clamped.
+    assert!(mods.command("posescale 2.7"));
+    mods.drain();
+    let (offset, scale) = mods
+        .pose_offset(ModPoseTarget::SelfPlayer)
+        .expect("the guest holds the target");
+    assert_eq!(scale, 2.0);
+    assert!(offset.parts.is_empty() && offset.hidden.is_empty());
+    // A non-finite scale reads as 1.0.
+    assert!(mods.command("posescale nan"));
+    mods.drain();
+    assert_eq!(
+        mods.pose_offset(ModPoseTarget::SelfPlayer)
+            .expect("the guest still holds the target")
+            .1,
+        1.0
+    );
+    // The own-body ask flips.
+    assert!(mods.command("ownbody on"));
+    mods.drain();
+    assert!(mods.own_body());
+    // Clearing the pushed states: back to none.
+    mods.clear_pose_states();
+    assert!(mods.command("posestates"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "poses []".into(),
+            error: false,
+        }]
+    );
+    // Stopping the guest drops its scale, its entity offset and
+    // its body ask; the probe's earlier write stands again.
+    assert!(mods.command("panic"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Stopped {
+            name: "Test Guest".into(),
+            reason: "it crashed (a panic)".into(),
+        }]
+    );
+    assert!(!mods.own_body());
+    assert_eq!(mods.pose_offset(ModPoseTarget::Entity(42)), None);
+    let (offset, scale) = mods
+        .pose_offset(ModPoseTarget::SelfPlayer)
+        .expect("the probe's offset stands");
+    assert_eq!(scale, 1.0);
+    assert_eq!(offset.parts[0].pitch, -45.0);
 }
 
 /// Capability `game-read`'s self reads (API 18): the snapshot's
@@ -782,6 +977,8 @@ experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audi
     assert_eq!(level("self_probe.kmod"), 18);
     // The zoom probe reads the zoom's truth (`render.can-zoom`, level 19).
     assert_eq!(level("zoom_probe.kmod"), 19);
+    // The pose probe reads pose states (`entity-pose.get-pose-states`, level 20).
+    assert_eq!(level("pose_probe.kmod"), 20);
 }
 
 #[test]

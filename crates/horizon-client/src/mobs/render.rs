@@ -1328,6 +1328,19 @@ fn draw_normals(
     }
 }
 /// Render a mob with its variant model, texture and layers.
+/// The rest poses a pose fold lerps from (API 20), snapshotted
+/// after the reset and before `anim::setup`: an unposed draw pays
+/// nothing — no snapshot, and `anim::fold` is never called.
+fn fold_rest(poses: &Poses, fold: &anim::PoseFold) -> Option<Poses> {
+    (!fold.is_none()).then(|| poses.clone())
+}
+/// Folds `fold` into `poses` against the [`fold_rest`] snapshot.
+fn fold_apply(poses: &mut Poses, rest: Option<&Poses>, fold: &anim::PoseFold) {
+    if let Some(rest) = rest {
+        anim::fold(poses, rest, fold);
+    }
+}
+
 pub fn render(
     m: &Mob,
     alpha: f32,
@@ -1335,9 +1348,10 @@ pub fn render(
     atlas: Atlas,
     light: u32,
     data: &MobData,
+    fold: &anim::PoseFold,
     out: &mut Vec<Vertex>,
 ) {
-    render_with(m, alpha, camera, atlas, light, data, &[], out);
+    render_with(m, alpha, camera, atlas, light, data, &[], fold, out);
 }
 /// `render` plus extra layers posed like the body (`HumanoidArmorLayer`:
 /// the armour model's parts copy the body's): (model, texture rect, colour,
@@ -1351,6 +1365,7 @@ pub fn render_with(
     light: u32,
     data: &MobData,
     extra: &[(&Part, [f32; 4], u32, u32)],
+    fold: &anim::PoseFold,
     out: &mut Vec<Vertex>,
 ) {
     // The invisibility effect hides the model (a drinking wandering trader);
@@ -1363,7 +1378,7 @@ pub fn render_with(
                 let shifted =
                     camera - glam::DVec3::new(off[0] + w[0], off[1] + w[1], off[2] + w[2]);
                 let base = base_transform(m, alpha, shifted);
-                render_visible(m, alpha, base, atlas, light, data, extra, true, out);
+                render_visible(m, alpha, base, atlas, light, data, extra, true, fold, out);
             }
         }
         return;
@@ -1377,6 +1392,7 @@ pub fn render_with(
         data,
         extra,
         true,
+        fold,
         out,
     );
 }
@@ -1392,6 +1408,7 @@ pub fn cape(
     uv: [f32; 4],
     light: u32,
     data: &MobData,
+    fold: &anim::PoseFold,
     out: &mut Vec<Vertex>,
 ) {
     let Some(model) = m.kind.layer("player#cape") else {
@@ -1399,6 +1416,7 @@ pub fn cape(
     };
     let s = anim::state(m, alpha);
     let mut poses = Poses::new(model);
+    let rest = fold_rest(&poses, fold);
     anim::setup(m, &s, &mut poses, &data.animations);
     let a = f64::from(alpha);
     let at = [
@@ -1419,6 +1437,10 @@ pub fn cape(
     let now = glam::Quat::from_euler(glam::EulerRot::ZYX, pose[5], pose[4], pose[3]);
     let (z, y, x) = (now * by).to_euler(glam::EulerRot::ZYX);
     (pose[3], pose[4], pose[5]) = (x, y, z);
+    // A mod's cape shift (API 20) folds in after the composed
+    // flap and leans, so it adds to vanilla's cape instead of
+    // being overwritten by it.
+    fold_apply(&mut poses, rest.as_ref(), fold);
     // RenderTypes.entitySolid with OverlayTexture.NO_OVERLAY.
     draw(model, base, &poses, uv, 0xFFFF_FFFF, light, 0, out);
 }
@@ -1434,6 +1456,7 @@ pub fn ears(
     uv: [f32; 4],
     light: u32,
     data: &MobData,
+    fold: &anim::PoseFold,
     out: &mut Vec<Vertex>,
 ) {
     if super::trader::is_invisible(m) {
@@ -1444,7 +1467,9 @@ pub fn ears(
     };
     let s = anim::state(m, alpha);
     let mut poses = Poses::new(model);
+    let rest = fold_rest(&poses, fold);
     anim::setup(m, &s, &mut poses, &data.animations);
+    fold_apply(&mut poses, rest.as_ref(), fold);
     // LivingEntityRenderer.getOverlayCoords(state, 0.0F).
     draw(
         model,
@@ -1624,6 +1649,7 @@ fn shoulder_parrot_texture(variant: i32) -> String {
 /// (`isBodyVisible`, `isInvisibleTo`), but its layers still draw
 /// (`HumanoidArmorLayer`: the armour in `extra`).
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub fn render_layers(
     m: &Mob,
     alpha: f32,
@@ -1632,13 +1658,15 @@ pub fn render_layers(
     light: u32,
     data: &MobData,
     extra: &[(&Part, [f32; 4], u32, u32)],
+    fold: &anim::PoseFold,
     out: &mut Vec<Vertex>,
 ) {
     let base = base_transform(m, alpha, camera);
-    render_visible(m, alpha, base, atlas, light, data, extra, false, out);
+    render_visible(m, alpha, base, atlas, light, data, extra, false, fold, out);
 }
 /// A mob drawn under `origin` instead of at its position (the spinning mob
 /// of `SpawnerRenderer.submitEntityInSpawner`).
+#[allow(clippy::too_many_arguments)]
 pub fn render_posed(
     m: &Mob,
     alpha: f32,
@@ -1646,10 +1674,11 @@ pub fn render_posed(
     atlas: Atlas,
     light: u32,
     data: &MobData,
+    fold: &anim::PoseFold,
     out: &mut Vec<Vertex>,
 ) {
     let base = base_transform_at(m, alpha, origin);
-    render_visible(m, alpha, base, atlas, light, data, &[], true, out);
+    render_visible(m, alpha, base, atlas, light, data, &[], true, fold, out);
 }
 #[allow(clippy::too_many_arguments)]
 fn render_visible(
@@ -1661,6 +1690,7 @@ fn render_visible(
     data: &MobData,
     extra: &[(&Part, [f32; 4], u32, u32)],
     body_visible: bool,
+    fold: &anim::PoseFold,
     out: &mut Vec<Vertex>,
 ) {
     let overlay = u32::from(red_overlay(m));
@@ -1672,7 +1702,9 @@ fn render_visible(
         .cloned()
         .unwrap_or_else(|| m.kind.model.clone());
     let mut poses = Poses::new(&model);
+    let rest = fold_rest(&poses, fold);
     anim::setup(m, &s, &mut poses, &data.animations);
+    fold_apply(&mut poses, rest.as_ref(), fold);
     let draw_body = |out: &mut Vec<Vertex>| {
         // A player or mannequin whose skin has no atlas sprite (an evicted or
         // never stored download) draws with its default skin, not invisibly.
@@ -1734,7 +1766,11 @@ fn render_visible(
             continue;
         };
         layer_poses.reset(&part);
+        let rest = fold_rest(&layer_poses, fold);
         anim::setup(m, &s, &mut layer_poses, &data.animations);
+        // Armour follows the body (API 20): the layers' parts are
+        // keyed by the body's own names, so the same fold applies.
+        fold_apply(&mut layer_poses, rest.as_ref(), fold);
         if matches!(m.species(), Species::Villager | Species::ZombieVillager)
             && let Some((folder, variant)) = layer
                 .texture
@@ -1789,7 +1825,9 @@ fn render_visible(
         && let Some([u0, v0, u1, v1]) = atlas(texture)
     {
         layer_poses.reset(part);
+        let rest = fold_rest(&layer_poses, fold);
         anim::setup(m, &s, &mut layer_poses, &data.animations);
+        fold_apply(&mut layer_poses, rest.as_ref(), fold);
         // `RenderTypes.energySwirl`'s texture offset, as the sprite-local UV.
         let (du, dv) = (x_offset % 1.0, s.age * 0.01 % 1.0);
         let start = out.len();
@@ -1968,12 +2006,14 @@ fn hand_base(
 }
 /// The transform of one of a mob's model parts, in camera space
 /// (`ModelPart.translateAndRotate` down the tree).
+#[allow(clippy::too_many_arguments)]
 pub fn part_transform(
     m: &Mob,
     alpha: f32,
     camera: glam::DVec3,
     data: &MobData,
     part: &str,
+    fold: &anim::PoseFold,
 ) -> Option<glam::Mat4> {
     let base = base_transform(m, alpha, camera);
     let s = anim::state(m, alpha);
@@ -1984,18 +2024,22 @@ pub fn part_transform(
         .cloned()
         .unwrap_or_else(|| m.kind.model.clone());
     let mut poses = Poses::new(&model);
+    let rest = fold_rest(&poses, fold);
     anim::setup(m, &s, &mut poses, &data.animations);
+    fold_apply(&mut poses, rest.as_ref(), fold);
     part_matrix(&model, base, &poses, part, 0.0)
 }
 /// `PlayerItemInHandLayer.renderItemHeldToEye` up to the item: the root and
 /// the head with its pitch clamped to -30 to 90 degrees, `translateToHead`
 /// (`CustomHeadLayer.translateToHead`), then the hand's side of the eye.
+#[allow(clippy::too_many_arguments)]
 pub fn held_to_eye_matrix(
     m: &Mob,
     alpha: f32,
     camera: glam::DVec3,
     data: &MobData,
     left: bool,
+    fold: &anim::PoseFold,
 ) -> Option<glam::Mat4> {
     use glam::{Mat4, Vec3};
     let base = base_transform(m, alpha, camera);
@@ -2007,7 +2051,9 @@ pub fn held_to_eye_matrix(
         .cloned()
         .unwrap_or_else(|| m.kind.model.clone());
     let mut poses = Poses::new(&model);
+    let rest = fold_rest(&poses, fold);
     anim::setup(m, &s, &mut poses, &data.animations);
+    fold_apply(&mut poses, rest.as_ref(), fold);
     let pitch =
         poses.get("head")[3].clamp(-std::f32::consts::FRAC_PI_6, std::f32::consts::FRAC_PI_2);
     poses.xrot("head", pitch);
@@ -2023,7 +2069,13 @@ pub fn held_to_eye_matrix(
 /// `FoxHeldItemLayer`: the item sits at the head's position under the render
 /// state's head roll, yaw and pitch (not the posed head's, which differ while
 /// it sleeps), pushed out to the mouth.
-fn fox_item_transform(m: &Mob, alpha: f32, camera: glam::DVec3, data: &MobData) -> glam::Mat4 {
+fn fox_item_transform(
+    m: &Mob,
+    alpha: f32,
+    camera: glam::DVec3,
+    data: &MobData,
+    fold: &anim::PoseFold,
+) -> glam::Mat4 {
     use glam::{Mat4, Vec3};
     let s = anim::state(m, alpha);
     let (model_key, _) = body(m);
@@ -2033,7 +2085,9 @@ fn fox_item_transform(m: &Mob, alpha: f32, camera: glam::DVec3, data: &MobData) 
         .cloned()
         .unwrap_or_else(|| m.kind.model.clone());
     let mut poses = Poses::new(&model);
+    let rest = fold_rest(&poses, fold);
     anim::setup(m, &s, &mut poses, &data.animations);
+    fold_apply(&mut poses, rest.as_ref(), fold);
     let head = *poses.get("head");
     let fox = super::fox::pose(m, alpha);
     let baby = m.is_baby();
@@ -2071,12 +2125,14 @@ fn crossed_arms_matrix(model: &Part, base: glam::Mat4, poses: &Poses) -> Option<
 /// The pose a mob's held item is submitted under (`ItemInHandLayer`:
 /// `translateToHand`, then the hand offset; the item model adds its own
 /// display transform), or `None` when the mob shows no held items.
+#[allow(clippy::too_many_arguments)]
 pub fn held_item_transform(
     m: &Mob,
     alpha: f32,
     camera: glam::DVec3,
     data: &MobData,
     left: bool,
+    fold: &anim::PoseFold,
 ) -> Option<glam::Mat4> {
     // PandaHoldsItemLayer: the main hand's item in its mouth.
     if m.species() == Species::Panda {
@@ -2086,7 +2142,7 @@ pub fn held_item_transform(
     }
     // FoxHeldItemLayer: the main hand's item in its mouth.
     if m.species() == Species::Fox {
-        return (!left).then(|| fox_item_transform(m, alpha, camera, data));
+        return (!left).then(|| fox_item_transform(m, alpha, camera, data, fold));
     }
     // DolphinCarryingItemLayer: the main hand's item at the snout, lifted and
     // pulled in as the dolphin pitches (up or down) toward 60 degrees.
@@ -2114,7 +2170,11 @@ pub fn held_item_transform(
         .cloned()
         .unwrap_or_else(|| m.kind.model.clone());
     let mut poses = Poses::new(&model);
+    let rest = fold_rest(&poses, fold);
     anim::setup(m, &s, &mut poses, &data.animations);
+    // The fold (API 20) runs here so a held item follows an
+    // offset arm instead of floating off it.
+    fold_apply(&mut poses, rest.as_ref(), fold);
     // WitchItemLayer.applyTranslation: a potion is held at the nose, any other
     // item as CrossedArmsItemLayer holds it; only the main hand's item is drawn.
     if m.species() == Species::Witch {
@@ -2429,6 +2489,7 @@ mod tests {
                         &atlas,
                         0xf0f0,
                         &data,
+                        &crate::mobs::anim::PoseFold::NONE,
                         &mut vertices,
                     );
                 } else {
@@ -2439,6 +2500,7 @@ mod tests {
                         &atlas,
                         0xf0f0,
                         &data,
+                        &crate::mobs::anim::PoseFold::NONE,
                         &mut vertices,
                     );
                 }
@@ -2462,6 +2524,7 @@ mod tests {
                 &atlas,
                 0xf0f0,
                 &data,
+                &crate::mobs::anim::PoseFold::NONE,
                 &mut vertices,
             );
             assert_eq!(
@@ -2514,6 +2577,7 @@ mod tests {
                 &atlas,
                 0xf0f0,
                 &data,
+                &crate::mobs::anim::PoseFold::NONE,
                 &mut vertices,
             );
             let body = vertices.iter().filter(|v| v.uv[0] <= 0.25).count();
@@ -2550,7 +2614,15 @@ mod tests {
             species_placements: Default::default(),
         };
         for left in [false, true] {
-            let t = held_item_transform(&mob, 0.5, glam::DVec3::ZERO, &data, left).unwrap();
+            let t = held_item_transform(
+                &mob,
+                0.5,
+                glam::DVec3::ZERO,
+                &data,
+                left,
+                &crate::mobs::anim::PoseFold::NONE,
+            )
+            .unwrap();
             // The model's own part scale is 1, so the item's scale is the
             // renderer's: `poseStack.scale(0.55F, 0.55F, 0.55F)`.
             for axis in [t.x_axis, t.y_axis, t.z_axis] {
@@ -2580,10 +2652,40 @@ mod tests {
             let kind = std::sync::Arc::new(types.types[id].clone());
             let mut mob = Mob::new(1, kind, horizon_core::geometry::Vec3::ZERO, 0.0);
             let main = mob.main_arm_left();
-            assert!(held_item_transform(&mob, 1.0, glam::DVec3::ZERO, &data, main).is_none());
+            assert!(
+                held_item_transform(
+                    &mob,
+                    1.0,
+                    glam::DVec3::ZERO,
+                    &data,
+                    main,
+                    &crate::mobs::anim::PoseFold::NONE
+                )
+                .is_none()
+            );
             mob.extra.set_main_hand(Some("minecraft:emerald".into()));
-            assert!(held_item_transform(&mob, 1.0, glam::DVec3::ZERO, &data, main).is_some());
-            assert!(held_item_transform(&mob, 1.0, glam::DVec3::ZERO, &data, !main).is_none());
+            assert!(
+                held_item_transform(
+                    &mob,
+                    1.0,
+                    glam::DVec3::ZERO,
+                    &data,
+                    main,
+                    &crate::mobs::anim::PoseFold::NONE
+                )
+                .is_some()
+            );
+            assert!(
+                held_item_transform(
+                    &mob,
+                    1.0,
+                    glam::DVec3::ZERO,
+                    &data,
+                    !main,
+                    &crate::mobs::anim::PoseFold::NONE
+                )
+                .is_none()
+            );
         }
     }
     /// PhantomRenderer.scale moves the model down into its 0.5-high box:
@@ -2670,6 +2772,7 @@ mod tests {
                 0xf0f0,
                 &data,
                 &[(part, [0.5, 0.5, 0.75, 0.75], 0xFFFF_FFFF, overlay)],
+                &crate::mobs::anim::PoseFold::NONE,
                 &mut vertices,
             );
             let (armour, body): (Vec<&Vertex>, Vec<&Vertex>) =

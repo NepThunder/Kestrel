@@ -549,6 +549,7 @@ impl Game<'_> {
             240 | 240 << 8,
             self.res.mob_data(),
             &[],
+            &horizon_client::mobs::anim::PoseFold::NONE,
             &mut verts,
         );
         let height = m.kind.height as f32;

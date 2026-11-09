@@ -683,7 +683,9 @@ impl Game<'_> {
     /// while invisible, only its armour and held items).
     pub(super) fn player_model_shown(&self) -> bool {
         // A shader pack's shadow pass draws the player in first person too (shadowPlayer).
-        (self.own_body_in_view() || self.pack_shadow_casters.0)
+        // A mod can also show the body in first person (API 20's
+        // `entity-pose.set-first-person-body`).
+        (self.own_body_in_view() || self.pack_shadow_casters.0 || self.mods_show_own_body())
             && self
                 .player
                 .as_ref()
@@ -735,6 +737,10 @@ impl Game<'_> {
         // visibility (set by player_model_visibility) hides body parts, and
         // translucent_body marks the body OIT for the ghostly look. Only first
         // person and dead players skip it.
+        // The mods' pose fold for the own model (API 20): NONE
+        // unless a mod poses it — plus the head and hat the host
+        // hides when a mod is what shows the body in first person.
+        let fold = self.mod_pose_fold(m);
         let render = if body || self.spectator() || self.pack_shadow_casters.0 {
             horizon_client::mobs::render::render_with
         } else {
@@ -748,12 +754,13 @@ impl Game<'_> {
             packed,
             self.res.mob_data(),
             &self.player_armor_layers(),
+            &fold,
             out,
         );
         let chest = self.armor[1].as_ref().map(|s| &*s.item);
         // CapeLayer: no cape on an invisible player (`isInvisible`, whoever looks).
         if !self.own_invisible() {
-            self.player_cape_geometry(m, chest, camera, alpha as f32, packed, out);
+            self.player_cape_geometry(m, chest, camera, alpha as f32, packed, &fold, out);
         }
         self.player_ears_geometry(
             m,
@@ -761,15 +768,16 @@ impl Game<'_> {
             camera,
             alpha as f32,
             packed,
+            &fold,
             out,
         );
         self.player_elytra_geometry(m, chest, camera, alpha as f32, packed, out);
         self.spin_attack_geometry(m, camera, alpha as f32, packed, out);
         self.shoulder_parrots_geometry(m, camera, alpha as f32, packed, out);
         self.stuck_in_body_geometry(m, self.own_entity_id(), camera, alpha as f32, packed, out);
-        self.held_item_geometry(m, camera, alpha, packed, true, out);
+        self.held_item_geometry(m, camera, alpha, packed, true, &fold, out);
         // CustomHeadLayer: a pumpkin, skull or other head item.
-        self.head_item_geometry(m, camera, alpha, packed, true, out);
+        self.head_item_geometry(m, camera, alpha, packed, true, &fold, out);
         // LivingEntity.isCurrentlyGlowing: the Glowing effect.
         if self.potions.effects.get("glowing").is_some() {
             let color = super::glowing::team_color(self.own_team());
@@ -784,6 +792,7 @@ impl Game<'_> {
                     &lookup,
                     packed,
                     self.res.mob_data(),
+                    &fold,
                     &mut silhouette,
                 );
                 self.mark_outline(&silhouette, color);
@@ -838,6 +847,9 @@ impl Game<'_> {
         let mut verts = Vec::new();
         // A spectator preview still draws its own model: the poses'
         // visibility hides body parts, leaving the head and its layers.
+        // The preview is a portrait, not the posed model: no
+        // mod's fold applies to it (API 20).
+        let no_fold = &horizon_client::mobs::anim::PoseFold::NONE;
         let render = if self.own_body_visible() || self.spectator() {
             horizon_client::mobs::render::render_with
         } else {
@@ -851,11 +863,12 @@ impl Game<'_> {
             240 | 240 << 8,
             self.res.mob_data(),
             &self.player_armor_layers(),
+            no_fold,
             &mut verts,
         );
         let chest = self.armor[1].as_ref().map(|s| &*s.item);
         if !self.own_invisible() {
-            self.player_cape_geometry(&m, chest, camera, 1.0, 240 | 240 << 8, &mut verts);
+            self.player_cape_geometry(&m, chest, camera, 1.0, 240 | 240 << 8, no_fold, &mut verts);
         }
         self.player_ears_geometry(
             &m,
@@ -863,12 +876,13 @@ impl Game<'_> {
             camera,
             1.0,
             240 | 240 << 8,
+            no_fold,
             &mut verts,
         );
         self.player_elytra_geometry(&m, chest, camera, 1.0, 240 | 240 << 8, &mut verts);
         self.shoulder_parrots_geometry(&m, camera, 1.0, 240 | 240 << 8, &mut verts);
-        self.held_item_geometry(&m, camera, 1.0, 240 | 240 << 8, false, &mut verts);
-        self.head_item_geometry(&m, camera, 1.0, 240 | 240 << 8, false, &mut verts);
+        self.held_item_geometry(&m, camera, 1.0, 240 | 240 << 8, false, no_fold, &mut verts);
+        self.head_item_geometry(&m, camera, 1.0, 240 | 240 << 8, false, no_fold, &mut verts);
         let height = if m.extra.crouching { 1.5 } else { 1.8 };
         // PictureInPictureRenderer: the box centre, (size, size, -size);
         // then the translation and Rz(pi) * Rx(y_angle * 20 degrees).
@@ -1016,6 +1030,7 @@ impl Game<'_> {
         camera: glam::DVec3,
         partial: f32,
         light: u32,
+        fold: &horizon_client::mobs::anim::PoseFold,
         out: &mut Vec<horizon_client::mesher::Vertex>,
     ) {
         let Some(rect) = m
@@ -1046,6 +1061,7 @@ impl Game<'_> {
             [rect.u0, rect.v0, rect.u1, rect.v1],
             light,
             self.res.mob_data(),
+            fold,
             out,
         );
     }
@@ -1058,6 +1074,7 @@ impl Game<'_> {
         camera: glam::DVec3,
         partial: f32,
         light: u32,
+        fold: &horizon_client::mobs::anim::PoseFold,
         out: &mut Vec<horizon_client::mesher::Vertex>,
     ) {
         if name != "deadmau5" {
@@ -1080,6 +1097,7 @@ impl Game<'_> {
             [rect.u0, rect.v0, rect.u1, rect.v1],
             light,
             self.res.mob_data(),
+            fold,
             out,
         );
     }

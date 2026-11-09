@@ -837,6 +837,165 @@ interface hand {
     set-swing-scale: func(scale: f32);
 }
 
+/// Capability `render` (API 20): player models' poses. The game
+/// hands the mod every drawn player's pose inputs each frame —
+/// the local player's first — and the mod hands back per-part
+/// offsets the game folds into the finished vanilla pose, the
+/// hand district's bargain carried to whole bodies. A pose scale
+/// says how much of the vanilla pose applies at all: at 0 the
+/// model stands in its rest pose and the mod's offsets are the
+/// whole animation. Only players (and mannequins) are posed;
+/// the shifts are cosmetic on this client only — they never
+/// move a hitbox, a camera or another player's screen.
+interface entity-pose {
+    /// Which posed player a state or a write is about: the
+    /// mod's own player, or another player (or mannequin) by the
+    /// entity id `entity.entities` and the pose states use.
+    variant pose-target {
+        self-player,
+        entity(u32),
+    }
+
+    /// What one hand's arm is doing, as the pose code decides it
+    /// (`HumanoidModel`'s arm poses, exactly the engine's own
+    /// classification — not inferred from the held item).
+    enum arm-pose {
+        empty,
+        item,
+        block,
+        bow,
+        crossbow-hold,
+        crossbow-charge,
+        throw-trident,
+        toot-horn,
+        spear,
+        brush,
+    }
+
+    /// The hand using an item: which one, the item, and how
+    /// long it has been in use, in ticks.
+    record item-use {
+        off-hand: bool,
+        item: string,
+        ticks: u32,
+    }
+
+    /// One player model's pose inputs this frame: the values the
+    /// game's own pose code reads, at the partial tick the frame
+    /// is composed with. Only players are listed: the local
+    /// player first (`self` set), then the other players the
+    /// client is drawing, nearest first, at most 32.
+    record entity-pose-state {
+        id: u32,
+        kind: string,
+        self: bool,
+        /// Walk cycle: the position the leg swing reads and its
+        /// speed, 0 while riding or standing (vanilla zeroes
+        /// both for a passenger).
+        walk-pos: f32,
+        walk-speed: f32,
+        /// Head yaw relative to the body, and head pitch,
+        /// degrees — the head pose's own inputs.
+        head-yaw: f32,
+        head-pitch: f32,
+        /// The swing's progress, 0 to 1 (0 while no swing runs),
+        /// of the arm that swings; `swing-anim` is the engine's
+        /// own kind (the API 17 enum: none / whack / stab), and
+        /// `swing-off-hand` says the off hand's arm swings.
+        swing-progress: f32,
+        swing-anim: swing-anim,
+        swing-off-hand: bool,
+        main-arm-pose: arm-pose,
+        off-arm-pose: arm-pose,
+        main-hand: option<string>,
+        off-hand: option<string>,
+        /// An item in use (eating, drinking, drawing a bow,
+        /// blocking, charging a spear...), if either hand is.
+        using: option<item-use>,
+        crouching: bool,
+        /// Riding any vehicle or mount.
+        riding: bool,
+        /// The swim stroke's amount, 0 to 1 (0 out of the swim
+        /// pose); gliding is elytra fall-flying.
+        swim-amount: f32,
+        gliding: bool,
+        sleeping: bool,
+        sprinting: bool,
+        on-ground: bool,
+    }
+
+    /// The engine's own swing animation (the `hand` interface's
+    /// enum, re-declared: WIT interfaces cannot share types):
+    /// which pose the game's swing state is playing — a `whack`
+    /// for the plain swing, a `stab` for a spear's jab, and
+    /// `none` while no swing runs.
+    enum swing-anim {
+        none,
+        whack,
+        stab,
+    }
+
+    /// One part's shift: rotation added to the part's posed
+    /// rotation (degrees), and its pivot moved (blocks). Part
+    /// names are the model's own: for a player, `head`, `hat`,
+    /// `body`, `jacket`, `right-arm`, `left-arm`, `right-sleeve`,
+    /// `left-sleeve`, `right-leg`, `left-leg`, `right-pants`,
+    /// `left-pants`, and `cape` on the cape. A name the model
+    /// does not have is ignored. (`root` is not a part: a
+    /// whole-model shift is the `body` pivot's job in this rig,
+    /// whose children carry the limbs.)
+    record part-offset {
+        part: string,
+        x: f32,
+        y: f32,
+        z: f32,
+        pitch: f32,
+        yaw: f32,
+        roll: f32,
+    }
+
+    /// A whole pose offset for one target: the parts to shift
+    /// and the parts to hide outright (a hidden part and its
+    /// children do not draw, as when a spectator's body hides).
+    /// Setting an offset replaces the caller's previous one for
+    /// that target whole.
+    record pose-offset {
+        parts: list<part-offset>,
+        hidden: list<string>,
+    }
+
+    /// This frame's pose states, the local player first. Empty
+    /// on the title screen.
+    get-pose-states: func() -> list<entity-pose-state>;
+
+    /// Shifts one target's pose (see `pose-offset`). One offset
+    /// per target applies: the latest call by any running mod
+    /// wins that target, as the hand's one offset wins the hand.
+    /// Rotations clamp to ±180 degrees an axis, pivots to ±0.5
+    /// blocks an axis, non-finite numbers read as 0. A stopped
+    /// mod's offsets go with it.
+    set-pose-offset: func(target: pose-target, offset: pose-offset);
+
+    /// Drops the caller's offset for a target (another mod's
+    /// offset for it is untouched).
+    clear-pose-offset: func(target: pose-target);
+
+    /// How much of the vanilla pose applies to a target: 1 is
+    /// vanilla (the default), 0 is none of it — the model stands
+    /// in its rest pose and the mod's offset is the animation.
+    /// Clamped to 0..=2, non-finite reads as 1. Latest writer
+    /// wins per target, as the offsets; writing 1 releases it.
+    set-pose-scale: func(target: pose-target, scale: f32);
+
+    /// Shows the player's own body in first person while true
+    /// (any running mod asking is enough): the whole model —
+    /// body, armour, cape, elytra, held items — except the head
+    /// and hat, which never draw in first person. Everything the
+    /// pose offsets say applies to it. Third person is
+    /// unaffected.
+    set-first-person-body: func(shown: bool);
+}
+
 /// What the game calls for sounds (API 15). Only the first mod in
 /// load order with this export is asked; mods built before API 15
 /// have no such export and simply never hear sounds. The call must
@@ -1451,6 +1610,7 @@ world horizon-ui-mod {
     import browser;
     import audio;
     import hand;
+    import entity-pose;
     export ui-events;
     export audio-events;
 }
@@ -1472,11 +1632,13 @@ world audio-host {
 
 /// The game's side of capability `render` (imports only). API 16's
 /// `hand` rides along: it is a render extension, checked against
-/// the `render` capability, not one of its own.
+/// the `render` capability, not one of its own. API 20's
+/// `entity-pose` rides along the same way.
 world render-host {
     import render;
     import input;
     import hand;
+    import entity-pose;
 }
 
 /// The game's side of capability `recipes` (imports only).

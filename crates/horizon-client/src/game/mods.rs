@@ -29,8 +29,9 @@ use {
         ui,
     },
     horizon_mods::{
-        Clock, ModHandState, ModKey, ModSwingAnim, ModSwingKind, Mods, Output, Player, Runs,
-        ServerPlayer, Snapshot, SnapshotCamera, Status, UiScreen, UiWidget, WorldView,
+        Clock, ModArmPose, ModEntityPoseState, ModHandState, ModItemUse, ModKey, ModPoseSwingAnim,
+        ModPoseTarget, ModSwingAnim, ModSwingKind, Mods, Output, Player, Runs, ServerPlayer,
+        Snapshot, SnapshotCamera, Status, UiScreen, UiWidget, WorldView,
     },
     std::time::Instant,
     winit::{event::MouseButton, keyboard::KeyCode},
@@ -392,15 +393,22 @@ impl Game<'_> {
     pub(super) fn return_client_world(&mut self) {}
     pub(super) fn tick_mods(&mut self) {}
     pub(super) fn mods_frame(&mut self, _elapsed: Duration) {}
-    pub(super) fn mod_hand_pose(
-        &self,
-        to_world: glam::Mat4,
-        _two_handed_map: bool,
-    ) -> glam::Mat4 {
+    pub(super) fn mod_hand_pose(&self, to_world: glam::Mat4, _two_handed_map: bool) -> glam::Mat4 {
         to_world
     }
     pub(super) fn mod_swing_scale(&self) -> f32 {
         1.0
+    }
+    /// API 20: no mod runs, so no player model is posed and the
+    /// own body never shows by a mod's ask.
+    pub(super) fn mod_pose_fold(
+        &self,
+        _m: &horizon_client::mobs::Mob,
+    ) -> horizon_client::mobs::anim::PoseFold {
+        horizon_client::mobs::anim::PoseFold::NONE
+    }
+    pub(super) fn mods_show_own_body(&self) -> bool {
+        false
     }
     pub(super) fn mod_world_lines(&self, _lines: &mut Vec<horizon_client::gizmos::Line>) {}
     pub(super) fn mod_command(&mut self, _command: &str) -> bool {
@@ -417,6 +425,25 @@ impl Game<'_> {
     }
     pub(super) fn mod_screen_scroll(&mut self, _delta: f32) {}
 }
+/// An engine arm pose as the mods' pose states name it (API 20):
+/// the same classification, in the `entity-pose` interface's enum.
+#[cfg(feature = "mods")]
+fn mod_arm_pose(pose: horizon_client::mobs::anim::ArmPose) -> ModArmPose {
+    use horizon_client::mobs::anim::ArmPose as A;
+    match pose {
+        A::Empty => ModArmPose::Empty,
+        A::Item => ModArmPose::Item,
+        A::Block => ModArmPose::Block,
+        A::Bow => ModArmPose::Bow,
+        A::CrossbowHold => ModArmPose::CrossbowHold,
+        A::CrossbowCharge => ModArmPose::CrossbowCharge,
+        A::ThrowTrident => ModArmPose::ThrowTrident,
+        A::TootHorn => ModArmPose::TootHorn,
+        A::Spear => ModArmPose::Spear,
+        A::Brush => ModArmPose::Brush,
+    }
+}
+
 /// the mods' thrown entity types, as their mob effects: set once, from the
 /// startup root.
 fn register_entity_types(mods: &[horizon_client::mod_content::ContentMod]) {
@@ -925,7 +952,9 @@ impl Game<'_> {
     /// tick, so the hook always points at the current `Mods`.
     pub(super) fn install_sound_hook(&mut self) {
         let handle = horizon_mods::SoundHookHandle::new(&mut self.mods.mods);
-        self.audio.engine.set_hook(Box::new(ModSoundHook { handle }));
+        self.audio
+            .engine
+            .set_hook(Box::new(ModSoundHook { handle }));
     }
     /// Lends the in-place dimension's loaded columns to capability `world`
     /// for the client tick, when a running mod has it and this is the
@@ -1018,6 +1047,8 @@ impl Game<'_> {
         // API 16: the hand's state for this frame goes in before the
         // frame hooks, so a hook reads the frame being rendered.
         self.push_hand_state();
+        // API 20: player models' pose states go in beside it.
+        self.push_pose_states();
         if self.mods.mods.wants_frames() {
             let snapshot = self.mod_snapshot();
             self.mods.mods.set_snapshot(snapshot);
@@ -1116,11 +1147,7 @@ impl Game<'_> {
     /// sets an offset. Pose composition runs later in the frame than
     /// the frame hooks, and the offset is stateful — the latest one
     /// set applies, whenever in the frame it was set.
-    pub(super) fn mod_hand_pose(
-        &self,
-        to_world: glam::Mat4,
-        two_handed_map: bool,
-    ) -> glam::Mat4 {
+    pub(super) fn mod_hand_pose(&self, to_world: glam::Mat4, two_handed_map: bool) -> glam::Mat4 {
         if two_handed_map {
             return to_world;
         }
@@ -1129,7 +1156,12 @@ impl Game<'_> {
         };
         to_world
             * horizon_client::first_person::hand_offset_matrix(
-                offset.x, offset.y, offset.z, offset.pitch, offset.yaw, offset.roll,
+                offset.x,
+                offset.y,
+                offset.z,
+                offset.pitch,
+                offset.yaw,
+                offset.roll,
             )
     }
     /// API 17: how much of the vanilla swing pose the mods leave
@@ -1138,6 +1170,186 @@ impl Game<'_> {
     /// in full) when none set one.
     pub(super) fn mod_swing_scale(&self) -> f32 {
         self.mods.mods.swing_scale()
+    }
+    /// API 20 (`entity-pose.get-pose-states`): the pose states of
+    /// the players this frame — the local player first, then the
+    /// other players and mannequins the client draws, nearest
+    /// first, at most 32 — from the same values and the same
+    /// partial tick the render poses compose with. While there is
+    /// no player model (the title screen), the mods are cleared
+    /// back to no states instead.
+    pub(super) fn push_pose_states(&mut self) {
+        let Some(m) = self.player_model.as_ref() else {
+            self.mods.mods.clear_pose_states();
+            return;
+        };
+        let a = self.clock.camera_fraction() as f32;
+        let mut states = vec![Self::pose_state_of(m, a, true)];
+        let origin = m.position;
+        let mut others: Vec<&horizon_client::mobs::Mob> = self
+            .mobs
+            .iter()
+            .filter(|o| {
+                matches!(&*o.kind.id, "minecraft:player" | "minecraft:mannequin")
+                    && !(o.id == m.id && o.kind.id == m.kind.id)
+            })
+            .collect();
+        others.sort_by(|x, y| {
+            let d = |o: &horizon_client::mobs::Mob| {
+                let (dx, dy, dz) = (
+                    o.position.x - origin.x,
+                    o.position.y - origin.y,
+                    o.position.z - origin.z,
+                );
+                dx * dx + dy * dy + dz * dz
+            };
+            d(x).partial_cmp(&d(y)).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        others.truncate(32);
+        states.extend(others.iter().map(|o| Self::pose_state_of(o, a, false)));
+        self.mods.mods.set_pose_states(states);
+    }
+    /// One player's pose state (API 20): the values the game's own
+    /// pose code reads for this mob at this partial tick — the
+    /// walk and head inputs of `anim::state`, the arm poses of
+    /// `anim::player_arm_poses` (the very classification `setup`
+    /// poses by), the swing and the use from the mob's tick data.
+    fn pose_state_of(
+        m: &horizon_client::mobs::Mob,
+        alpha: f32,
+        is_self: bool,
+    ) -> ModEntityPoseState {
+        use horizon_client::mobs::anim;
+        let s = anim::state(m, alpha);
+        let (main_pose, off_pose) = anim::player_arm_poses(m, s.swing);
+        let swing_anim = if s.swing <= 0.0 {
+            ModPoseSwingAnim::None
+        } else if m.extra.swing_stab {
+            ModPoseSwingAnim::Stab
+        } else {
+            ModPoseSwingAnim::Whack
+        };
+        // The arm the swing moves: `swing_right_arm` names it, and
+        // without one the main arm swings (humanoid's default).
+        // The off hand's arm swings when the named arm is not the
+        // main one.
+        let swing_off_hand = s.swing > 0.0
+            && m.extra
+                .swing_right_arm
+                .is_some_and(|right| right == m.main_arm_left());
+        let using = (m.extra.using_item > 0).then(|| {
+            let off_hand = m.extra.using_off_hand;
+            let item = if off_hand {
+                &m.extra.off_hand
+            } else {
+                &m.extra.main_hand
+            }
+            .as_deref()
+            .unwrap_or_default()
+            .to_string();
+            ModItemUse {
+                off_hand,
+                item,
+                ticks: m.extra.using_item as u32,
+            }
+        });
+        ModEntityPoseState {
+            id: m.id,
+            kind: m.kind.id.to_string(),
+            self_: is_self,
+            walk_pos: s.pos,
+            walk_speed: s.speed,
+            head_yaw: s.y_rot,
+            head_pitch: s.x_rot,
+            swing_progress: s.swing,
+            swing_anim,
+            swing_off_hand,
+            main_arm_pose: mod_arm_pose(main_pose),
+            off_arm_pose: mod_arm_pose(off_pose),
+            main_hand: m.extra.main_hand.as_deref().map(str::to_string),
+            off_hand: m.extra.off_hand.as_deref().map(str::to_string),
+            using,
+            crouching: m.extra.crouching,
+            riding: m.extra.passenger,
+            swim_amount: m.extra.swim.amount(alpha),
+            gliding: m.extra.fall_flying,
+            sleeping: m.extra.avatar_pose == horizon_client::pose::Pose::Sleeping,
+            sprinting: m.extra.sprinting,
+            on_ground: m.on_ground,
+        }
+    }
+    /// API 20: the pose fold the renderer applies to one player
+    /// model's draw: the winning mod's offset for the model's
+    /// target, converted from the WIT's degrees and blocks into
+    /// the pose's radians and model units, with its scale —
+    /// resolved per draw, as the hand offset is. Only players and
+    /// mannequins are posed; every other mob, and a player no mod
+    /// wrote to, folds NONE. While a mod shows the local player's
+    /// body in first person, the head and hat are force-hidden on
+    /// top of whatever the fold says: a host rule no mod unhides.
+    pub(super) fn mod_pose_fold(
+        &self,
+        m: &horizon_client::mobs::Mob,
+    ) -> horizon_client::mobs::anim::PoseFold {
+        use horizon_client::mobs::anim::PoseFold;
+        if !matches!(&*m.kind.id, "minecraft:player" | "minecraft:mannequin") {
+            return PoseFold::NONE;
+        }
+        let is_self = self
+            .player_model
+            .as_ref()
+            .is_some_and(|p| p.id == m.id && p.kind.id == m.kind.id);
+        let target = if is_self {
+            ModPoseTarget::SelfPlayer
+        } else {
+            ModPoseTarget::Entity(m.id)
+        };
+        let mut fold = match self.mods.mods.pose_offset(target) {
+            Some((offset, scale)) => PoseFold {
+                parts: offset
+                    .parts
+                    .iter()
+                    .map(|p| {
+                        (
+                            p.part.clone(),
+                            [
+                                p.x * 16.0,
+                                p.y * 16.0,
+                                p.z * 16.0,
+                                p.pitch.to_radians(),
+                                p.yaw.to_radians(),
+                                p.roll.to_radians(),
+                            ],
+                        )
+                    })
+                    .collect(),
+                hidden: offset.hidden.clone(),
+                scale,
+            },
+            None => PoseFold::NONE,
+        };
+        if is_self && self.mod_forces_own_body() {
+            for part in ["head", "hat"] {
+                if !fold.hidden.iter().any(|h| h == part) {
+                    fold.hidden.push(part.into());
+                }
+            }
+        }
+        fold
+    }
+    /// Whether a mod's `entity-pose.set-first-person-body` shows
+    /// the local player's body in first person (API 20): the bare
+    /// ask, for `player_model_shown`'s gate.
+    pub(super) fn mods_show_own_body(&self) -> bool {
+        self.camera_type.first_person() && self.mods.mods.own_body()
+    }
+    /// Whether the own body is in view BECAUSE a mod asks (API
+    /// 20): first person, a mod asking, and no vanilla reason to
+    /// draw it (not sleeping, no detached mod camera, no shadow
+    /// pass). Only then does the host force-hide the head and
+    /// hat: a body that would draw anyway keeps vanilla's rules.
+    fn mod_forces_own_body(&self) -> bool {
+        self.mods_show_own_body() && !self.own_body_in_view() && !self.pack_shadow_casters.0
     }
     /// `/command` typed in chat: true when a mod owns it.
     pub(super) fn mod_command(&mut self, command: &str) -> bool {
@@ -2340,7 +2552,6 @@ mod native_bundle_tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
-
 
 /// The sound engine's hook (API 15): forwards each world sound to
 /// the mods and returns the winning mod's adjustment.

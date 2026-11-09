@@ -88,9 +88,14 @@ impl Game<'_> {
         let Some(stack) = stack.filter(|s| &*s.item == "minecraft:carved_pumpkin") else {
             return;
         };
-        let Some(head) =
-            render::part_transform(mob, alpha as f32, camera, self.res.mob_data(), "head")
-        else {
+        let Some(head) = render::part_transform(
+            mob,
+            alpha as f32,
+            camera,
+            self.res.mob_data(),
+            "head",
+            &self.mod_pose_fold(mob),
+        ) else {
             return;
         };
         let pose = head
@@ -187,9 +192,14 @@ impl Game<'_> {
         }) else {
             return;
         };
-        let Some(head) =
-            render::part_transform(mob, alpha as f32, camera, self.res.mob_data(), "head")
-        else {
+        let Some(head) = render::part_transform(
+            mob,
+            alpha as f32,
+            camera,
+            self.res.mob_data(),
+            "head",
+            &self.mod_pose_fold(mob),
+        ) else {
             return;
         };
         let m = banner_matrix(head);
@@ -232,10 +242,13 @@ impl Game<'_> {
         light: u32,
         out: &mut Vec<Vertex>,
     ) {
+        // The mods' pose fold for this model (API 20): its held
+        // and head items follow the folded pose.
+        let fold = self.mod_pose_fold(mob);
         self.captain_banner_geometry(mob, camera, alpha, light, out);
-        self.held_item_geometry(mob, camera, alpha, light, true, out);
+        self.held_item_geometry(mob, camera, alpha, light, true, &fold, out);
         self.worn_block_geometry(mob, camera, alpha, light, out);
-        self.head_item_geometry(mob, camera, alpha, light, true, out);
+        self.head_item_geometry(mob, camera, alpha, light, true, &fold, out);
         self.golem_flower_geometry(mob, camera, alpha, light, out);
         self.antenna_block_geometry(mob, camera, alpha, light, out);
         if mob.species() == Species::Enderman
@@ -300,9 +313,14 @@ impl Game<'_> {
                 }
             }
         }
-        let Some(head) =
-            render::part_transform(mob, alpha as f32, camera, self.res.mob_data(), "head")
-        else {
+        let Some(head) = render::part_transform(
+            mob,
+            alpha as f32,
+            camera,
+            self.res.mob_data(),
+            "head",
+            &self.mod_pose_fold(mob),
+        ) else {
             return;
         };
         // Only wildflowers and pink petals carry the flowerbed display shift.
@@ -333,9 +351,14 @@ impl Game<'_> {
         let Some(state) = self.pack.assets.registry.default_state("minecraft:poppy") else {
             return;
         };
-        let Some(arm) =
-            render::part_transform(mob, alpha as f32, camera, self.res.mob_data(), "right_arm")
-        else {
+        let Some(arm) = render::part_transform(
+            mob,
+            alpha as f32,
+            camera,
+            self.res.mob_data(),
+            "right_arm",
+            &self.mod_pose_fold(mob),
+        ) else {
             return;
         };
         let t = arm
@@ -378,8 +401,14 @@ impl Game<'_> {
             return;
         };
         let alpha = alpha as f32;
-        let Some(head) = render::part_transform(mob, alpha, camera, self.res.mob_data(), "head")
-        else {
+        let Some(head) = render::part_transform(
+            mob,
+            alpha,
+            camera,
+            self.res.mob_data(),
+            "head",
+            &self.mod_pose_fold(mob),
+        ) else {
             return;
         };
         let unit = Mat4::from_translation(Vec3::splat(-0.5));
@@ -426,6 +455,7 @@ impl Game<'_> {
         alpha: f64,
         light: u32,
         lit: bool,
+        fold: &horizon_client::mobs::anim::PoseFold,
         out: &mut Vec<Vertex>,
     ) {
         // ItemInHandLayer submits with OverlayTexture.NO_OVERLAY: no hurt tint.
@@ -440,9 +470,23 @@ impl Game<'_> {
                 && mob.extra.using_item > 0
                 && horizon_client::mobs::anim::state(mob, alpha as f32).swing < 1.0e-5;
             let t = if spyglass_to_eye {
-                render::held_to_eye_matrix(mob, alpha as f32, camera, self.res.mob_data(), left)
+                render::held_to_eye_matrix(
+                    mob,
+                    alpha as f32,
+                    camera,
+                    self.res.mob_data(),
+                    left,
+                    fold,
+                )
             } else {
-                render::held_item_transform(mob, alpha as f32, camera, self.res.mob_data(), left)
+                render::held_item_transform(
+                    mob,
+                    alpha as f32,
+                    camera,
+                    self.res.mob_data(),
+                    left,
+                    fold,
+                )
             };
             let Some(t) = t else {
                 continue;
@@ -538,6 +582,7 @@ impl Game<'_> {
         alpha: f64,
         light: u32,
         lit: bool,
+        fold: &horizon_client::mobs::anim::PoseFold,
         out: &mut Vec<Vertex>,
     ) {
         // The layer also draws on an invisible mob.
@@ -579,7 +624,7 @@ impl Game<'_> {
             stack.enchant("minecraft:unbreaking", 1);
         }
         let Some(head) =
-            render::part_transform(mob, alpha as f32, camera, self.res.mob_data(), "head")
+            render::part_transform(mob, alpha as f32, camera, self.res.mob_data(), "head", fold)
         else {
             return;
         };
