@@ -564,6 +564,63 @@ interface render {
     project: func(point: world-point) -> screen-point;
 }
 
+/// Capability `audio` (API 15): the shared reverb's character. The
+/// mod that answers sound events (interface `audio-events`) sets
+/// this from its estimate of the listener's surroundings; the game
+/// owns the effect itself and applies it in the mixer.
+interface audio {
+    /// Set the shared reverb: a wet gain of 0.0..=1.0 and a decay
+    /// time in seconds (0.1..=10.0). Out-of-range values are clamped.
+    set-environment: func(wet: f32, decay: f32);
+    /// Return the shared reverb to dry (a wet gain of 0).
+    clear-environment: func();
+}
+
+/// What the game calls for sounds (API 15). Only the first mod in
+/// load order with this export is asked; mods built before API 15
+/// have no such export and simply never hear sounds. The call must
+/// be fast: it runs on the game thread at the moment a sound starts
+/// (and every 10 ticks while a ticking sound plays).
+interface audio-events {
+    /// A position in the world.
+    record sound-position {
+        x: f64,
+        y: f64,
+        z: f64,
+    }
+    /// A world sound about to play. Music and relative (UI) sounds
+    /// are never offered.
+    record sound-query {
+        /// The registry sound event id (for example
+        /// `block.stone.break`, without a namespace).
+        event: string,
+        /// The sound's category (vanilla `SoundSource` order):
+        /// 0 master, 1 music, 2 record, 3 weather, 4 block,
+        /// 5 hostile, 6 neutral, 7 player, 8 ambient, 9 voice, 10 ui.
+        category: u32,
+        /// Where it plays from.
+        position: sound-position,
+        /// It loops (ambience, minecarts) rather than playing once.
+        looping: bool,
+        /// The sound's own volume, before distance falloff.
+        volume: f32,
+        /// The sound's own pitch multiplier.
+        pitch: f32,
+    }
+    /// What the mod returns: the game applies these on top of its
+    /// own volume. A mod can only ever quieten a sound.
+    record sound-adjustment {
+        /// Volume multiplier, clamped to 0.0..=1.0.
+        gain: f32,
+        /// Muffle amount 0.0..=1.0 (a lowpass on the sound).
+        lowpass: f32,
+        /// Reverb send 0.0..=1.0.
+        reverb: f32,
+    }
+    /// A world sound is starting (or a ticking sound is refreshed).
+    sound: func(query: sound-query) -> sound-adjustment;
+}
+
 /// What the game calls. Only the hooks `init` asks for are ever called.
 interface events {
     record registration {
@@ -1131,13 +1188,24 @@ world horizon-ui-mod {
     import input;
     import recipes;
     import browser;
+    import audio;
     export ui-events;
+    export audio-events;
 }
 
 /// The game's side of `horizon-ui-mod` beyond `horizon-mod`.
 world ui-host {
     import ui;
     export ui-events;
+}
+
+/// The game's side of capability `audio` (API 15) beyond
+/// `horizon-mod`: a second world, so mods built before it (no
+/// `audio-events` export) still instantiate as `horizon-mod` and
+/// simply never hear sounds.
+world audio-host {
+    import audio;
+    export audio-events;
 }
 
 /// The game's side of capability `render` (imports only).

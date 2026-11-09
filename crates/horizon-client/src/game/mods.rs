@@ -345,6 +345,11 @@ impl Game<'_> {
     }
     pub(super) fn merge_remote_tree(&mut self) {}
     pub(super) fn sync_mods(&mut self) {}
+    pub(super) fn install_sound_hook(&mut self) {}
+    pub(super) fn lend_client_world(&mut self) -> bool {
+        false
+    }
+    pub(super) fn return_client_world(&mut self) {}
     pub(super) fn tick_mods(&mut self) {}
     pub(super) fn mods_frame(&mut self, _elapsed: Duration) {}
     pub(super) fn mod_world_lines(&self, _lines: &mut Vec<horizon_client::gizmos::Line>) {}
@@ -478,6 +483,7 @@ fn state_string(registry: &BlockRegistry, state: BlockStateId) -> String {
 impl Game<'_> {
     /// Reads `horizon-mods/` and the dev mods, and starts the ones turned on.
     pub(super) fn start_mods(&mut self) {
+        self.install_sound_hook();
         let dir = Self::options_path().with_file_name(mod_list::DIR);
         let dev = &self.mods.dev;
         let mut paths = horizon_mods::find(&dir);
@@ -823,6 +829,7 @@ impl Game<'_> {
             self.run_quiet_batch(&mod_id, &lines);
         }
         if !self.mods.mods.is_running() {
+            self.audio.set_sound_environment(None);
             return;
         }
         self.tick_sandbox_mod_use();
@@ -831,10 +838,24 @@ impl Game<'_> {
         // The client world is lent for the tick only: a mod that reads it
         // on a frame, chat or command hook gets `None`, as on the title
         // screen. See [`Game::lend_client_world`].
-        self.lend_client_world();
+        let lent_here = self.lend_client_world();
         self.mods.mods.tick(self.ticks);
-        self.return_client_world();
+        if lent_here {
+            self.return_client_world();
+        }
+        // API 15: the sound mod's reverb character reaches the mixer.
+        let env = self.mods.mods.sound_environment();
+        self.audio.set_sound_environment(env);
         self.show_mod_output();
+    }
+
+    /// Install (or refresh) the sound engine's hook (API 15): world
+    /// sounds are offered to the mods, whose answer adjusts them in
+    /// the engine. Called when mods (re)load and again every sound
+    /// tick, so the hook always points at the current `Mods`.
+    pub(super) fn install_sound_hook(&mut self) {
+        let mods: *mut Mods = &mut self.mods.mods;
+        self.audio.engine.set_hook(Box::new(ModSoundHook { mods }));
     }
     /// Lends the in-place dimension's loaded columns to capability `world`
     /// for the client tick, when a running mod has it and this is the
@@ -845,9 +866,12 @@ impl Game<'_> {
     /// during the tick, which the server's move-out pattern could not
     /// promise here. Nothing is lent on a multiplayer server, at the title
     /// screen, or with no world mod on, so reads there are `None`.
-    fn lend_client_world(&mut self) {
+    /// Lent for the mods' own tick, and by the frame loop for its
+    /// tick and sound phases (API 15's sound calls read the world
+    /// too). True when this call did the lending.
+    pub(super) fn lend_client_world(&mut self) -> bool {
         if !self.mods.world || !self.has_singleplayer_server() || self.mods.client_world_lent {
-            return;
+            return false;
         }
         let columns: HashMap<(i32, i32), Arc<Chunk>> = self
             .world
@@ -862,6 +886,7 @@ impl Game<'_> {
             columns,
         }));
         self.mods.client_world_lent = true;
+        true
     }
 
     /// Takes back what [`Game::lend_client_world`] lent. The columns are
@@ -869,7 +894,7 @@ impl Game<'_> {
     /// before the server tick lends its own view into the same slot
     /// (in-frame singleplayer runs both ticks back-to-back on this thread).
     /// A call with nothing lent is a no-op.
-    fn return_client_world(&mut self) {
+    pub(super) fn return_client_world(&mut self) {
         if !self.mods.client_world_lent {
             return;
         }
@@ -2122,5 +2147,58 @@ mod native_bundle_tests {
         // No folder: no rows.
         assert!(not_built(&dir.join("missing"), "", &[]).is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+
+/// The sound engine's hook (API 15): forwards each world sound to
+/// the mods and returns the winning mod's adjustment.
+#[cfg(feature = "mods")]
+///
+/// The `Mods` is held by raw pointer because the engine calls the
+/// hook from inside the game's own audio calls (`self.audio.play`,
+/// `self.audio.tick`), where the borrow checker cannot see that the
+/// game's `audio` and `mods` are disjoint fields. The pointer is
+/// refreshed from `&mut self.mods.mods` whenever mods load and on
+/// every sound tick, the hook only runs on the game thread inside
+/// those calls, and the `Mods` outlives the engine: both are fields
+/// of the same `Game`, which owns them for the whole session.
+struct ModSoundHook {
+    mods: *mut Mods,
+}
+
+
+// The hook never leaves the game thread in practice; the engine
+// only calls it from its play paths on that thread.
+#[cfg(feature = "mods")]
+unsafe impl Send for ModSoundHook {}
+
+#[cfg(feature = "mods")]
+impl crate::sound_engine::SoundHook for ModSoundHook {
+    fn adjust(
+        &mut self,
+        query: &crate::sound_engine::SoundQuery,
+    ) -> crate::sound_engine::SoundAdjustment {
+        // SAFETY: see the type's comment. The pointer came from the
+        // game's own `&mut Mods` and is refreshed every sound tick;
+        // this call happens on the game thread while the game runs.
+        let mods = unsafe { &mut *self.mods };
+        let answer = mods.adjust_sound(&horizon_mods::ModSoundQuery {
+            event: query.event.clone(),
+            category: query.category as u32,
+            position: horizon_mods::ModSoundPosition {
+                x: query.position[0],
+                y: query.position[1],
+                z: query.position[2],
+            },
+            looping: query.looping,
+            volume: query.volume,
+            pitch: query.pitch,
+        });
+        crate::sound_engine::SoundAdjustment {
+            gain: answer.gain,
+            lowpass: answer.lowpass,
+            reverb: answer.reverb,
+        }
     }
 }

@@ -3,7 +3,9 @@
 //! capability `storage` on a fixed key, `/save_key <key> <text>` exercises
 //! it on an arbitrary key (for the quota and key-count limits); `tick` and
 //! `frame` do nothing, to measure the cost of a call.
-use horizon_mod_sdk::{Mod, Registration, chat, storage};
+use horizon_mod_sdk::{
+    Mod, Registration, SoundAdjustment, SoundQuery, audio, chat, storage,
+};
 
 struct Guest {
     ticks: u64,
@@ -20,6 +22,12 @@ impl Mod for Guest {
     }
     fn tick(&mut self, _tick: u64) {
         self.ticks += 1;
+    }
+    /// Capability `audio` (API 15): a fixed answer, and the shared
+    /// reverb's character set on the way through.
+    fn sound(&mut self, _query: &SoundQuery) -> SoundAdjustment {
+        audio::set_environment(0.3, 2.5);
+        SoundAdjustment { gain: 0.5, lowpass: 0.25, reverb: 0.75 }
     }
     fn command(&mut self, name: &str, args: &str) -> Result<Option<String>, String> {
         match name {

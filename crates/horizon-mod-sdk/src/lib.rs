@@ -42,11 +42,14 @@ wit_bindgen::generate!({
     default_bindings_module: "horizon_mod_sdk",
 });
 
+pub use exports::horizon::mods::audio_events::{
+    Guest as __AudioEventsGuest, SoundAdjustment, SoundQuery,
+};
 pub use exports::horizon::mods::events::{Guest as __Guest, Registration};
 pub use exports::horizon::mods::ui_events::Guest as __UiEventsGuest;
 pub use horizon::mods::{
-    browser, chat, command, entity, game, hud, input, inventory, log, recipes, render, storage, ui,
-    world,
+    audio, browser, chat, command, entity, game, hud, input, inventory, log, recipes, render,
+    storage, ui, world,
 };
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for
@@ -66,6 +69,13 @@ pub trait Mod: Sized + 'static {
     }
     /// A chat line the player received, when [`Registration::chat`] is set.
     fn chat(&mut self, _text: &str) {}
+    /// A world sound is starting (capability `audio`, API 15): return
+    /// how it should be quietened, muffled and sent to the reverb.
+    /// Only the first mod in load order that implements this is ever
+    /// asked. The default is no change.
+    fn sound(&mut self, _query: &SoundQuery) -> SoundAdjustment {
+        SoundAdjustment { gain: 1.0, lowpass: 0.0, reverb: 0.0 }
+    }
     /// A row of one of the mod's `list` widgets was picked (capability
     /// `ui`): the widget's `id` and the row.
     fn ui_select(&mut self, _id: u32, _row: u32) {}
@@ -158,6 +168,14 @@ macro_rules! export_mod {
                     with(|m| $crate::Mod::chat(m, &text))
                 }
             }
+            impl $crate::__AudioEventsGuest for Export {
+                fn sound(query: $crate::SoundQuery) -> $crate::SoundAdjustment {
+                    let mut out =
+                        $crate::SoundAdjustment { gain: 1.0, lowpass: 0.0, reverb: 0.0 };
+                    with(|m| out = $crate::Mod::sound(m, &query));
+                    out
+                }
+            }
             impl $crate::__UiEventsGuest for Export {
                 fn select(id: u32, row: u32) {
                     with(|m| $crate::Mod::ui_select(m, id, row))
@@ -178,6 +196,7 @@ macro_rules! export_mod {
             let _ = (
                 <Export as $crate::__Guest>::init,
                 <Export as $crate::__UiEventsGuest>::select,
+                <Export as $crate::__AudioEventsGuest>::sound,
             );
         };
     };

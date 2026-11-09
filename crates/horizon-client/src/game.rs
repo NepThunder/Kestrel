@@ -18177,6 +18177,14 @@ impl Game<'_> {
                             break;
                         }
                         let started = Instant::now();
+                        // The client world stays lent for the whole
+                        // step: packet-driven sounds and the sound
+                        // engine's plays read it through the mods'
+                        // sound hook (API 15), as the mods' tick does.
+                        // An error path may skip the return below; the
+                        // next step's return then takes it back (the
+                        // lend is flag-guarded).
+                        self.lend_client_world();
                         if self.title.is_none() && !self.pause {
                             let tick = Instant::now();
                             horizon_client::spans::time("tick", || self.tick())?;
@@ -18193,6 +18201,7 @@ impl Game<'_> {
                         self.tick_chat_queue();
                         self.tick_music();
                         self.tick_sound_engine();
+                        self.return_client_world();
                         self.clock.record(started.elapsed());
                         spent += started.elapsed();
                         if let Some(report) = self.clock.take_sprint_report() {

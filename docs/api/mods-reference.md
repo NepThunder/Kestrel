@@ -21,6 +21,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `recipes` | [`recipes`](#recipes) | read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items |
 | `inventory` | [`inventory`](#inventory) | see your inventory and open containers |
 | `entity` | [`entity`](#entity) | see the mobs around you and the entity you look at |
+| `audio` | [`audio`](#audio) | change how sounds play around you |
 
 ## World `horizon-mod`
 
@@ -40,8 +41,8 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
-- Exports (what the mod provides): `ui-events`, `events`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `audio`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
+- Exports (what the mod provides): `ui-events`, `audio-events`, `events`
 
 ## World `ui-host`
 
@@ -49,6 +50,13 @@ The game's side of `horizon-ui-mod` beyond `horizon-mod`.
 
 - Imports (what the game offers): `ui`
 - Exports (what the mod provides): `ui-events`
+
+## World `audio-host`
+
+The game's side of capability `audio` (API 15) beyond `horizon-mod`: a second world, so mods built before it (no `audio-events` export) still instantiate as `horizon-mod` and simply never hear sounds.
+
+- Imports (what the game offers): `audio`
+- Exports (what the mod provides): `audio-events`
 
 ## World `render-host`
 
@@ -538,6 +546,60 @@ A point on the screen, in GUI pixels from the top left.
 | `get-camera` | `func() -> camera-pose` | The camera this frame renders from: the mod override when one is active, else the player's own camera (the first-person eye, or the third-person back-off). Only while playing. |
 | `set-camera` | `func(override: option<camera-override>)` | Detaches the camera until the next call (none releases it): freelook while `position` is none, freecam while it is some. Only one mod drives the camera: the first loaded mod that sets one wins; the others' calls are stored but ignored until it releases. While a camera is active the mouse turns the camera, not the player — the player's yaw and pitch do not move, so the player keeps walking, aiming and mining in the direction they faced. The player's stored settings are never changed. Only while playing: at the title screen there is no camera to move, and the value is the panorama's. |
 | `project` | `func(point: world-point) -> screen-point` | Projects a world position onto the screen through the camera this frame renders from (a mod camera when one is active, else the player's own), with the effective field of view, including a mod zoom. `visible` is false behind the camera; `x` and `y` are still given, so a mod can draw an off-screen arrow itself. No occlusion test: a point behind a wall still projects, as the HUD distances do. Only while playing. |
+
+## `audio`
+
+Access: capability `audio`.
+
+Capability `audio` (API 15): the shared reverb's character. The mod that answers sound events (interface `audio-events`) sets this from its estimate of the listener's surroundings; the game owns the effect itself and applies it in the mixer.
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `set-environment` | `func(wet: f32, decay: f32)` | Set the shared reverb: a wet gain of 0.0..=1.0 and a decay time in seconds (0.1..=10.0). Out-of-range values are clamped. |
+| `clear-environment` | `func()` | Return the shared reverb to dry (a wet gain of 0). |
+
+## `audio-events`
+
+Access: exported by the mod: the game calls it.
+
+What the game calls for sounds (API 15). Only the first mod in load order with this export is asked; mods built before API 15 have no such export and simply never hear sounds. The call must be fast: it runs on the game thread at the moment a sound starts (and every 10 ticks while a ticking sound plays).
+
+### record `sound-position`
+
+A position in the world.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+
+### record `sound-query`
+
+A world sound about to play. Music and relative (UI) sounds are never offered.
+
+| Field | Type | |
+| --- | --- | --- |
+| `event` | `string` | The registry sound event id (for example `block.stone.break`, without a namespace). |
+| `category` | `u32` | The sound's category (vanilla `SoundSource` order): 0 master, 1 music, 2 record, 3 weather, 4 block, 5 hostile, 6 neutral, 7 player, 8 ambient, 9 voice, 10 ui. |
+| `position` | `sound-position` | Where it plays from. |
+| `looping` | `bool` | It loops (ambience, minecarts) rather than playing once. |
+| `volume` | `f32` | The sound's own volume, before distance falloff. |
+| `pitch` | `f32` | The sound's own pitch multiplier. |
+
+### record `sound-adjustment`
+
+What the mod returns: the game applies these on top of its own volume. A mod can only ever quieten a sound.
+
+| Field | Type | |
+| --- | --- | --- |
+| `gain` | `f32` | Volume multiplier, clamped to 0.0..=1.0. |
+| `lowpass` | `f32` | Muffle amount 0.0..=1.0 (a lowpass on the sound). |
+| `reverb` | `f32` | Reverb send 0.0..=1.0. |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `sound` | `func(query: sound-query) -> sound-adjustment` | A world sound is starting (or a ticking sound is refreshed). |
 
 ## `events`
 

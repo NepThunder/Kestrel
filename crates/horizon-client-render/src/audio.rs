@@ -34,6 +34,12 @@ struct Channel {
     state: State,
     gain: f32,
     pitch: f32,
+    /// A mod's muffle for this voice (API 15): 0 is open, 1 is muffled.
+    lowpass: f32,
+    /// The one-pole lowpass state for this voice.
+    lp_state: f32,
+    /// A mod's reverb send for this voice (API 15): 0 is dry.
+    reverb_send: f32,
     /// `AL_LINEAR_DISTANCE` max distance, or no attenuation.
     linear: Option<f32>,
     looping: bool,
@@ -62,6 +68,14 @@ struct Mixer {
     /// The callback's cameras (position, basis, world), kept to be refilled without allocating.
     cameras: Vec<([f64; 3], Basis, u32)>,
     limiter_peak: f32,
+    /// The shared reverb a mod's environment drives (API 15).
+    reverb: Reverb,
+    /// The reverb's wet gain: 0 bypasses the reverb entirely.
+    reverb_wet: f32,
+    /// The reverb's decay time in seconds.
+    reverb_decay: f32,
+    /// Per-frame reverb sends, accumulated while the voices mix.
+    reverb_in: Vec<f32>,
     /// The output device the stream was opened on (`Library.currentDeviceName`).
     #[cfg(feature = "audio")]
     device_name: String,
@@ -377,6 +391,9 @@ impl Backend for MixerBackend {
                 state: State::Initial,
                 gain: 1.0,
                 pitch: 1.0,
+                lowpass: 0.0,
+                lp_state: 0.0,
+                reverb_send: 0.0,
                 linear: None,
                 looping: false,
                 at: [0.0; 3],
@@ -410,6 +427,18 @@ impl Backend for MixerBackend {
     }
     fn set_relative(&mut self, channel: ChannelId, relative: bool) {
         self.with(channel, |c| c.relative = relative);
+    }
+    fn set_lowpass(&mut self, channel: ChannelId, amount: f32) {
+        self.with(channel, |c| c.lowpass = amount.clamp(0.0, 1.0));
+    }
+    fn set_reverb_send(&mut self, channel: ChannelId, amount: f32) {
+        self.with(channel, |c| c.reverb_send = amount.clamp(0.0, 1.0));
+    }
+    fn set_environment(&mut self, wet: f32, decay: f32) {
+        if let Ok(mut m) = self.mixer.lock() {
+            m.reverb_wet = wet.clamp(0.0, 1.0);
+            m.reverb_decay = decay.clamp(0.1, 10.0);
+        }
     }
     /// `getCompleteBuffer` (cached, else decoded on the decoder thread) or
     /// `getStream` (decoded on a thread of its own), then attach and
@@ -531,6 +560,124 @@ fn distance_gain(linear: Option<f32>, distance: f32) -> f32 {
 }
 // Only the output stream mixes; a build without one (no `audio` feature) never does.
 #[cfg_attr(not(feature = "audio"), allow(dead_code))]
+/// One feedback comb filter with a damped loop (freeverb-style).
+struct Comb {
+    buf: Vec<f32>,
+    idx: usize,
+    store: f32,
+    feedback: f32,
+}
+
+impl Comb {
+    fn new(len: usize) -> Self {
+        Comb { buf: vec![0.0; len.max(1)], idx: 0, store: 0.0, feedback: 0.0 }
+    }
+    fn process(&mut self, input: f32) -> f32 {
+        let out = self.buf[self.idx];
+        // The loop's one-pole damping keeps long decays from going harsh.
+        self.store = self.store * 0.8 + out * 0.2;
+        self.buf[self.idx] = input + self.store * self.feedback;
+        self.idx = (self.idx + 1) % self.buf.len();
+        out
+    }
+}
+
+/// One Schroeder allpass filter.
+struct Allpass {
+    buf: Vec<f32>,
+    idx: usize,
+}
+
+impl Allpass {
+    fn new(len: usize) -> Self {
+        Allpass { buf: vec![0.0; len.max(1)], idx: 0 }
+    }
+    fn process(&mut self, input: f32) -> f32 {
+        let buffered = self.buf[self.idx];
+        let out = buffered - input * 0.5;
+        self.buf[self.idx] = input + buffered * 0.5;
+        self.idx = (self.idx + 1) % self.buf.len();
+        out
+    }
+}
+
+/// The shared reverb (API 15): eight feedback combs (four per side,
+/// freeverb tunings) into two allpasses per side. Delay lines are
+/// built for the output rate on first use; at a wet gain of 0 the
+/// caller never runs it.
+#[derive(Default)]
+struct Reverb {
+    combs: [Vec<Comb>; 2],
+    allpasses: [Vec<Allpass>; 2],
+    rate: u32,
+    decay: f32,
+}
+
+impl Reverb {
+    fn ensure(&mut self, rate: u32, decay: f32) {
+        if self.rate != rate {
+            self.rate = rate;
+            let scale = |n: usize| (n * rate as usize / 44_100).max(1);
+            // Freeverb's tunings at 44.1 kHz; the second side is +23.
+            let combs = [1116usize, 1188, 1277, 1356];
+            let allpasses = [556usize, 441];
+            for side in 0..2 {
+                self.combs[side] =
+                    combs.iter().map(|&n| Comb::new(scale(n + side * 23))).collect();
+                self.allpasses[side] =
+                    allpasses.iter().map(|&n| Allpass::new(scale(n))).collect();
+            }
+            self.decay = 0.0; // force the feedback refresh below
+        }
+        if (self.decay - decay).abs() > f32::EPSILON {
+            self.decay = decay;
+            // RT60 of a comb: decay = -3 * (len / rate) / log10(feedback).
+            for side in 0..2 {
+                for comb in &mut self.combs[side] {
+                    let seconds = comb.buf.len() as f32 / rate as f32;
+                    comb.feedback = 10f32.powf(-3.0 * seconds / decay.max(0.1));
+                }
+            }
+        }
+    }
+
+    /// Add the wet signal for `input` (one send sum per frame) into
+    /// `out`, scaled by `wet`.
+    fn process(
+        &mut self,
+        input: &[f32],
+        out: &mut [f32],
+        channels: usize,
+        rate: u32,
+        wet: f32,
+        decay: f32,
+    ) {
+        self.ensure(rate, decay);
+        let frames = input.len().min(out.len() / channels.max(1));
+        for f in 0..frames {
+            let dry_in = input[f] * 0.25;
+            let mut sides = [0.0f32; 2];
+            for side in 0..2 {
+                let mut sum = 0.0;
+                for comb in &mut self.combs[side] {
+                    sum += comb.process(dry_in);
+                }
+                let mut v = sum;
+                for allpass in &mut self.allpasses[side] {
+                    v = allpass.process(v);
+                }
+                sides[side] = v;
+            }
+            if channels >= 2 {
+                out[f * channels] += sides[0] * wet;
+                out[f * channels + 1] += sides[1] * wet;
+            } else {
+                out[f] += (sides[0] + sides[1]) * 0.5 * wet;
+            }
+        }
+    }
+}
+
 fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
     data.fill(0.0);
     // The camera's forward and up vectors (`Camera.forwardVector`/`upVector`)
@@ -629,6 +776,13 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         voices.push((*id, [left, right, gain], step));
     }
     mixer.cameras = cameras;
+    // The reverb send sums, one per frame, for this buffer.
+    let reverb_live = mixer.reverb_wet > 0.0;
+    let mut reverb_in = std::mem::take(&mut mixer.reverb_in);
+    reverb_in.clear();
+    // Sized by samples, an upper bound on the frame count, so a
+    // trailing partial frame can never index past the end.
+    reverb_in.resize(data.len(), 0.0);
     for (id, [left, right, gain], step) in voices {
         let Some(c) = mixer.channels.get_mut(&id) else {
             continue;
@@ -636,7 +790,15 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         let Some((samples, _)) = c.samples.clone() else {
             continue;
         };
-        for frame in data.chunks_mut(channels) {
+        // The muffle coefficient for this voice (API 15): the
+        // amount maps exponentially from 18 kHz (open) to 500 Hz.
+        let lp_a = if c.lowpass > 0.0 {
+            let cutoff = 18_000.0f32 * (500.0f32 / 18_000.0).powf(c.lowpass);
+            1.0 - (-2.0 * std::f32::consts::PI * cutoff / rate as f32).exp()
+        } else {
+            1.0
+        };
+        for (fi, frame) in data.chunks_mut(channels).enumerate() {
             let mut i = c.position as usize;
             if i + 1 >= samples.len() {
                 if c.looping && samples.len() > 1 {
@@ -648,7 +810,11 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
                 }
             }
             let t = (c.position - i as f64) as f32;
-            let s = samples[i] * (1.0 - t) + samples[i + 1] * t;
+            let raw = samples[i] * (1.0 - t) + samples[i + 1] * t;
+            // One-pole lowpass; at amount 0 the state tracks the
+            // signal so a later muffle starts from the right place.
+            c.lp_state += lp_a * (raw - c.lp_state);
+            let s = c.lp_state;
             if channels >= 2 {
                 frame[0] += s * left;
                 frame[1] += s * right;
@@ -656,9 +822,17 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
                 // A mono output has no panning: the source's own gain.
                 frame[0] += s * gain;
             }
+            if reverb_live && c.reverb_send > 0.0 {
+                reverb_in[fi] += s * gain * c.reverb_send;
+            }
             c.position += step;
         }
     }
+    if reverb_live {
+        let (wet, decay) = (mixer.reverb_wet, mixer.reverb_decay);
+        mixer.reverb.process(&reverb_in, data, channels, rate, wet, decay);
+    }
+    mixer.reverb_in = reverb_in;
     // Limit the whole buffer together, preserving waveform and stereo balance
     // instead of flattening each overloaded sample; release over 200 ms
     // (OpenAL Soft's output limiter, `ALC_OUTPUT_LIMITER_SOFT`, releases
@@ -1218,6 +1392,13 @@ impl Audio {
         changed
     }
     /// `SoundManager.tick(paused)`, once per client tick.
+    /// The mods' shared reverb character (API 15): the wet gain and
+    /// decay the sound mod asked for, or dry when it asked for none.
+    pub fn set_sound_environment(&mut self, env: Option<(f32, f32)>) {
+        let (wet, decay) = env.unwrap_or((0.0, 2.0));
+        self.backend.set_environment(wet, decay);
+    }
+
     pub fn tick(&mut self, paused: bool, ctx: &TickContext) {
         #[cfg(feature = "audio")]
         {
@@ -1521,6 +1702,9 @@ mod tests {
             state: State::Playing,
             gain: 1.0,
             pitch: 1.0,
+            lowpass: 0.0,
+            lp_state: 0.0,
+            reverb_send: 0.0,
             linear,
             looping,
             at,
@@ -1660,6 +1844,66 @@ mod tests {
                 assert!((g - e).abs() < 1e-4, "{right} {up} {forward}: {gains:?}");
             }
         }
+    }
+
+    #[test]
+    fn lowpass_muffles_high_frequencies_far_more_than_low_ones() {
+        // One voice at the listener, no attenuation: measure the RMS
+        // of a muffled sine against an open one, per frequency.
+        let rms = |freq: f32, lowpass: f32| {
+            let samples: Vec<f32> = (0..48_000)
+                .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / 48_000.0).sin())
+                .collect();
+            let mut m = Mixer::default();
+            let mut c = channel(samples, None, [0.0, 0.0, 0.0], true);
+            c.relative = true;
+            c.lowpass = lowpass;
+            m.channels.insert(1, c);
+            let mut data = vec![0.0f32; 24_000];
+            mix(&mut m, &mut data, 2, 48_000);
+            // Skip the first quarter (the filter settling, the limiter).
+            let tail = &data[data.len() / 4..];
+            (tail.iter().map(|s| s * s).sum::<f32>() / tail.len() as f32).sqrt()
+        };
+        let (open_hi, muffled_hi) = (rms(8_000.0, 0.0), rms(8_000.0, 1.0));
+        let (open_lo, muffled_lo) = (rms(200.0, 0.0), rms(200.0, 1.0));
+        assert!(muffled_hi < open_hi * 0.2, "{muffled_hi} vs {open_hi}");
+        assert!(muffled_lo > open_lo * 0.6, "{muffled_lo} vs {open_lo}");
+    }
+
+    #[test]
+    fn reverb_leaves_a_decaying_tail_after_the_sound_ends() {
+        // A short burst sent fully to the reverb: energy must remain
+        // after the burst, and decay away over the next second.
+        let mut m = Mixer { reverb_wet: 0.8, reverb_decay: 1.5, ..Mixer::default() };
+        let mut samples = vec![0.0f32; 48_000];
+        for s in samples.iter_mut().take(240) {
+            *s = 0.8;
+        }
+        let mut c = channel(samples, None, [0.0, 0.0, 0.0], false);
+        c.relative = true;
+        c.reverb_send = 1.0;
+        m.channels.insert(1, c);
+        let mut data = vec![0.0f32; 96_000];
+        mix(&mut m, &mut data, 2, 48_000);
+        let energy = |range: std::ops::Range<usize>| {
+            data[range].iter().map(|s| s * s).sum::<f32>()
+        };
+        // Frames (stereo pairs) 1_000..6_000: the tail right after the burst.
+        let early = energy(2_000..12_000);
+        // Frames 30_000..35_000: half a second later, much quieter.
+        let late = energy(60_000..70_000);
+        assert!(early > 0.01, "no reverb tail: {early}");
+        assert!(late < early * 0.5, "tail does not decay: {late} vs {early}");
+        // And with no environment set, the same setup stays dry.
+        let mut m2 = Mixer::default();
+        let mut c2 = channel(vec![0.8; 240], None, [0.0, 0.0, 0.0], false);
+        c2.relative = true;
+        c2.reverb_send = 1.0;
+        m2.channels.insert(1, c2);
+        let mut data2 = vec![0.0f32; 24_000];
+        mix(&mut m2, &mut data2, 2, 48_000);
+        assert!(data2[2_000..].iter().all(|s| *s == 0.0));
     }
 
     #[test]

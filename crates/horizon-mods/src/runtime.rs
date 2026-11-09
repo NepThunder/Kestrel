@@ -75,6 +75,22 @@ pub use ui_bindings::horizon::mods::ui::{
     ButtonWidget, ItemWidget, ListWidget, Screen as UiScreen, TextWidget, Widget as UiWidget,
 };
 use ui_bindings::{UiHost, horizon::mods::ui};
+/// Capability `audio`'s world beyond `horizon-mod` (API 15): a second
+/// world, so mods built before it (no `audio-events` export) still
+/// instantiate as `horizon-mod` and simply never hear sounds.
+mod audio_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "audio-host",
+        additional_derives: [PartialEq],
+    });
+}
+use audio_bindings::{AudioHost, horizon::mods::audio};
+/// What the game asks a sound mod (WIT `interface audio-events`).
+pub use audio_bindings::exports::horizon::mods::audio_events::{
+    SoundAdjustment as ModSoundAdjustment, SoundPosition as ModSoundPosition,
+    SoundQuery as ModSoundQuery,
+};
 /// Capability `render`'s imports (docs/mods.md): the game draws the shapes.
 mod render_bindings {
     wasmtime::component::bindgen!({
@@ -120,6 +136,8 @@ const FUEL_INIT: u64 = 2_000_000_000;
 const FUEL_TICK: u64 = 50_000_000;
 const FUEL_FRAME: u64 = 10_000_000;
 const FUEL_EVENT: u64 = 100_000_000;
+/// A sound call (API 15): sounds are frequent and the math is small.
+const FUEL_SOUND: u64 = 5_000_000;
 /// Blocks a mod may set per `world.set-blocks` call.
 pub const BLOCKS_PER_CALL: usize = 4096;
 /// Chat lines a mod may show per call, HUD lines and their length.
@@ -418,6 +436,9 @@ struct Running {
     /// The mod's `ui-events` export; none for a mod built before `ui`, or a
     /// server mod.
     ui: Option<UiHost>,
+    /// The mod's `audio-events` export (API 15); none for a mod built
+    /// before it, or a server mod.
+    audio: Option<AudioHost>,
     hooks: Hooks,
     /// It imports `game.raycast`.
     raycasts: bool,
@@ -535,6 +556,9 @@ struct State {
     fog: Option<bool>,
     /// Capability `render`'s camera override, when the mod sets one.
     camera: Option<ModCameraOverride>,
+    /// Capability `audio`'s shared reverb character (wet gain, decay
+    /// seconds), when the mod sets one (API 15).
+    sound_env: Option<(f32, f32)>,
     /// How many times this mod called `set-camera`: the game re-reads
     /// the look whenever the winning mod's count moves, so a mod
     /// calling `set-camera` every tick with fixed angles keeps the
@@ -689,6 +713,8 @@ impl Mods {
             // it; a second definition stops every mod from starting.
             UiHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
+            AudioHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
             RenderHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             RecipesHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
@@ -768,6 +794,7 @@ impl Mods {
             gamma: None,
             fog: None,
             camera: None,
+            sound_env: None,
             camera_seq: 0,
             aggregate_camera: None,
             aggregate_is_mine: false,
@@ -790,23 +817,25 @@ impl Mods {
         let instance = linker
             .instantiate(&mut store, &component)
             .map_err(|e| reason(&e))?;
-        let (mut hooks, ui) = if server {
+        let (mut hooks, ui, audio) = if server {
             let exports = HorizonServerMod::new(&mut store, &instance).map_err(|e| reason(&e))?;
             let r = exports
                 .horizon_mods_server_events()
                 .call_init(&mut store)
                 .map_err(|e| reason(&e))??;
-            (Hooks::Server(exports, r), None)
+            (Hooks::Server(exports, r), None, None)
         } else {
             let exports = HorizonMod::new(&mut store, &instance).map_err(|e| reason(&e))?;
             // `ui-events` is a mod built since `ui`'s; older mods have no export
             // and stay callable through `events` alone.
             let ui = UiHost::new(&mut store, &instance).ok();
+            // Same for `audio-events` (API 15): no export, no sounds.
+            let audio = AudioHost::new(&mut store, &instance).ok();
             let r = exports
                 .horizon_mods_events()
                 .call_init(&mut store)
                 .map_err(|e| reason(&e))??;
-            (Hooks::Client(exports, r), ui)
+            (Hooks::Client(exports, r), ui, audio)
         };
         let free = |c: &str| {
             let free = !reserved(c) && !taken.iter().any(|t| t == c);
@@ -836,6 +865,7 @@ impl Mods {
         Ok(Some(Running {
             store,
             ui,
+            audio,
             hooks,
             raycasts: functions.iter().any(|f| f == "game.raycast"),
             reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
@@ -1395,6 +1425,42 @@ impl Mods {
             data.camera.map(|camera| (camera, data.camera_seq))
         })
     }
+    /// The first running mod that hears sounds (capability `audio`,
+    /// API 15): the only one ever asked, as with the camera.
+    fn sound_winner(&self) -> Option<usize> {
+        self.entries.iter().position(|e| {
+            e.run
+                .as_ref()
+                .is_some_and(|run| run.audio.is_some())
+        })
+    }
+
+    /// Ask the sound mod about one world sound. No sound mod, a trap
+    /// or an out-of-fuel call all mean no change, and a failed call
+    /// never disables the mod.
+    pub fn adjust_sound(&mut self, query: &ModSoundQuery) -> ModSoundAdjustment {
+        const NO_CHANGE: ModSoundAdjustment =
+            ModSoundAdjustment { gain: 1.0, lowpass: 0.0, reverb: 0.0 };
+        let Some(i) = self.sound_winner() else {
+            return NO_CHANGE;
+        };
+        let query = query.clone();
+        self.call(i, FUEL_SOUND, |run| {
+            run.audio
+                .as_ref()
+                .expect("the winner has the export")
+                .horizon_mods_audio_events()
+                .call_sound(&mut run.store, &query)
+        })
+        .unwrap_or(NO_CHANGE)
+    }
+
+    /// The reverb character the sound mod set, if it set one.
+    pub fn sound_environment(&self) -> Option<(f32, f32)> {
+        let run = self.entries.get(self.sound_winner()?)?.run.as_ref()?;
+        run.store.data().sound_env
+    }
+
     /// The first running mod driving a camera, if any.
     fn camera_winner(&self) -> Option<usize> {
         self.entries.iter().position(|e| {
@@ -1670,6 +1736,15 @@ fn clip_widgets(widgets: Vec<UiWidget>) -> Vec<UiWidget> {
             }
         })
         .collect()
+}
+
+impl audio::Host for State {
+    fn set_environment(&mut self, wet: f32, decay: f32) {
+        self.sound_env = Some((wet.clamp(0.0, 1.0), decay.clamp(0.1, 10.0)));
+    }
+    fn clear_environment(&mut self) {
+        self.sound_env = None;
+    }
 }
 
 impl mod_log::Host for State {

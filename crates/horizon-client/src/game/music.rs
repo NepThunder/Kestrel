@@ -125,6 +125,8 @@ impl Game<'_> {
     /// `pauseAllExcept(MUSIC, UI)` when the game pauses and `resume` when it
     /// carries on.
     pub(super) fn tick_sound_engine(&mut self) {
+        // The sound hook (API 15) points at the current `Mods`.
+        self.install_sound_hook();
         if self.pause != self.sound_paused {
             if self.pause {
                 self.audio.pause();

@@ -742,6 +742,14 @@ pub trait Backend {
     fn set_relative(&mut self, channel: ChannelId, relative: bool);
     /// Attach the sound's buffer or stream (when loaded) and play it.
     fn start(&mut self, channel: ChannelId, sound: &Sound, looping: bool);
+    /// A mod's muffle for this channel: 0 is open, 1 is fully muffled.
+    /// Backends without filtering ignore it.
+    fn set_lowpass(&mut self, _channel: ChannelId, _amount: f32) {}
+    /// A mod's reverb send for this channel: 0 is dry, 1 is full send.
+    fn set_reverb_send(&mut self, _channel: ChannelId, _amount: f32) {}
+    /// The shared reverb character a mod set: wet gain and decay in
+    /// seconds. Backends without reverb ignore it.
+    fn set_environment(&mut self, _wet: f32, _decay: f32) {}
     fn stop(&mut self, channel: ChannelId);
     fn pause(&mut self, channel: ChannelId);
     fn unpause(&mut self, channel: ChannelId);
@@ -758,6 +766,50 @@ pub struct Notification {
     pub looping: bool,
     pub range: f32,
 }
+/// A world sound about to play, as a sound hook sees it (API 15).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoundQuery {
+    /// The registry sound event id (for example `block.stone.break`).
+    pub event: String,
+    /// The sound's category (a `source` index; 1 is music).
+    pub category: usize,
+    /// The world position it plays from.
+    pub position: [f64; 3],
+    /// It loops (ambience, minecarts) rather than playing once.
+    pub looping: bool,
+    /// The instance's own volume, before distance falloff.
+    pub volume: f32,
+    /// The instance's own pitch multiplier.
+    pub pitch: f32,
+}
+
+/// What a sound hook returns for one sound: multipliers and sends
+/// the engine applies on top of its own volume. The default is no
+/// change. The hook can only ever quieten a sound, never boost it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SoundAdjustment {
+    /// Volume multiplier, clamped to 0.0..=1.0 by the engine.
+    pub gain: f32,
+    /// Muffle amount 0.0..=1.0 (a lowpass on the channel).
+    pub lowpass: f32,
+    /// Reverb send 0.0..=1.0.
+    pub reverb: f32,
+}
+
+impl Default for SoundAdjustment {
+    fn default() -> Self {
+        SoundAdjustment { gain: 1.0, lowpass: 0.0, reverb: 0.0 }
+    }
+}
+
+/// Installed by the client to let mods adjust world sounds (API 15).
+/// The engine calls this on the game thread when a non-relative,
+/// non-music sound starts, and again every 10 ticks while a ticking
+/// sound plays. Implementations must be fast and never block.
+pub trait SoundHook {
+    fn adjust(&mut self, query: &SoundQuery) -> SoundAdjustment;
+}
+
 /// `ChannelAccess.ChannelHandle`.
 #[derive(Clone, Copy, Debug)]
 struct Handle {
@@ -793,11 +845,20 @@ pub struct SoundEngine {
     /// A `SoundEventListener` is registered.
     pub listening: bool,
     pub notifications: Vec<Notification>,
+    /// The installed sound hook (API 15), if the client set one.
+    hook: Option<Box<dyn SoundHook>>,
+    /// The last hook adjustment per live instance, for ticking sounds.
+    adjustments: HashMap<InstanceId, SoundAdjustment>,
 }
 fn handle_channel(h: &Handle) -> Option<ChannelId> {
     h.channel
 }
 impl SoundEngine {
+    /// Install the sound hook (API 15). One hook at a time.
+    pub fn set_hook(&mut self, hook: Box<dyn SoundHook>) {
+        self.hook = Some(hook);
+    }
+
     pub fn new(registry: SoundRegistry) -> Self {
         Self {
             registry,
@@ -820,6 +881,8 @@ impl SoundEngine {
             source_volumes: [1.0; 11],
             listening: false,
             notifications: Vec::new(),
+            hook: None,
+            adjustments: HashMap::new(),
         }
     }
     /// Hand an instance to the engine. A retained instance stays until
@@ -848,6 +911,7 @@ impl SoundEngine {
     fn collect(&mut self, id: InstanceId) {
         if !self.referenced(id) {
             self.instances.remove(&id);
+            self.adjustments.remove(&id);
         }
     }
     /// Table sizes, for soak tests watching what the engine holds.
@@ -1082,13 +1146,40 @@ impl SoundEngine {
         }
         let instance = self.instances.get_mut(&id).expect("present");
         let instance_volume = instance.get_volume();
+        let instance_pitch = instance.get_pitch();
         let attenuation_distance = sound.attenuation_distance(instance_volume);
         if self.listening {
             self.notify(id, subtitle, attenuation_distance);
         }
+        // API 15: an installed sound hook may quieten, muffle and
+        // send a world sound to the shared reverb. Music and relative
+        // (UI) sounds are never offered to it.
+        let mut adjustment = SoundAdjustment::default();
+        if self.hook.is_some() {
+            let hook_query = {
+                let i = &self.instances[&id];
+                (!i.relative && i.source != MUSIC).then(|| SoundQuery {
+                    event: i.identifier.clone(),
+                    category: i.source,
+                    position: i.position,
+                    looping: i.looping,
+                    volume: instance_volume,
+                    pitch: instance_pitch,
+                })
+            };
+            if let Some(query) = hook_query {
+                let raw = self.hook.as_mut().expect("checked").adjust(&query);
+                adjustment = SoundAdjustment {
+                    gain: raw.gain.clamp(0.0, 1.0),
+                    lowpass: raw.lowpass.clamp(0.0, 1.0),
+                    reverb: raw.reverb.clamp(0.0, 1.0),
+                };
+                self.adjustments.insert(id, adjustment);
+            }
+        }
         let instance = &self.instances[&id];
         let source = instance.source;
-        let volume = self.calculate_volume(instance_volume, source);
+        let volume = self.calculate_volume(instance_volume, source) * adjustment.gain;
         let mut silently = false;
         if volume == 0.0 {
             if !instance.can_start_silent && source != MUSIC {
@@ -1134,6 +1225,8 @@ impl SoundEngine {
             (instance.attenuation, instance.relative, instance.tickable());
         backend.set_pitch(channel, pitch);
         backend.set_volume(channel, volume);
+        backend.set_lowpass(channel, adjustment.lowpass);
+        backend.set_reverb_send(channel, adjustment.reverb);
         backend.set_attenuation(
             channel,
             (attenuation == Attenuation::Linear).then_some(attenuation_distance),
@@ -1211,9 +1304,37 @@ impl SoundEngine {
                 continue;
             }
             let (v, source) = (instance.get_volume(), instance.source);
+            let (identifier, relative, looping, raw_pitch) = (
+                instance.identifier.clone(),
+                instance.relative,
+                instance.looping,
+                instance.get_pitch(),
+            );
             let pitch = Self::calculate_pitch(instance.get_pitch());
             let position = instance.position;
-            let volume = self.calculate_volume(v, source);
+            // API 15: a ticking sound re-asks the hook every 10 ticks
+            // so its adjustment tracks the listener and the world.
+            let mut adjustment =
+                self.adjustments.get(&id).copied().unwrap_or_default();
+            if self.hook.is_some() && !relative && source != MUSIC && self.tick_count % 10 == 0
+            {
+                let query = SoundQuery {
+                    event: identifier,
+                    category: source,
+                    position,
+                    looping,
+                    volume: v,
+                    pitch: raw_pitch,
+                };
+                let raw = self.hook.as_mut().expect("checked").adjust(&query);
+                adjustment = SoundAdjustment {
+                    gain: raw.gain.clamp(0.0, 1.0),
+                    lowpass: raw.lowpass.clamp(0.0, 1.0),
+                    reverb: raw.reverb.clamp(0.0, 1.0),
+                };
+                self.adjustments.insert(id, adjustment);
+            }
+            let volume = self.calculate_volume(v, source) * adjustment.gain;
             let Some(handle) = self.channel_of(id) else {
                 continue;
             };
@@ -1221,6 +1342,8 @@ impl SoundEngine {
                 backend.set_volume(c, volume);
                 backend.set_pitch(c, pitch);
                 backend.set_position(c, position);
+                backend.set_lowpass(c, adjustment.lowpass);
+                backend.set_reverb_send(c, adjustment.reverb);
             }
             let instance = self.instances.get_mut(&id).expect("present");
             if instance.looping

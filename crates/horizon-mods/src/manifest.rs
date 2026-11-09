@@ -111,9 +111,13 @@ pub enum Capability {
     /// The living mobs around the player and the entity under the
     /// crosshair, read-only (interface `entity`).
     Entity,
+    /// World sounds as they play, adjusted before they are heard,
+    /// and the shared reverb's character (interface `audio`,
+    /// calls `audio-events`, API 15).
+    Audio,
 }
 impl Capability {
-    pub const ALL: [Capability; 14] = [
+    pub const ALL: [Capability; 15] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -128,6 +132,7 @@ impl Capability {
         Capability::Recipes,
         Capability::Inventory,
         Capability::Entity,
+        Capability::Audio,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -153,6 +158,7 @@ impl Capability {
             Capability::Recipes => "recipes",
             Capability::Inventory => "inventory",
             Capability::Entity => "entity",
+            Capability::Audio => "audio",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -166,6 +172,7 @@ impl Capability {
                 | Capability::Recipes
                 | Capability::Inventory
                 | Capability::Entity
+                | Capability::Audio
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -195,6 +202,7 @@ impl Capability {
             }
             Capability::Inventory => "see your inventory and open containers",
             Capability::Entity => "see the mobs around you and the entity you look at",
+            Capability::Audio => "change how sounds play around you",
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -238,6 +246,7 @@ impl fmt::Display for Capability {
             Capability::Recipes => "recipes",
             Capability::Inventory => "inventory",
             Capability::Entity => "entity",
+            Capability::Audio => "audio",
         };
         f.write_str(name)
     }

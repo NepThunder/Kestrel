@@ -19,7 +19,8 @@ id = "test_guest"
 name = "Test Guest"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["chat", "storage"]
+capabilities = ["chat", "storage", "audio"]
+experimental = ["audio"]
 "#;
 const UI_MANIFEST: &str = r#"
 id = "test_ui_guest"
@@ -159,6 +160,29 @@ fn predator_missile_runs_commands() {
     let blast = commands(&mut mods);
     assert_eq!(blast.len(), 4);
     assert!(blast.iter().all(|l| l.contains("summon tnt")));
+}
+
+/// Capability `audio` (API 15): the game asks the first mod with an
+/// `audio-events` export about a world sound, and the mod's answer
+/// and its reverb character come back.
+#[test]
+fn sound_hook_adjusts_and_sets_the_environment() {
+    let mut mods = load("horizon_mods_test_guest.kmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert_eq!(mods.sound_environment(), None);
+    let query = horizon_mods::ModSoundQuery {
+        event: "block.stone.break".into(),
+        category: 4,
+        position: horizon_mods::ModSoundPosition { x: 1.0, y: 64.0, z: 2.0 },
+        looping: false,
+        volume: 1.0,
+        pitch: 1.0,
+    };
+    let answer = mods.adjust_sound(&query);
+    assert_eq!(answer.gain, 0.5);
+    assert_eq!(answer.lowpass, 0.25);
+    assert_eq!(answer.reverb, 0.75);
+    assert_eq!(mods.sound_environment(), Some((0.3, 2.5)));
 }
 
 #[test]
