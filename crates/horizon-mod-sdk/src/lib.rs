@@ -27,7 +27,9 @@
 //! read-only, the living mobs around the player and the entity under the
 //! crosshair; `render` — its HUD shapes and world lines and boxes
 //! (depth-tested, API level 11), and the first-person hand's pose
-//! through [`hand`] (API level 16); a server mod `storage` and `players`).
+//! through [`hand`] (API level 16; the swing's own terms — which
+//! animation plays and how much of the vanilla swing applies —
+//! are API level 17); a server mod `storage` and `players`).
 //! Server mods: [`server`].
 //!
 //! Widgets (capability `ui`): a mod shows a screen it owns with
@@ -52,7 +54,7 @@ pub use horizon::mods::{
     audio, browser, chat, command, entity, game, hand, hud, input, inventory, log, recipes,
     render, storage, ui, world,
 };
-pub use horizon::mods::hand::{HandState, HandTransform, SwingKind};
+pub use horizon::mods::hand::{HandState, HandTransform, SwingAnim, SwingKind};
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for
 /// are called; the others may stay as their defaults.

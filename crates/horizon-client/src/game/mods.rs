@@ -29,8 +29,8 @@ use {
         ui,
     },
     horizon_mods::{
-        Clock, ModHandState, ModKey, ModSwingKind, Mods, Output, Player, Runs, ServerPlayer,
-        Snapshot, SnapshotCamera, Status, UiScreen, UiWidget, WorldView,
+        Clock, ModHandState, ModKey, ModSwingAnim, ModSwingKind, Mods, Output, Player, Runs,
+        ServerPlayer, Snapshot, SnapshotCamera, Status, UiScreen, UiWidget, WorldView,
     },
     std::time::Instant,
     winit::{event::MouseButton, keyboard::KeyCode},
@@ -365,6 +365,9 @@ impl Game<'_> {
         _two_handed_map: bool,
     ) -> glam::Mat4 {
         to_world
+    }
+    pub(super) fn mod_swing_scale(&self) -> f32 {
+        1.0
     }
     pub(super) fn mod_world_lines(&self, _lines: &mut Vec<horizon_client::gizmos::Line>) {}
     pub(super) fn mod_command(&mut self, _command: &str) -> bool {
@@ -984,6 +987,16 @@ impl Game<'_> {
             return;
         };
         self.mods.mods.set_hand_state(state);
+        // API 17: the engine's own swing animation, pushed beside
+        // the state: `SwingAnimation.kind` 1 is the plain whack, 2
+        // a spear's stab; anything else, and no swing at all, is
+        // none. (The clear path above resets it with the state.)
+        let anim = match self.swing.current.map(|c| c.animation.kind) {
+            Some(1) => ModSwingAnim::Whack,
+            Some(2) => ModSwingAnim::Stab,
+            _ => ModSwingAnim::None,
+        };
+        self.mods.mods.set_swing_anim(anim);
     }
     /// [`Game::push_hand_state`]'s state, or None while the hand is
     /// not posed this frame (`hand_geometry`'s own conditions).
@@ -1065,6 +1078,13 @@ impl Game<'_> {
             * horizon_client::first_person::hand_offset_matrix(
                 offset.x, offset.y, offset.z, offset.pitch, offset.yaw, offset.roll,
             )
+    }
+    /// API 17: how much of the vanilla swing pose the mods leave
+    /// standing, read once per `hand_geometry`: the latest
+    /// `hand.set-swing-scale` across the running mods, 1.0 (vanilla
+    /// in full) when none set one.
+    pub(super) fn mod_swing_scale(&self) -> f32 {
+        self.mods.mods.swing_scale()
     }
     /// `/command` typed in chat: true when a mod owns it.
     pub(super) fn mod_command(&mut self, command: &str) -> bool {

@@ -13417,6 +13417,11 @@ impl Game<'_> {
             .is_some_and(|s| maps::map_id(s).is_some())
             && off_hand_empty;
         let to_world = self.mod_hand_pose(to_world, two_handed_map);
+        // API 17: how much of the vanilla swing pose the mods leave
+        // standing, read once for the whole pose pass and threaded
+        // into every pose the swing drives — unlike the offset
+        // above, the two-handed map's swing terms take it too.
+        let swing_scale = self.mod_swing_scale();
         for (i, (hand, item)) in Hand::BOTH.into_iter().zip(items).enumerate() {
             if !shown[i] {
                 continue;
@@ -13453,7 +13458,12 @@ impl Game<'_> {
                 }
                 // renderPlayerArm
                 let m = to_world
-                    * horizon_client::first_person::player_arm_pose(left, inverse_height, attack);
+                    * horizon_client::first_person::player_arm_pose(
+                        left,
+                        inverse_height,
+                        attack,
+                        swing_scale,
+                    );
                 self.first_person_arm(left, m, packed, &mut out);
                 continue;
             };
@@ -13463,8 +13473,14 @@ impl Game<'_> {
                 // renderOneHandedMap and renderTwoHandedMap: the arms under
                 // the map, unless the player is invisible.
                 if !self.own_invisible() {
-                    for (arm, pose) in map_arm_poses(hold, left, self.pitch, inverse_height, attack)
-                    {
+                    for (arm, pose) in map_arm_poses(
+                        hold,
+                        left,
+                        self.pitch,
+                        inverse_height,
+                        attack,
+                        swing_scale,
+                    ) {
                         self.first_person_arm(arm, to_world * pose, packed, &mut out);
                     }
                 }
@@ -13476,9 +13492,11 @@ impl Game<'_> {
                         id,
                         packed,
                         &mut out,
+                        swing_scale,
                     ),
                     MapHold::OneHanded => self.held_map(
-                        to_world * one_handed_map_pose(left, inverse_height, attack),
+                        to_world
+                            * one_handed_map_pose(left, inverse_height, attack, swing_scale),
                         id,
                         packed,
                         &mut out,
@@ -13559,7 +13577,13 @@ impl Game<'_> {
                 _ => ItemPose::Swing,
             };
             let m = to_world
-                * horizon_client::first_person::item_pose(left, inverse_height, attack, pose);
+                * horizon_client::first_person::item_pose(
+                    left,
+                    inverse_height,
+                    attack,
+                    pose,
+                    swing_scale,
+                );
             // Seeded by the player id plus the context ordinal.
             let (context, seed) = if left {
                 (

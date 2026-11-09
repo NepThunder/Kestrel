@@ -3,9 +3,11 @@
 //! capability `storage` on a fixed key, `/save_key <key> <text>` exercises
 //! it on an arbitrary key (for the quota and key-count limits); `/handstate`,
 //! `/handset` and `/handclear` exercise capability `render`'s hand (API 16);
-//! `tick` and `frame` do nothing, to measure the cost of a call.
+//! `/swinganim` and `/swingscale` its swing terms (API 17); `tick` and
+//! `frame` do nothing, to measure the cost of a call.
 use horizon_mod_sdk::{
-    HandTransform, Mod, Registration, SoundAdjustment, SoundQuery, audio, chat, hand, storage,
+    HandTransform, Mod, Registration, SoundAdjustment, SoundQuery, SwingAnim, audio, chat, hand,
+    storage,
 };
 
 struct Guest {
@@ -25,6 +27,8 @@ impl Mod for Guest {
             "handstate",
             "handset",
             "handclear",
+            "swinganim",
+            "swingscale",
         ]
         .into_iter()
         .fold(Registration::new(), Registration::command)
@@ -107,6 +111,19 @@ impl Mod for Guest {
             "handclear" => {
                 hand::clear_offset();
                 Ok(Some("cleared".into()))
+            }
+            "swinganim" => {
+                let anim = match hand::get_swing_anim() {
+                    SwingAnim::None => "none",
+                    SwingAnim::Whack => "whack",
+                    SwingAnim::Stab => "stab",
+                };
+                Ok(Some(format!("anim {anim}")))
+            }
+            "swingscale" => {
+                let scale: f32 = args.parse().map_err(|_| "Usage: /swingscale <f32>")?;
+                hand::set_swing_scale(scale);
+                Ok(Some("scaled".into()))
             }
             _ => {
                 chat::show(&format!("hello {args} after {} ticks", self.ticks));

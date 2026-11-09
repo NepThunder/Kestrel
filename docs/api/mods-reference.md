@@ -562,7 +562,7 @@ Capability `audio` (API 15): the shared reverb's character. The mod that answers
 
 Access: not granted by any capability.
 
-Capability `render` (API 16): the first-person hand's pose. The game hands the mod the hand's state each frame; the mod hands back one transform the game multiplies into the pose of both the arm and the held item, after the vanilla pose. While a two-handed map is held the game ignores offsets: that pose is its own.
+Capability `render` (API 16): the first-person hand's pose. The game hands the mod the hand's state each frame; the mod hands back one transform the game multiplies into the pose of both the arm and the held item, after the vanilla pose. While a two-handed map is held the game ignores offsets: that pose is its own. API 17 adds the swing's own terms: a mod can read which swing animation is playing and scale how much of the vanilla swing pose applies, down to none at all, so its own offset becomes the whole swing animation.
 
 ### enum `swing-kind`
 
@@ -573,6 +573,16 @@ What a swing is, as far as the game can honestly tell: the swing state records a
 | `attack` |  |
 | `use` |  |
 | `other` |  |
+
+### enum `swing-anim`
+
+The engine's own swing animation (API 17): which pose the game's swing state is playing, as the engine names it — a `whack` for the plain swing, a `stab` for a spear's jab, and `none` while no swing runs. This is not the `swing-kind` in the hand state: that one says what the player is doing with the swing (attacking, using an item) and is inferred, while this is the animation itself, exactly as the pose code plays it.
+
+| Case | |
+| --- | --- |
+| `none` |  |
+| `whack` |  |
+| `stab` |  |
 
 ### record `hand-state`
 
@@ -612,6 +622,8 @@ A shift of the hand's pose, in view space: the game applies the translation, the
 | `get-state` | `func() -> hand-state` | The hand's state, as of the game's last push: the game pushes once per rendered frame, before the frame hooks run. Before the first push (the title screen, the first frames) every field is zero, false or none. |
 | `set-offset` | `func(offset: hand-transform)` | Sets this mod's hand offset, until its next call or `clear-offset`. There is one hand: the latest call across the running mods wins. The game clamps what it applies: translation to ±1 block per axis, rotation to ±60 degrees per axis, and a non-finite field reads as 0. |
 | `clear-offset` | `func()` | Takes this mod's hand offset back. Another mod's offset is not this call's to clear. |
+| `get-swing-anim` | `func() -> swing-anim` | The swing animation playing now (API 17), as of the game's last push, read the way `get-state` reads the hand state. |
+| `set-swing-scale` | `func(scale: f32)` | How much of the vanilla swing pose applies (API 17): 1.0 is vanilla in full, 0.0 is none of it — the mod's own offset, driven by the swing's progress, is the whole animation — and up to 2.0 exaggerates the vanilla swing. The base equip pose is never scaled, only the swing's own terms, so 0.0 leaves the hand exactly at its rest pose. Poses that are not swings (using, charging, eating, ...) are never scaled. There is one swing: the latest call across the running mods wins, as with the offset, and a stopped mod's value is dropped with it. The game clamps to 0.0..=2.0 and a non-finite value reads as 1.0. Writing 1.0 hands the swing back to vanilla; there is no separate clear. |
 
 ## `audio-events`
 

@@ -50,8 +50,17 @@ pub enum ItemPose {
 
 /// `submitArmWithItem`: the pose of an item in the hand on the `left` or
 /// right arm, before the model transform. Only the main hand's charged
-/// crossbow is turned aside.
-pub fn item_pose(left: bool, inverse_height: f32, attack: f32, pose: ItemPose) -> glam::Mat4 {
+/// crossbow is turned aside. `swing_scale` (SDK API 17) weighs the
+/// swing's own terms in the swing poses — the whack below and the
+/// spear's stab: 1.0 is vanilla, 0.0 is the base equip pose with no
+/// swing in it; poses that are not swings never read it.
+pub fn item_pose(
+    left: bool,
+    inverse_height: f32,
+    attack: f32,
+    pose: ItemPose,
+    swing_scale: f32,
+) -> glam::Mat4 {
     use glam::{Mat4, Vec3};
     use horizon_core::geometry::trig::Mth;
     let invert = if left { -1.0 } else { 1.0 };
@@ -98,7 +107,7 @@ pub fn item_pose(left: bool, inverse_height: f32, attack: f32, pose: ItemPose) -
             * crate::spear::first_person_use(&kinetic, ticks_since_hit, time_held, !left);
     }
     if matches!(pose, ItemPose::Stab) {
-        return m * crate::spear::first_person_attack(attack, !left);
+        return m * crate::spear::first_person_attack(attack, !left, swing_scale);
     }
     if matches!(pose, ItemPose::SpinAttack) {
         return m
@@ -148,17 +157,20 @@ pub fn item_pose(left: bool, inverse_height: f32, attack: f32, pose: ItemPose) -
         m *= Mat4::from_scale(Vec3::new(1.0, 1.0, 1.0 + power * 0.2));
         m *= Mat4::from_rotation_y((invert * -45.0f32).to_radians());
     } else {
+        // The whack: every term is the swing's own but the two
+        // constant turns (45 and -45 degrees), so `swing_scale`
+        // weighs them all and leaves the constants standing.
         let root = attack.sqrt();
         m *= Mat4::from_translation(Vec3::new(
-            invert * -0.4 * (root * pi).msin(),
-            0.2 * (root * std::f32::consts::TAU).msin(),
-            -0.2 * (attack * pi).msin(),
+            invert * -0.4 * (root * pi).msin() * swing_scale,
+            0.2 * (root * std::f32::consts::TAU).msin() * swing_scale,
+            -0.2 * (attack * pi).msin() * swing_scale,
         ));
         m *= Mat4::from_rotation_y(
-            (invert * (45.0 - (attack * attack * pi).msin() * 20.0)).to_radians(),
+            (invert * (45.0 - (attack * attack * pi).msin() * 20.0 * swing_scale)).to_radians(),
         );
-        m *= Mat4::from_rotation_z((invert * (root * pi).msin() * -20.0).to_radians());
-        m *= Mat4::from_rotation_x(((root * pi).msin() * -80.0).to_radians());
+        m *= Mat4::from_rotation_z((invert * (root * pi).msin() * -20.0 * swing_scale).to_radians());
+        m *= Mat4::from_rotation_x(((root * pi).msin() * -80.0 * swing_scale).to_radians());
         m *= Mat4::from_rotation_y((invert * -45.0f32).to_radians());
         if matches!(pose, ItemPose::Crossbow { charged: true, .. }) && attack < 0.001 {
             m *= Mat4::from_translation(Vec3::new(invert * -0.641864, 0.0, 0.0));
@@ -232,18 +244,24 @@ fn brush_transform(left: bool, remaining: f32, partial: f32) -> glam::Mat4 {
 }
 
 /// `renderPlayerArm` up to `renderPlayerHand`: the pose of the bare `left`
-/// or right arm.
-pub fn player_arm_pose(left: bool, inverse_height: f32, attack: f32) -> glam::Mat4 {
+/// or right arm. `swing_scale` (SDK API 17) weighs the swing's own
+/// terms, as in [`item_pose`].
+pub fn player_arm_pose(
+    left: bool,
+    inverse_height: f32,
+    attack: f32,
+    swing_scale: f32,
+) -> glam::Mat4 {
     use glam::{Mat4, Vec3};
     use horizon_core::geometry::trig::Mth;
     let f = if left { -1.0 } else { 1.0 };
     let pi = std::f32::consts::PI;
     let root = attack.sqrt();
-    let x = -0.3 * (root * pi).msin();
-    let y = 0.4 * (root * std::f32::consts::TAU).msin();
-    let z = -0.4 * (attack * pi).msin();
-    let z_rot = (attack * attack * pi).msin();
-    let y_rot = (root * pi).msin();
+    let x = -0.3 * (root * pi).msin() * swing_scale;
+    let y = 0.4 * (root * std::f32::consts::TAU).msin() * swing_scale;
+    let z = -0.4 * (attack * pi).msin() * swing_scale;
+    let z_rot = (attack * attack * pi).msin() * swing_scale;
+    let y_rot = (root * pi).msin() * swing_scale;
     let deg = |d: f32| d.to_radians();
     Mat4::from_translation(Vec3::new(
         f * (x + 0.640_000_05),
@@ -261,12 +279,17 @@ pub fn player_arm_pose(left: bool, inverse_height: f32, attack: f32) -> glam::Ma
 
 /// `renderTwoHandedMap` up to its arms: the swing, the tilt from the view
 /// pitch (`calculateMapTilt`) and the turn towards the player.
-pub fn two_handed_map_base(pitch: f32, inverse_height: f32, attack: f32) -> glam::Mat4 {
+pub fn two_handed_map_base(
+    pitch: f32,
+    inverse_height: f32,
+    attack: f32,
+    swing_scale: f32,
+) -> glam::Mat4 {
     use glam::{Mat4, Vec3};
     use horizon_core::geometry::trig::Mth;
     let pi = std::f32::consts::PI;
-    let y_swing = -0.2 * (attack * pi).msin();
-    let z_swing = -0.4 * (attack.sqrt() * pi).msin();
+    let y_swing = -0.2 * (attack * pi).msin() * swing_scale;
+    let z_swing = -0.4 * (attack.sqrt() * pi).msin() * swing_scale;
     let tilt = (1.0 - pitch / 45.0 + 0.1).clamp(0.0, 1.0);
     let tilt = -(tilt * pi).mcos() * 0.5 + 0.5;
     Mat4::from_translation(Vec3::new(0.0, -y_swing / 2.0, z_swing))
@@ -288,6 +311,7 @@ pub fn map_arm_poses(
     pitch: f32,
     inverse_height: f32,
     attack: f32,
+    swing_scale: f32,
 ) -> Vec<(bool, glam::Mat4)> {
     use glam::{Mat4, Vec3};
     let deg = |d: f32| d.to_radians();
@@ -296,11 +320,11 @@ pub fn map_arm_poses(
             let f = if left { -1.0 } else { 1.0 };
             let m = Mat4::from_translation(Vec3::new(f * 0.125, -0.125, 0.0))
                 * Mat4::from_rotation_z(deg(f * 10.0))
-                * player_arm_pose(left, inverse_height, attack);
+                * player_arm_pose(left, inverse_height, attack, swing_scale);
             vec![(left, m)]
         }
         MapHold::TwoHanded => {
-            let base = two_handed_map_base(pitch, inverse_height, attack)
+            let base = two_handed_map_base(pitch, inverse_height, attack, swing_scale)
                 * Mat4::from_rotation_y(deg(90.0));
             [false, true]
                 .into_iter()
@@ -319,13 +343,18 @@ pub fn map_arm_poses(
 
 /// `renderOneHandedMap` up to `renderMap`: the pose of a map in the hand on
 /// the `left` or right arm (its arm: [`map_arm_poses`]).
-pub fn one_handed_map_pose(left: bool, inverse_height: f32, attack: f32) -> glam::Mat4 {
+pub fn one_handed_map_pose(
+    left: bool,
+    inverse_height: f32,
+    attack: f32,
+    swing_scale: f32,
+) -> glam::Mat4 {
     use glam::{Mat4, Vec3};
     use horizon_core::geometry::trig::Mth;
     let invert = if left { -1.0 } else { 1.0 };
     let pi = std::f32::consts::PI;
     let root = attack.sqrt();
-    let x_swing = (root * pi).msin();
+    let x_swing = (root * pi).msin() * swing_scale;
     Mat4::from_translation(Vec3::new(invert * 0.125, -0.125, 0.0))
         * Mat4::from_translation(Vec3::new(
             invert * 0.51,
@@ -334,8 +363,8 @@ pub fn one_handed_map_pose(left: bool, inverse_height: f32, attack: f32) -> glam
         ))
         * Mat4::from_translation(Vec3::new(
             invert * -0.5 * x_swing,
-            0.4 * (root * std::f32::consts::TAU).msin() - 0.3 * x_swing,
-            -0.3 * (attack * pi).msin(),
+            (0.4 * (root * std::f32::consts::TAU).msin() - 0.3 * (root * pi).msin()) * swing_scale,
+            -0.3 * (attack * pi).msin() * swing_scale,
         ))
         * Mat4::from_rotation_x((x_swing * -45.0).to_radians())
         * Mat4::from_rotation_y((invert * x_swing * -30.0).to_radians())
@@ -1171,7 +1200,7 @@ mod item_pose_tests {
             ),
         ];
         for (left, inverse_height, attack, want) in cases {
-            let got = one_handed_map_pose(left, inverse_height, attack).to_cols_array();
+            let got = one_handed_map_pose(left, inverse_height, attack, 1.0).to_cols_array();
             for (g, w) in got.iter().zip(want) {
                 assert!(
                     (g - w).abs() < 1e-5,
@@ -1214,7 +1243,7 @@ mod item_pose_tests {
             ]),
         ];
         for (left, inverse_height, attack, want) in one {
-            let arms = map_arm_poses(MapHold::OneHanded, left, 0.0, inverse_height, attack);
+            let arms = map_arm_poses(MapHold::OneHanded, left, 0.0, inverse_height, attack, 1.0);
             assert_eq!(arms.len(), 1, "one arm under a one-handed map");
             assert_eq!(arms[0].0, left, "the arm of the hand holding it");
             near(
@@ -1250,12 +1279,53 @@ mod item_pose_tests {
             ]),
         ];
         for (pitch, inverse_height, attack, right, left) in two {
-            let arms = map_arm_poses(MapHold::TwoHanded, false, pitch, inverse_height, attack);
+            let arms = map_arm_poses(MapHold::TwoHanded, false, pitch, inverse_height, attack, 1.0);
             assert_eq!(arms.len(), 2, "both arms under a two-handed map");
             assert_eq!((arms[0].0, arms[1].0), (false, true), "right, then left");
             near(arms[0].1, right, &format!("two right {pitch}"));
             near(arms[1].1, left, &format!("two left {pitch}"));
         }
+    }
+    #[test]
+    fn swing_scale_zero_is_the_base_pose_and_one_is_vanilla() {
+        // API 17: at 0.0 the swing's own terms vanish, so a
+        // mid-swing pose equals the no-swing pose, for the item,
+        // the bare arm and the maps alike. At 1.0 the pose is
+        // vanilla's — the pinned cases above all pass 1.0, so that
+        // half is covered there; here the scale shows as a weight,
+        // not a switch (2.0 swings further than 1.0).
+        for left in [false, true] {
+            assert_eq!(
+                item_pose(left, 0.2, 0.5, ItemPose::Swing, 0.0),
+                item_pose(left, 0.2, 0.0, ItemPose::Swing, 1.0),
+                "item {left}"
+            );
+            assert_eq!(
+                player_arm_pose(left, 0.2, 0.5, 0.0),
+                player_arm_pose(left, 0.2, 0.0, 1.0),
+                "arm {left}"
+            );
+            assert_eq!(
+                one_handed_map_pose(left, 0.2, 0.5, 0.0),
+                one_handed_map_pose(left, 0.2, 0.0, 1.0),
+                "one-handed map {left}"
+            );
+            assert_eq!(
+                map_arm_poses(MapHold::TwoHanded, left, 0.0, 0.2, 0.5, 0.0),
+                map_arm_poses(MapHold::TwoHanded, left, 0.0, 0.2, 0.0, 1.0),
+                "two-handed map arms {left}"
+            );
+            assert_ne!(
+                item_pose(left, 0.2, 0.5, ItemPose::Swing, 2.0),
+                item_pose(left, 0.2, 0.5, ItemPose::Swing, 1.0),
+                "exaggerated {left}"
+            );
+        }
+        // The stab too: no scale, no jab.
+        assert_eq!(
+            item_pose(false, 0.0, 0.2, ItemPose::Stab, 0.0),
+            item_pose(false, 0.0, 0.0, ItemPose::Stab, 1.0)
+        );
     }
     #[test]
     fn ranged_draw_uses_native_charge_curves_and_caps() {
@@ -1265,7 +1335,7 @@ mod item_pose_tests {
             (20.0, 1.2),
             (40.0, 1.2),
         ] {
-            let m = item_pose(false, 0.0, 0.0, ItemPose::Bow { ticks_used: ticks });
+            let m = item_pose(false, 0.0, 0.0, ItemPose::Bow { ticks_used: ticks }, 1.0);
             assert!((m.determinant() - stretch).abs() < 0.000001);
         }
         for duration in [25.0, 20.0, 15.0, 10.0] {
@@ -1278,6 +1348,7 @@ mod item_pose_tests {
                     charge_duration: duration,
                     charged: false,
                 },
+                1.0,
             );
             assert!((m.determinant() - 1.2).abs() < 0.000001);
         }
@@ -1299,8 +1370,8 @@ mod item_pose_tests {
                 charged: true,
             },
         ] {
-            let left = item_pose(true, 0.2, 0.0, pose).to_cols_array();
-            let right = (reflect * item_pose(false, 0.2, 0.0, pose) * reflect).to_cols_array();
+            let left = item_pose(true, 0.2, 0.0, pose, 1.0).to_cols_array();
+            let right = (reflect * item_pose(false, 0.2, 0.0, pose, 1.0) * reflect).to_cols_array();
             for (a, b) in left.into_iter().zip(right) {
                 assert!((a - b).abs() < 0.000001);
             }
@@ -1310,8 +1381,8 @@ mod item_pose_tests {
     #[test]
     fn drawing_bow_has_its_own_pose() {
         assert_ne!(
-            item_pose(false, 0.0, 0.0, ItemPose::Bow { ticks_used: 10.0 }),
-            item_pose(false, 0.0, 0.0, ItemPose::Swing)
+            item_pose(false, 0.0, 0.0, ItemPose::Bow { ticks_used: 10.0 }, 1.0),
+            item_pose(false, 0.0, 0.0, ItemPose::Swing, 1.0)
         );
     }
     #[test]
@@ -1325,9 +1396,10 @@ mod item_pose_tests {
                     ticks_used: Some(10.0),
                     charge_duration: 25.0,
                     charged: false
-                }
+                },
+                1.0
             ),
-            item_pose(false, 0.0, 0.0, ItemPose::Swing)
+            item_pose(false, 0.0, 0.0, ItemPose::Swing, 1.0)
         );
     }
     #[test]
@@ -1341,9 +1413,10 @@ mod item_pose_tests {
                     ticks_used: None,
                     charge_duration: 25.0,
                     charged: true
-                }
+                },
+                1.0
             ),
-            item_pose(false, 0.0, 0.0, ItemPose::Swing)
+            item_pose(false, 0.0, 0.0, ItemPose::Swing, 1.0)
         );
     }
 }
@@ -1353,7 +1426,7 @@ mod continuous_use_tests {
     use super::*;
     #[test]
     fn eating_and_throwing_have_use_poses_not_attack_poses() {
-        let swing = item_pose(false, 0.0, 0.3, ItemPose::Swing);
+        let swing = item_pose(false, 0.0, 0.3, ItemPose::Swing, 1.0);
         assert_ne!(
             swing,
             item_pose(
@@ -1364,14 +1437,15 @@ mod continuous_use_tests {
                     remaining: 10.0,
                     duration: 32.0,
                     partial: 0.5
-                }
+                },
+                1.0
             )
         );
         assert_ne!(
             swing,
-            item_pose(false, 0.0, 0.3, ItemPose::Trident { ticks_used: 5.0 })
+            item_pose(false, 0.0, 0.3, ItemPose::Trident { ticks_used: 5.0 }, 1.0)
         );
-        assert_ne!(swing, item_pose(false, 0.0, 0.3, ItemPose::Using));
+        assert_ne!(swing, item_pose(false, 0.0, 0.3, ItemPose::Using, 1.0));
     }
 }
 

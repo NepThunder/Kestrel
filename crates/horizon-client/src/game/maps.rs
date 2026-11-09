@@ -1738,7 +1738,9 @@ impl Game<'_> {
         }
     }
     /// `renderTwoHandedMap`: map `id` held in both hands, in view space (the
-    /// arms under it: `first_person::map_arm_poses`).
+    /// arms under it: `first_person::map_arm_poses`). `swing_scale`
+    /// (SDK API 17) weighs the swing's own terms, the extra swing
+    /// turn here included, as in `first_person`'s poses.
     pub(super) fn two_handed_map_geometry(
         &mut self,
         to_world: glam::Mat4,
@@ -1747,12 +1749,18 @@ impl Game<'_> {
         id: i32,
         light: u32,
         out: &mut Vec<Vertex>,
+        swing_scale: f32,
     ) {
         use horizon_core::geometry::trig::Mth;
         let deg = |d: f32| d.to_radians();
         let base = to_world
-            * horizon_client::first_person::two_handed_map_base(self.pitch, inverse_height, attack);
-        let swing = (attack.sqrt() * std::f32::consts::PI).msin();
+            * horizon_client::first_person::two_handed_map_base(
+                self.pitch,
+                inverse_height,
+                attack,
+                swing_scale,
+            );
+        let swing = (attack.sqrt() * std::f32::consts::PI).msin() * swing_scale;
         let m = base
             * glam::Mat4::from_rotation_x(deg(swing * 20.0))
             * glam::Mat4::from_scale(glam::Vec3::splat(2.0));

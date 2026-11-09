@@ -381,12 +381,15 @@ pub fn third_person_use_item(
 }
 
 /// `SpearAnimations.firstPersonAttack`, after `applyItemArmTransform`: the
-/// jab (a STAB swing), `attack` into the swing.
-pub fn first_person_attack(attack: f32, right: bool) -> Mat4 {
+/// jab (a STAB swing), `attack` into the swing. `swing_scale` (SDK
+/// API 17) weighs the whole jab: every term is a difference of the
+/// three eased phases, so weighing the phases themselves scales the
+/// jab and still lands on the identity at both ends of the swing.
+pub fn first_person_attack(attack: f32, right: bool, swing_scale: f32) -> Mat4 {
     let invert = if right { 1.0 } else { -1.0 };
-    let start = in_out_sine(progress(attack, 0.0, 0.05));
-    let middle = out_back(progress(attack, 0.05, 0.2));
-    let end = in_out_expo(progress(attack, 0.4, 1.0));
+    let start = in_out_sine(progress(attack, 0.0, 0.05)) * swing_scale;
+    let middle = out_back(progress(attack, 0.05, 0.2)) * swing_scale;
+    let end = in_out_expo(progress(attack, 0.4, 1.0)) * swing_scale;
     Mat4::from_translation(Vec3::new(
         invert * 0.1 * (start - middle),
         -0.075 * (start - end),
@@ -482,13 +485,15 @@ mod tests {
 
     #[test]
     fn the_jab_starts_and_ends_at_rest() {
-        assert_eq!(first_person_attack(0.0, true), Mat4::IDENTITY);
-        assert!(first_person_attack(1.0, true).abs_diff_eq(Mat4::IDENTITY, 1e-5));
+        assert_eq!(first_person_attack(0.0, true, 1.0), Mat4::IDENTITY);
+        assert!(first_person_attack(1.0, true, 1.0).abs_diff_eq(Mat4::IDENTITY, 1e-5));
         // Thrust out and turned mid-jab, mirrored in the left hand.
-        let right = first_person_attack(0.2, true);
+        let right = first_person_attack(0.2, true, 1.0);
         assert!(!right.abs_diff_eq(Mat4::IDENTITY, 1e-3));
-        let left = first_person_attack(0.2, false);
+        let left = first_person_attack(0.2, false, 1.0);
         assert!((left.w_axis.x + right.w_axis.x).abs() < 1e-6);
+        // API 17: at scale 0 the jab contributes nothing, mid-swing.
+        assert_eq!(first_person_attack(0.2, true, 0.0), Mat4::IDENTITY);
         assert_eq!(third_person_attack_item(0.0, 0.38), Mat4::IDENTITY);
         assert!(third_person_attack_item(1.0, 0.38).abs_diff_eq(Mat4::IDENTITY, 1e-5));
         // The arm draws back, thrusts forward, then returns.

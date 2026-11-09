@@ -114,10 +114,12 @@ pub use render_bindings::horizon::mods::render::{
 use render_bindings::{RenderHost, horizon::mods::render};
 use render_bindings::horizon::mods::hand;
 /// The first-person hand's state and the offset a mod sets on it
-/// (WIT `interface hand`, API 16): a `render` extension, hosted with
-/// the render world.
+/// (WIT `interface hand`, API 16), and the swing animation the game
+/// pushes with it (API 17): a `render` extension, hosted with the
+/// render world.
 pub use render_bindings::horizon::mods::hand::{
-    HandState as ModHandState, HandTransform as ModHandTransform, SwingKind as ModSwingKind,
+    HandState as ModHandState, HandTransform as ModHandTransform, SwingAnim as ModSwingAnim,
+    SwingKind as ModSwingKind,
 };
 /// Capability `recipes`'s imports (docs/mods.md): the game's recipes and items.
 mod recipes_bindings {
@@ -525,6 +527,10 @@ static BROWSER_VERSION: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 /// The order `hand.set-offset` calls happened in, across mods (API
 /// 16): there is one hand, so the newest stamp wins.
 static HAND_OFFSET_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// The order `hand.set-swing-scale` calls happened in, across mods
+/// (API 17): there is one swing, so the newest stamp wins, as with
+/// the offset.
+static HAND_SWING_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// Items a panel may hold, and events kept for `browser.poll`.
 const BROWSER_ITEMS: usize = 8192;
 /// `recipes.place` and `give` calls a hook call may make.
@@ -581,6 +587,16 @@ struct State {
     /// the running mod with the newest stamp drives the one hand
     /// ([`Mods::hand_offset`]). Kept clamped by the host call.
     hand_offset: Option<(u64, ModHandTransform)>,
+    /// The swing animation the game last pushed (API 17):
+    /// [`Mods::set_swing_anim`] writes it into every running mod's
+    /// store next to the hand state, and `hand.get-swing-anim`
+    /// reads it. `None` until the first push.
+    swing_anim: ModSwingAnim,
+    /// This mod's swing scale (API 17) and the order it was set in:
+    /// the running mod with the newest stamp sets how much of the
+    /// vanilla swing pose applies ([`Mods::swing_scale`]). Kept
+    /// clamped by the host call.
+    swing_scale: Option<(u64, f32)>,
     /// How many times this mod called `set-camera`: the game re-reads
     /// the look whenever the winning mod's count moves, so a mod
     /// calling `set-camera` every tick with fixed angles keeps the
@@ -856,6 +872,8 @@ impl Mods {
             sound_env: None,
             hand_state: zero_hand_state(),
             hand_offset: None,
+            swing_anim: ModSwingAnim::None,
+            swing_scale: None,
             camera_seq: 0,
             aggregate_camera: None,
             aggregate_is_mine: false,
@@ -1536,10 +1554,12 @@ impl Mods {
     /// Back to the zero hand state (API 16): the game calls this
     /// while the hand is not being posed (the title screen, third
     /// person, sleeping), so a mod never reads a stale frame as the
-    /// current one.
+    /// current one. The pushed swing animation (API 17) resets to
+    /// none with it: it rides the same push.
     pub fn clear_hand_state(&mut self) {
         for run in self.entries.iter_mut().filter_map(|e| e.run.as_mut()) {
             run.store.data_mut().hand_state = zero_hand_state();
+            run.store.data_mut().swing_anim = ModSwingAnim::None;
         }
     }
     /// The hand offset the game applies at pose time (API 16): the
@@ -1553,6 +1573,30 @@ impl Mods {
             .filter_map(|e| e.run.as_ref()?.store.data().hand_offset.as_ref())
             .max_by_key(|(seq, _)| *seq)
             .map(|(_, offset)| offset.clone())
+    }
+
+    /// The swing animation for this frame (API 17): the game pushes
+    /// it with the hand state, once per rendered frame before the
+    /// frame hooks run, and a mod reads it with
+    /// `hand.get-swing-anim`. Written into the running mods' stores
+    /// at once, as the hand state is.
+    pub fn set_swing_anim(&mut self, anim: ModSwingAnim) {
+        for run in self.entries.iter_mut().filter_map(|e| e.run.as_mut()) {
+            run.store.data_mut().swing_anim = anim;
+        }
+    }
+    /// How much of the vanilla swing pose applies (API 17): the
+    /// scale the running mods set most recently with
+    /// `hand.set-swing-scale`, already clamped by the host call.
+    /// 1.0 — vanilla in full — when no running mod sets one; a
+    /// stopped mod's scale is dropped with its store, as its
+    /// offset is.
+    pub fn swing_scale(&self) -> f32 {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref()?.store.data().swing_scale.as_ref())
+            .max_by_key(|(seq, _)| *seq)
+            .map_or(1.0, |(_, scale)| *scale)
     }
 
     /// The first running mod driving a camera, if any.
@@ -1881,6 +1925,20 @@ impl hand::Host for State {
     }
     fn clear_offset(&mut self) {
         self.hand_offset = None;
+    }
+    fn get_swing_anim(&mut self) -> ModSwingAnim {
+        self.swing_anim
+    }
+    fn set_swing_scale(&mut self, scale: f32) {
+        let seq = HAND_SWING_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // API 17's clamp: 0.0..=2.0, and a non-finite value reads
+        // as 1.0 — vanilla in full, never a poisoned pose.
+        let scale = if scale.is_finite() {
+            scale.clamp(0.0, 2.0)
+        } else {
+            1.0
+        };
+        self.swing_scale = Some((seq, scale));
     }
 }
 

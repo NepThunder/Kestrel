@@ -234,6 +234,67 @@ fn hand_state_flows_and_the_offset_is_clamped_and_cleared() {
     assert_eq!(mods.hand_offset(), None);
 }
 
+/// The hand's swing terms (API 17): the game pushes the swing
+/// animation with the hand state and the mod reads it back, and
+/// the scale it sets comes back clamped — 1.0, vanilla in full,
+/// when no running mod sets one, and again once the mod stops.
+#[test]
+fn swing_anim_flows_and_the_scale_is_clamped_and_dropped() {
+    let mut mods = load("horizon_mods_test_guest.kmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert_eq!(mods.swing_scale(), 1.0);
+    // Nothing pushed yet: no swing runs.
+    assert!(mods.command("swinganim"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "anim none".into(),
+            error: false,
+        }]
+    );
+    mods.set_swing_anim(horizon_mods::ModSwingAnim::Whack);
+    assert!(mods.command("swinganim"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "anim whack".into(),
+            error: false,
+        }]
+    );
+    // Past the top of the range: the host clamps to 2.0.
+    assert!(mods.command("swingscale 2.7"));
+    mods.drain();
+    assert_eq!(mods.swing_scale(), 2.0);
+    // A non-finite value reads as 1.0.
+    assert!(mods.command("swingscale nan"));
+    mods.drain();
+    assert_eq!(mods.swing_scale(), 1.0);
+    // In range, the scale round-trips.
+    assert!(mods.command("swingscale 0.35"));
+    mods.drain();
+    assert_eq!(mods.swing_scale(), 0.35);
+    // Clearing the hand state resets the pushed animation with it.
+    mods.clear_hand_state();
+    assert!(mods.command("swinganim"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "anim none".into(),
+            error: false,
+        }]
+    );
+    // A stopped mod's scale is dropped with its store.
+    assert!(mods.command("panic"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Stopped {
+            name: "Test Guest".into(),
+            reason: "it crashed (a panic)".into(),
+        }]
+    );
+    assert_eq!(mods.swing_scale(), 1.0);
+}
+
 #[test]
 fn coords_hud_draws_and_answers() {
     let mut mods = load("coords_hud.kmod");
