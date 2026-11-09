@@ -71,7 +71,15 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
       - name: Download Gradle 8.14
         run: |
-          curl -L -o gradle-8.14-all.zip https://services.gradle.org/distributions/gradle-8.14-all.zip
+          # The distribution CDN intermittently serves a tiny error page
+          # instead of the zip (seen 2026-11-09, two runs in a row), so
+          # validate the download and retry rather than failing the build.
+          for attempt in 1 2 3 4 5 6; do
+            curl -L -o gradle-8.14-all.zip https://services.gradle.org/distributions/gradle-8.14-all.zip
+            if unzip -t gradle-8.14-all.zip > /dev/null 2>&1; then break; fi
+            echo "Gradle download attempt $attempt was not a valid zip; retrying"
+            sleep 20
+          done
           unzip -q gradle-8.14-all.zip
           ./gradle-8.14/bin/gradle --version
       - name: Prepare engine resources
