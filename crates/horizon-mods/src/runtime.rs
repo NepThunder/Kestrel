@@ -552,6 +552,11 @@ struct State {
     /// `get-camera` / `project` read the effective camera even before
     /// this mod sets anything of its own.
     aggregate_camera: Option<ModCameraOverride>,
+    /// Whether `aggregate_camera` is this mod's own override: `set-camera`
+    /// keeps the aggregate live within a call only when this mod is (or
+    /// becomes) the winner, and `Mods::call` refreshes it before every
+    /// call.
+    aggregate_is_mine: bool,
     input: InputState,
     browser: BrowserState,
     /// Capability `storage`'s folder; made on first `set`.
@@ -765,6 +770,7 @@ impl Mods {
             camera: None,
             camera_seq: 0,
             aggregate_camera: None,
+            aggregate_is_mine: false,
             aggregate_gamma: None,
             aggregate_fog_off: false,
             input: InputState::default(),
@@ -921,10 +927,12 @@ impl Mods {
         // The camera aggregate is the winning override, whoever holds
         // it — including this mod, when it already does.
         let aggregate_camera = self.camera().map(|(camera, _)| camera);
+        let aggregate_is_mine = self.camera_winner() == Some(i);
         let entry = &mut self.entries[i];
         let run = entry.run.as_mut()?;
         run.store.data_mut().snapshot = self.snapshot.clone();
         run.store.data_mut().aggregate_camera = aggregate_camera;
+        run.store.data_mut().aggregate_is_mine = aggregate_is_mine;
         run.store.data_mut().aggregate_gamma = aggregate_gamma;
         run.store.data_mut().aggregate_fog_off = aggregate_fog_off;
         run.store.data_mut().storage_budget = STORAGE_WRITE_BUDGET;
@@ -1385,6 +1393,14 @@ impl Mods {
         self.entries.iter().find_map(|e| {
             let data = e.run.as_ref()?.store.data();
             data.camera.map(|camera| (camera, data.camera_seq))
+        })
+    }
+    /// The first running mod driving a camera, if any.
+    fn camera_winner(&self) -> Option<usize> {
+        self.entries.iter().position(|e| {
+            e.run
+                .as_ref()
+                .is_some_and(|run| run.store.data().camera.is_some())
         })
     }
     /// The strongest gamma a running mod asks for (capability `render`).
@@ -2581,16 +2597,30 @@ impl render::Host for State {
         // every tick with fixed angles keeps the mouse from drifting it.
         // A non-finite position drops the call instead, and the previous
         // override stays — the count does not move for a dropped call.
+        // A set keeps the aggregate live within the call when this mod
+        // is (or becomes) the winner, so a `get-camera` later in the
+        // same call already sees the new value, not the one the call
+        // started with. Releasing as the winner drops the aggregate
+        // this call knew — the next winner is only known to `Mods`,
+        // which refreshes it before the next call.
         match camera {
             None => {
                 self.camera = None;
                 self.camera_seq += 1;
+                if self.aggregate_is_mine {
+                    self.aggregate_camera = None;
+                    self.aggregate_is_mine = false;
+                }
             }
             Some(camera) => {
                 let feet = self.snapshot.player.as_ref().map(|p| [p.x, p.y, p.z]);
                 if let Some(camera) = sanitize_camera(camera, feet) {
                     self.camera = Some(camera);
                     self.camera_seq += 1;
+                    if self.aggregate_camera.is_none() || self.aggregate_is_mine {
+                        self.aggregate_camera = self.camera;
+                        self.aggregate_is_mine = true;
+                    }
                 }
             }
         }
