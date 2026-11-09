@@ -120,6 +120,23 @@ const FUEL_INIT: u64 = 2_000_000_000;
 const FUEL_TICK: u64 = 50_000_000;
 const FUEL_FRAME: u64 = 10_000_000;
 const FUEL_EVENT: u64 = 100_000_000;
+/// Fuel counts instructions, not wall time, and the Pulley interpreter on
+/// 32-bit builds runs them ~10x slower than Cranelift does on 64-bit. Scale
+/// the per-call budgets down there so one call costs about the same wall
+/// time as on 64-bit: a mod that needs more than the scaled budget is
+/// stopped with a fuel error instead of hanging the game thread toward
+/// Android's 5 s input-dispatch ANR timeout. This bounds wall time per
+/// call; it does not interrupt a call mid-execution on a wall clock (that
+/// needs Wasmtime epoch interruption, which has no background epoch
+/// thread in this runtime yet).
+#[cfg(target_pointer_width = "32")]
+const FUEL_WALL_DIVISOR: u64 = 10;
+#[cfg(not(target_pointer_width = "32"))]
+const FUEL_WALL_DIVISOR: u64 = 1;
+fn wall_fuel(budget: u64) -> u64 {
+    budget / FUEL_WALL_DIVISOR
+}
+
 /// Blocks a mod may set per `world.set-blocks` call.
 pub const BLOCKS_PER_CALL: usize = 4096;
 /// Chat lines a mod may show per call, HUD lines and their length.
@@ -678,6 +695,14 @@ impl Mods {
         if self.engine.is_none() {
             let mut config = Config::new();
             config.wasm_component_model(true).consume_fuel(true);
+            // Cranelift has no 32-bit backend, so a 32-bit build cannot JIT
+            // WASM at all. Pin the Pulley interpreter target explicitly
+            // instead of relying on Strategy::Auto's host inference, so a
+            // 32-bit build always gets an interpreter and a 64-bit build
+            // always keeps Cranelift.
+            if cfg!(target_pointer_width = "32") {
+                config.target("pulley32").map_err(|e| e.to_string())?;
+            }
             let engine = Engine::new(&config).map_err(|e| e.to_string())?;
             let mut linker = Linker::new(&engine);
             HorizonMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
@@ -786,7 +811,9 @@ impl Mods {
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
-        store.set_fuel(FUEL_INIT).map_err(|e| e.to_string())?;
+        store
+            .set_fuel(wall_fuel(FUEL_INIT))
+            .map_err(|e| e.to_string())?;
         let instance = linker
             .instantiate(&mut store, &component)
             .map_err(|e| reason(&e))?;
@@ -937,7 +964,7 @@ impl Mods {
         run.store.data_mut().aggregate_fog_off = aggregate_fog_off;
         run.store.data_mut().storage_budget = STORAGE_WRITE_BUDGET;
         let started = Instant::now();
-        let result = run.store.set_fuel(fuel).and_then(|()| f(run));
+        let result = run.store.set_fuel(wall_fuel(fuel)).and_then(|()| f(run));
         // An average over about the last 64 calls.
         entry.cost = (entry.cost * 63 + started.elapsed()) / 64;
         let data = run.store.data_mut();
