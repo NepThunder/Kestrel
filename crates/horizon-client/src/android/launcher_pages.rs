@@ -54,6 +54,10 @@ fn my3_accent_soft() -> u32 {
     horizon_client::ui_theme::active_theme().accent_soft
 }
 #[inline]
+fn my3_success() -> u32 {
+    horizon_client::ui_theme::active_theme().success
+}
+#[inline]
 fn my3_on_accent() -> u32 {
     horizon_client::ui_theme::active_theme().on_accent
 }
@@ -425,21 +429,41 @@ pub(super) fn button(
     action: Action,
     accent: bool,
 ) {
+    let (fill, text) = if accent {
+        (my3_accent(), my3_on_accent())
+    } else {
+        (my3_surface_high(), my3_text())
+    };
+    button_styled(ui, targets, rect, label, action, fill, text, !accent);
+}
+
+/// Green button for the mod "Update" action, using the theme's success color
+/// so an available update stands out from the accent Install buttons. The
+/// text uses the background color, which contrasts with the success green in
+/// both the light theme (dark green) and the dark theme (bright green).
+pub(super) fn update_button(
+    ui: &mut Ui,
+    targets: &mut Vec<([f32; 4], Action)>,
+    rect: [f32; 4],
+    action: Action,
+) {
+    button_styled(ui, targets, rect, "Update", action, my3_success(), my3_bg(), false);
+}
+
+fn button_styled(
+    ui: &mut Ui,
+    targets: &mut Vec<([f32; 4], Action)>,
+    rect: [f32; 4],
+    label: &str,
+    action: Action,
+    fill: u32,
+    text_color: u32,
+    bordered: bool,
+) {
     let [x, y, w, h] = rect;
     let radius = (h * 0.42).clamp(10.0, 22.0);
-    ui.rounded(
-        x,
-        y,
-        w,
-        h,
-        radius,
-        if accent {
-            my3_accent()
-        } else {
-            my3_surface_high()
-        },
-    );
-    if !accent {
+    ui.rounded(x, y, w, h, radius, fill);
+    if bordered {
         ui.border(x, y, w, h, radius, my3_border());
     }
     let padding = (w * 0.10).clamp(8.0, 14.0);
@@ -459,14 +483,7 @@ pub(super) fn button(
         x + ((w - text_w) * 0.5).max(padding)
     };
     let ty = y + ((h - font * 1.45) * 0.5).max(2.0);
-    ui.text(
-        Face::Medium,
-        font,
-        tx,
-        ty,
-        if accent { my3_on_accent() } else { my3_text() },
-        &fitted,
-    );
+    ui.text(Face::Medium, font, tx, ty, text_color, &fitted);
     if let Some(c) = ui.clip_rect(rect) {
         targets.push((c, action));
     }
@@ -1843,14 +1860,7 @@ impl Launcher {
 
                 if let Some(state) = download {
                     if update {
-                        button(
-                            &mut ui,
-                            &mut self.targets,
-                            btn_rect,
-                            "Update",
-                            Action::Install(i),
-                            true,
-                        );
+                        update_button(&mut ui, &mut self.targets, btn_rect, Action::Install(i));
                     } else {
                         ui.rounded(
                             btn_rect[0],
@@ -3488,14 +3498,23 @@ impl Launcher {
             Action::CloseProjectModal,
             false,
         );
-        button(
-            ui,
-            &mut self.targets,
-            [mx + 136.0, my + mh - 48.0, mw - 154.0, 38.0],
-            &install_label,
-            Action::InstallModalProject,
-            true,
-        );
+        if install_label == "Update" {
+            update_button(
+                ui,
+                &mut self.targets,
+                [mx + 136.0, my + mh - 48.0, mw - 154.0, 38.0],
+                Action::InstallModalProject,
+            );
+        } else {
+            button(
+                ui,
+                &mut self.targets,
+                [mx + 136.0, my + mh - 48.0, mw - 154.0, 38.0],
+                &install_label,
+                Action::InstallModalProject,
+                true,
+            );
+        }
     }
 
     fn draw_app_update_modal(&mut self, ui: &mut Ui, w: f32, h: f32) {
