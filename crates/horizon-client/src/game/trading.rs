@@ -873,6 +873,9 @@ impl Game<'_> {
         let slots: Vec<usize> = (0..36).chain([INPUT, INPUT + 1, RESULT]).collect();
         let drag = self.drag_view();
         self.draw_hovered_slot_highlight(batch, false, ox, oy);
+        // The mods' item decorations (API 23): the fills ride
+        // under the slot loop's stacks.
+        self.draw_mod_screen_decorations_under(batch, ox, oy);
         for i in slots {
             let (sx, sy) = self.slot_position(i);
             let stack = self.slot_mut(i).clone();
@@ -881,8 +884,10 @@ impl Game<'_> {
         self.draw_hovered_slot_highlight(batch, true, ox, oy);
         // Capability `screen` (API 22): the mods' slot marks and
         // buttons, over the slots and under the carried stack
-        // and the tooltip.
+        // and the tooltip. The item decorations' borders and
+        // stars (API 23) ride with them.
         self.draw_mod_screen_highlights(batch, ox, oy);
+        self.draw_mod_screen_decorations_over(batch, ox, oy);
         self.draw_mod_screen_buttons(batch);
         if let Some(slot) = self.slot_at(batch, self.cursor.0, self.cursor.1)
             && tooltip.is_none()

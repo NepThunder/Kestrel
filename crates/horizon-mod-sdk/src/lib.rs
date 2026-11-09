@@ -57,6 +57,14 @@
 //! debug surface's tenancy, and the merchant's trade choice,
 //! performed by the game as clicking the offer would. No stack
 //! moves here; that line is a later district's.
+//! `render` also shows items themselves through [`item_model`]
+//! (API level 23): which item model definition a stack
+//! displays as, keyed by its item and components
+//! (`set_model_rules`); marks on the game's item slots, the
+//! hotbar included (`set_decorations`); and how dropped items
+//! lie in the world (`set_dropped_display`). A rule names a
+//! definition that already exists — the game's, a resource
+//! pack's, a content mod's — never a model the mod supplies.
 //! Server mods: [`server`].
 //!
 //! Widgets (capability `ui`): a mod shows a screen it owns with
@@ -80,19 +88,22 @@ pub use exports::horizon::mods::ui_events::Guest as __UiEventsGuest;
 pub use horizon::mods::actions::{
     BlockTarget, CrosshairTarget as ActionTarget, EntityTarget, Face, Hand as ActionHand,
 };
-pub use horizon::mods::screen::{
-    Anchor, Highlight, ScreenButton, ScreenEvent, ScreenState, TradeList, TradeOffer,
-    TradeStack,
-};
 pub use horizon::mods::entity_pose::{
     ArmPose, EntityPoseState, ItemUse, PartOffset, PoseOffset, PoseTarget,
 };
 pub use horizon::mods::game::{Effect, Mount, SelfState};
 pub use horizon::mods::hand::{HandState, HandTransform, SwingAnim, SwingKind};
+pub use horizon::mods::item_model::{
+    BlockDisplay, ComponentMatch, Decoration, DecorationPlace, DecorationTarget, DisplayContext,
+    DroppedDisplay, FlatDisplay, ModelMatch, ModelRule,
+};
 pub use horizon::mods::render::{HandFov, HandFovMode};
+pub use horizon::mods::screen::{
+    Anchor, Highlight, ScreenButton, ScreenEvent, ScreenState, TradeList, TradeOffer, TradeStack,
+};
 pub use horizon::mods::{
     actions, audio, browser, chat, command, entity, entity_pose, game, hand, hud, input, inventory,
-    log, recipes, render, screen, storage, ui, world,
+    item_model, log, recipes, render, screen, storage, ui, world,
 };
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for

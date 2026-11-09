@@ -13,16 +13,18 @@
 //! drawn button is the button a press hits.
 
 use super::{Game, Screen};
+use horizon_assets::item_model::Components;
 use horizon_client::{
-    hud::{HudBatch, rgba},
+    hud::{HudAtlas, HudBatch, rgba},
+    item_render,
     items::ItemStack,
     merchant::MerchantOffer,
     text::Text,
     ui,
 };
 use horizon_mods::{
-    ModAnchor, ModScreenButton, ModScreenEvent, ModScreenState, ModTradeList, ModTradeOffer,
-    ModTradeStack,
+    ItemDecoration, ItemDecorationTarget, ModAnchor, ModDecorationPlace, ModScreenButton,
+    ModScreenEvent, ModScreenState, ModTradeList, ModTradeOffer, ModTradeStack,
 };
 
 /// A mod button's height on an inventory screen, and the title
@@ -292,6 +294,58 @@ impl Game<'_> {
         }
     }
 
+    /// The under pass of the mods' item decorations on the
+    /// open screen (API 23): the fills, beneath the slot loop's
+    /// stacks — the caller places this immediately before it
+    /// draws the slots.
+    pub(super) fn draw_mod_screen_decorations_under(
+        &mut self,
+        batch: &mut HudBatch,
+        ox: f32,
+        oy: f32,
+    ) {
+        self.draw_mod_screen_decorations(batch, ox, oy, true);
+    }
+    /// The over pass of the mods' item decorations (API 23):
+    /// the borders and stars, over the stacks — the caller
+    /// places this beside the slot highlights.
+    pub(super) fn draw_mod_screen_decorations_over(
+        &mut self,
+        batch: &mut HudBatch,
+        ox: f32,
+        oy: f32,
+    ) {
+        self.draw_mod_screen_decorations(batch, ox, oy, false);
+    }
+    fn draw_mod_screen_decorations(&mut self, batch: &mut HudBatch, ox: f32, oy: f32, under: bool) {
+        let marks = self.mods.mods.decorations();
+        if marks.is_empty() {
+            return;
+        }
+        // The highlights' geometry, exactly: the slots this
+        // screen shows, at their positions, with the stacks
+        // they hold (item and merged components) for the marks
+        // that key on a stack.
+        let mut slots: Vec<(u32, f32, f32, Option<(String, Components)>)> = Vec::new();
+        for slot in self.slots() {
+            let Some((sx, sy)) = self.slot_position_any(slot) else {
+                continue;
+            };
+            let stack = self.slot_view(slot);
+            let stack = stack.map(|stack| {
+                let components = self
+                    .pack
+                    .item_renderer
+                    .models
+                    .components(&item_render::stack_view(&stack))
+                    .into_owned();
+                (stack.item.to_string(), components)
+            });
+            slots.push((slot as u32, ox + sx, oy + sy, stack));
+        }
+        draw_mod_decorations(&self.gui.atlas, batch, &marks, &slots, false, under);
+    }
+
     /// The middle button went down over the open
     /// inventory/container screen (API 22): every running
     /// `screen` mod hears it, with the slot under the pointer
@@ -524,6 +578,74 @@ fn screen_button_rects(
         }
     }
     out
+}
+
+/// Draws item decorations (API 23) over a set of laid-out
+/// slots: the one painter of the screens' marks and the
+/// hotbar's. `slots` carries each visible slot's number, its
+/// top-left corner in GUI coordinates, and its stack's item
+/// and merged components (`None`: the slot is empty — a
+/// slot-keyed mark still lands, a stack-keyed one cannot
+/// hold). `hotbar` selects which place the marks must name.
+/// A fill paints on the under pass only, a border and a star
+/// on the over pass only: a mark reads as a tint under the
+/// stack and a frame over it. The styles are the game's: the
+/// fill at the highlights' translucency, the border an opaque
+/// frame whose foot is doubled — the "highlighted bottom
+/// edge" of a marked slot — and the star a small spark at the
+/// slot's top-right, in the border's colour or the fill's.
+pub(super) fn draw_mod_decorations(
+    atlas: &HudAtlas,
+    batch: &mut HudBatch,
+    marks: &[ItemDecoration],
+    slots: &[(u32, f32, f32, Option<(String, Components)>)],
+    hotbar: bool,
+    under: bool,
+) {
+    let place = if hotbar {
+        ModDecorationPlace::Hotbar
+    } else {
+        ModDecorationPlace::Screens
+    };
+    for mark in marks {
+        if !mark.places.contains(&place) {
+            continue;
+        }
+        for (slot, x, y, stack) in slots {
+            let hits = match &mark.target {
+                ItemDecorationTarget::Slot(number) => number == slot,
+                ItemDecorationTarget::Stack(m) => stack
+                    .as_ref()
+                    .is_some_and(|(item, components)| m.holds_loose(item, components)),
+            };
+            if !hits {
+                continue;
+            }
+            let (x, y) = (*x, *y);
+            let rgb = |c: u32| ((c >> 16) as u8, (c >> 8) as u8, c as u8);
+            if under {
+                if let Some(fill) = mark.fill {
+                    let (r, g, b) = rgb(fill);
+                    batch.fill(atlas, x, y, 16.0, 16.0, rgba(r, g, b, 96));
+                }
+            } else {
+                if let Some(border) = mark.border {
+                    let (r, g, b) = rgb(border);
+                    batch.fill(atlas, x, y, 16.0, 1.0, rgba(r, g, b, 160));
+                    batch.fill(atlas, x, y + 14.0, 1.0, 2.0, rgba(r, g, b, 160));
+                    batch.fill(atlas, x + 15.0, y + 14.0, 1.0, 2.0, rgba(r, g, b, 160));
+                    batch.fill(atlas, x, y + 14.0, 16.0, 2.0, rgba(r, g, b, 255));
+                }
+                if mark.star
+                    && let Some(star) = mark.border.or(mark.fill)
+                {
+                    let (r, g, b) = rgb(star);
+                    batch.fill(atlas, x + 13.0, y + 1.0, 1.0, 5.0, rgba(r, g, b, 255));
+                    batch.fill(atlas, x + 11.0, y + 3.0, 5.0, 1.0, rgba(r, g, b, 255));
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -136,6 +136,20 @@ pub use render_bindings::horizon::mods::hand::{
 use render_bindings::horizon::mods::input;
 /// Capability `input`'s records (WIT `interface input`).
 pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, ItemUse};
+use render_bindings::horizon::mods::item_model;
+/// How items themselves are shown (WIT `interface item-model`,
+/// API 23): a `render` extension, hosted with the render world,
+/// as the hand and the poses are. `ModDisplayContext` here is
+/// THIS interface's grouping of the game's display contexts —
+/// not the assets' enum of the same name, which the game maps
+/// from at its one swap point.
+pub use render_bindings::horizon::mods::item_model::{
+    BlockDisplay as ModBlockDisplay, ComponentMatch as ModComponentMatch,
+    Decoration as ModDecoration, DecorationPlace as ModDecorationPlace,
+    DecorationTarget as ModDecorationTarget, DisplayContext as ModDisplayContext,
+    DroppedDisplay as ModDroppedDisplay, FlatDisplay as ModFlatDisplay,
+    ModelMatch as ModModelMatch, ModelRule as ModModelRule,
+};
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
     CameraOverride as ModCameraOverride, CameraPose as ModCameraPose, Corner as RenderCorner,
@@ -208,6 +222,16 @@ pub const SCREEN_HIGHLIGHTS: usize = 512;
 /// `browser` panel's queue discipline — a press the mod never
 /// polls for is not kept forever.
 pub const SCREEN_EVENTS: usize = 256;
+/// Model rules one mod may declare (WIT `item-model`, API 23),
+/// and the component matches one rule may key on: a declaration
+/// is a page of swaps, each keyed as narrowly as a renamed item
+/// — never a database.
+pub const MODEL_RULES: usize = 64;
+pub const MODEL_MATCHES: usize = 4;
+/// Slot marks one mod may declare (WIT `item-model`, API 23):
+/// the `screen` highlights' cap, for the same reason — a page
+/// of the game's slots, not a second inventory.
+pub const ITEM_DECORATIONS: usize = 256;
 /// How far `game.raycast` sees, in blocks.
 pub const RAYCAST_MAX: f32 = 1024.0;
 /// How far `entity.targeted` sees, in blocks.
@@ -572,6 +596,309 @@ impl ScreenStore {
     }
 }
 
+/// A stack match with its values parsed (WIT `item-model`, API
+/// 23): a declaration's SNBT, run through the core SNBT parser
+/// once, at set time, into the JSON shape the game's component
+/// sets already have — so a hold is a value comparison against
+/// a stack's merged components, never a re-parse at draw time.
+/// A value that did not parse (or trailed past its value) is
+/// `None`: it never holds, the sanitize-silently discipline of
+/// `clamp_pose_offset` — the rule stands, its match is inert.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParsedMatch {
+    pub item: String,
+    /// (component name, its parsed value) pairs, in declared order.
+    pub components: Vec<(String, Option<serde_json::Value>)>,
+}
+impl ParsedMatch {
+    fn parse(m: &ModModelMatch) -> ParsedMatch {
+        ParsedMatch {
+            item: m.item.clone(),
+            components: m
+                .components
+                .iter()
+                .map(|c| {
+                    let value = horizon_client_core::component::parse_snbt(&c.value)
+                        .ok()
+                        .filter(|(_, used)| c.value[*used..].trim().is_empty())
+                        .map(|(v, _)| v);
+                    (c.name.clone(), value)
+                })
+                .collect(),
+        }
+    }
+    /// The match holds for a stack of `item` whose merged
+    /// components (defaults included) are `components`: the
+    /// item is the stack's, and every named component is
+    /// present with the parsed value.
+    pub fn holds(
+        &self,
+        item: &str,
+        components: &std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> bool {
+        self.item == item && self.components_hold(components)
+    }
+    /// As [`ParsedMatch::holds`], but an empty item matches
+    /// every item: a slot mark keyed on a component alone (a
+    /// rarity, wherever it sits). Model rules never key this
+    /// way — an empty item is dropped at set time there.
+    pub fn holds_loose(
+        &self,
+        item: &str,
+        components: &std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> bool {
+        (self.item.is_empty() || self.item == item) && self.components_hold(components)
+    }
+    fn components_hold(
+        &self,
+        components: &std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> bool {
+        self.components
+            .iter()
+            .all(|(name, want)| match (want, components.get(name)) {
+                (Some(want), Some(got)) => value_eq(want, got),
+                _ => false,
+            })
+    }
+    /// The match as a test or a log names it: the item (or `*`
+    /// for the loose any-item), then each component as
+    /// `name=value` in SNBT.
+    pub fn spelling(&self) -> String {
+        let mut out = if self.item.is_empty() {
+            "*".to_string()
+        } else {
+            self.item.clone()
+        };
+        for (name, value) in &self.components {
+            out.push(' ');
+            out.push_str(name);
+            out.push('=');
+            match value {
+                Some(v) => out.push_str(&snbt_value(v)),
+                None => out.push_str("<unparsed>"),
+            }
+        }
+        out
+    }
+}
+
+/// Component values compare as values (API 23): numbers across
+/// their representations (an SNBT `64` and a prototype's `64`
+/// are the one number, as a `1b` is), compounds key by key,
+/// lists in order. Everything else is serde_json's equality.
+fn value_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => {
+            if let (Some(x), Some(y)) = (x.as_i64(), y.as_i64()) {
+                x == y
+            } else if let (Some(x), Some(y)) = (x.as_u64(), y.as_u64()) {
+                x == y
+            } else {
+                match (x.as_f64(), y.as_f64()) {
+                    (Some(x), Some(y)) => x == y,
+                    _ => false,
+                }
+            }
+        }
+        (Value::Array(x), Value::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(x, y)| value_eq(x, y))
+        }
+        (Value::Object(x), Value::Object(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .all(|(k, v)| y.get(k).is_some_and(|w| value_eq(v, w)))
+        }
+        _ => a == b,
+    }
+}
+
+/// A parsed component value back in SNBT, for spellings: the
+/// inverse of the set-time parse, deterministic (the JSON map
+/// is key-ordered), close enough to read — never re-parsed.
+pub fn snbt_value(value: &serde_json::Value) -> String {
+    use serde_json::Value;
+    match value {
+        Value::Null => "null".into(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => snbt_string(s),
+        Value::Array(list) => {
+            let parts: Vec<String> = list.iter().map(snbt_value).collect();
+            format!("[{}]", parts.join(","))
+        }
+        Value::Object(map) => {
+            let parts: Vec<String> = map
+                .iter()
+                .map(|(k, v)| format!("{}:{}", snbt_string(k), snbt_value(v)))
+                .collect();
+            format!("{{{}}}", parts.join(","))
+        }
+    }
+}
+fn snbt_string(s: &str) -> String {
+    let plain = !s.is_empty()
+        && s.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'+' | b'/' | b':')
+        });
+    if plain {
+        s.to_string()
+    } else {
+        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    }
+}
+
+/// One slot mark as the game draws it (WIT `item-model`, API
+/// 23): the mod's declaration with its stack match parsed, the
+/// shape [`Mods::decorations`] hands over. The styles are the
+/// WIT record's; only the target's match is resolved.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ItemDecoration {
+    pub target: ItemDecorationTarget,
+    pub places: Vec<ModDecorationPlace>,
+    pub fill: Option<u32>,
+    pub border: Option<u32>,
+    pub star: bool,
+}
+/// What a slot mark keys on, parsed (API 23).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ItemDecorationTarget {
+    Slot(u32),
+    Stack(ParsedMatch),
+}
+impl ItemDecoration {
+    fn parse(d: &ModDecoration) -> ItemDecoration {
+        ItemDecoration {
+            target: match &d.target {
+                ModDecorationTarget::Slot(slot) => ItemDecorationTarget::Slot(*slot),
+                ModDecorationTarget::Stack(m) => ItemDecorationTarget::Stack(ParsedMatch::parse(m)),
+            },
+            places: d.places.clone(),
+            fill: d.fill,
+            border: d.border,
+            star: d.star,
+        }
+    }
+    /// The mark as a test names it: its target, its places,
+    /// then its styles in declaration order.
+    pub fn spelling(&self) -> String {
+        let target = match &self.target {
+            ItemDecorationTarget::Slot(slot) => format!("slot {slot}"),
+            ItemDecorationTarget::Stack(m) => format!("stack {}", m.spelling()),
+        };
+        let places: Vec<&str> = self
+            .places
+            .iter()
+            .map(|p| match p {
+                ModDecorationPlace::Hotbar => "hotbar",
+                ModDecorationPlace::Screens => "screens",
+            })
+            .collect();
+        let mut out = format!("{target} @ {}", places.join(","));
+        if let Some(fill) = self.fill {
+            out.push_str(&format!(" fill {fill:06x}"));
+        }
+        if let Some(border) = self.border {
+            out.push_str(&format!(" border {border:06x}"));
+        }
+        if self.star {
+            out.push_str(" star");
+        }
+        out
+    }
+}
+
+/// The running mods' model rules as one evaluation index (WIT
+/// `item-model`, API 23): every rule sanitized and parsed,
+/// ordered for the game's one question — the first rule that
+/// holds, newest-loaded mod first, each mod's list in its
+/// declared order. Rebuilt only when a store's rules change
+/// ([`Mods::item_model_index`]), so a resolve pays one set
+/// lookup for the prefilter and walks rules only for a ruled
+/// item.
+#[derive(Clone, Debug, Default)]
+pub struct ItemModelIndex {
+    /// (match, contexts, model) in evaluation order.
+    rules: Vec<(ParsedMatch, Vec<ModDisplayContext>, String)>,
+    /// The item ids any rule keys on: the swap's prefilter.
+    ruled: std::collections::HashSet<String>,
+}
+impl ItemModelIndex {
+    /// Builds the index from each mod's stored rules, in load
+    /// order: the evaluation order is its reverse, mod by mod.
+    pub fn from_mod_rules<'a>(
+        mods: impl IntoIterator<Item = &'a [ModModelRule]>,
+    ) -> ItemModelIndex {
+        let mods: Vec<&[ModModelRule]> = mods.into_iter().collect();
+        let mut index = ItemModelIndex::default();
+        for rules in mods.iter().rev() {
+            for rule in *rules {
+                index.ruled.insert(rule.match_.item.clone());
+                index.rules.push((
+                    ParsedMatch::parse(&rule.match_),
+                    rule.contexts.clone(),
+                    rule.model.clone(),
+                ));
+            }
+        }
+        index
+    }
+    /// No running mod declares a rule.
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+    /// The prefilter: any rule keys on this item at all.
+    pub fn rules_item(&self, item: &str) -> bool {
+        self.ruled.contains(item)
+    }
+    /// The definition a stack displays as, or None for its own:
+    /// the first rule in evaluation order whose contexts name
+    /// `group`, whose match holds against the stack's merged
+    /// `components`, and whose model names a definition that
+    /// exists (a rule naming a missing one is inert, never the
+    /// missing model — the walk goes on past it).
+    pub fn evaluate(
+        &self,
+        item: &str,
+        components: &std::collections::BTreeMap<String, serde_json::Value>,
+        group: ModDisplayContext,
+        definition_exists: impl Fn(&str) -> bool,
+    ) -> Option<&str> {
+        if !self.rules_item(item) {
+            return None;
+        }
+        self.rules
+            .iter()
+            .find(|(m, contexts, model)| {
+                contexts.contains(&group) && m.holds(item, components) && definition_exists(model)
+            })
+            .map(|(_, _, model)| model.as_str())
+    }
+    /// The rules in evaluation order, for tests and logs.
+    pub fn rules(&self) -> impl Iterator<Item = (&ParsedMatch, &[ModDisplayContext], &str)> {
+        self.rules
+            .iter()
+            .map(|(m, contexts, model)| (m, contexts.as_slice(), model.as_str()))
+    }
+    /// One rule as a test names it: its match, its model, its
+    /// contexts.
+    pub fn rule_spelling(rule: (&ParsedMatch, &[ModDisplayContext], &str)) -> String {
+        let (m, contexts, model) = rule;
+        let contexts: Vec<&str> = contexts
+            .iter()
+            .map(|c| match c {
+                ModDisplayContext::FirstPerson => "first-person",
+                ModDisplayContext::ThirdPerson => "third-person",
+                ModDisplayContext::Gui => "gui",
+                ModDisplayContext::Ground => "ground",
+                ModDisplayContext::Fixed => "fixed",
+                ModDisplayContext::Head => "head",
+            })
+            .collect();
+        format!("{} -> {model} @ {}", m.spelling(), contexts.join(","))
+    }
+}
+
 /// A mod's text panel, drawn every frame until it changes.
 #[derive(Clone, Debug)]
 pub struct Panel {
@@ -723,6 +1050,10 @@ static HAND_SWING_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 /// 20): one writer owns a target's pose, so the newest stamp wins,
 /// as with the hand's offset.
 static POSE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// The order `item-model.set-dropped-display` calls happened in,
+/// across mods (API 23): one policy applies to every dropped
+/// item, so the newest stamp wins, as with the hand's offset.
+static ITEM_DISPLAY_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// Items a panel may hold, and events kept for `browser.poll`.
 const BROWSER_ITEMS: usize = 8192;
 /// `recipes.place` and `give` calls a hook call may make.
@@ -837,6 +1168,22 @@ struct State {
     /// debug claim. A stopped mod's declarations die with its
     /// store, as its held buttons do.
     screen: ScreenStore,
+    /// This mod's model rules (WIT `item-model`, API 23),
+    /// sanitized at set time by the host call; the running
+    /// mods' rules are indexed together for the game's swap
+    /// ([`Mods::item_model_index`]). `model_rules_version`
+    /// moves on every set, so the index rebuilds only then.
+    model_rules: Vec<ModModelRule>,
+    model_rules_version: u64,
+    /// This mod's slot marks (WIT `item-model`, API 23), parsed
+    /// at set time by the host call: the aggregate is the union
+    /// in load order ([`Mods::decorations`]).
+    item_decorations: Vec<ItemDecoration>,
+    /// This mod's dropped-item display (WIT `item-model`, API
+    /// 23) and the order it was set in: the running mod with
+    /// the newest stamp sets the one policy
+    /// ([`Mods::dropped_display`]).
+    dropped_display: Option<(u64, ModDroppedDisplay)>,
     /// The movement toggle options this mod last asked to set in the
     /// current call (API 18): `Mods::call` moves it into an
     /// [`Output::SetMovementToggles`] when the call ends, as it does
@@ -892,6 +1239,10 @@ pub struct Mods {
     /// Moves on whenever a mod starts or stops: the game resends the server
     /// mods' commands to players when it changes.
     generation: u64,
+    /// The item-model evaluation index (API 23), rebuilt only
+    /// when a running mod's rules change: the per-entry rule
+    /// versions it was built from, and the index itself.
+    item_model_index: Mutex<Option<(Vec<Option<u64>>, Arc<ItemModelIndex>)>>,
 }
 
 /// A `Send` handle to a running [`Mods`] for the sound engine's hook
@@ -1129,6 +1480,10 @@ impl Mods {
             held: (false, false),
             held_latched: false,
             screen: ScreenStore::default(),
+            model_rules: Vec::new(),
+            model_rules_version: 0,
+            item_decorations: Vec::new(),
+            dropped_display: None,
             movement_toggles: None,
             camera_seq: 0,
             aggregate_camera: None,
@@ -2107,6 +2462,72 @@ impl Mods {
             .any(|r| r.store.data().screen.debug_claimed)
     }
 
+    /// The running mods' model rules as one evaluation index
+    /// (WIT `item-model`, API 23): rebuilt only when a running
+    /// mod's rule version moves — a set, a start, a stop — and
+    /// shared as one `Arc` between rebuilds, so the game's
+    /// per-stack resolve pays a lock and a lookup, not a walk
+    /// of every mod's list.
+    pub fn item_model_index(&self) -> Arc<ItemModelIndex> {
+        let versions: Vec<Option<u64>> = self
+            .entries
+            .iter()
+            .map(|e| e.run.as_ref().map(|r| r.store.data().model_rules_version))
+            .collect();
+        let mut cache = self
+            .item_model_index
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((built, index)) = cache.as_ref()
+            && *built == versions
+        {
+            return index.clone();
+        }
+        let index = Arc::new(ItemModelIndex::from_mod_rules(
+            self.entries
+                .iter()
+                .filter_map(|e| e.run.as_ref())
+                .map(|r| r.store.data().model_rules.as_slice()),
+        ));
+        *cache = Some((versions, index.clone()));
+        index
+    }
+    /// The slot marks the running mods declared (WIT
+    /// `item-model`, API 23), every mod's list in load order:
+    /// the union the game draws — a mark never erases a fellow
+    /// mod's. A stopped mod's marks go with its store.
+    pub fn decorations(&self) -> Vec<ItemDecoration> {
+        let mut out = Vec::new();
+        for data in self
+            .entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .map(|r| r.store.data())
+        {
+            out.extend(data.item_decorations.iter().cloned());
+        }
+        out
+    }
+    /// How dropped items display (WIT `item-model`, API 23):
+    /// the record the running mods set most recently with
+    /// `set-dropped-display`. The all-vanilla record when no
+    /// running mod sets one; a stopped mod's policy is dropped
+    /// with its store, as its hand offset is.
+    pub fn dropped_display(&self) -> ModDroppedDisplay {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref()?.store.data().dropped_display.as_ref())
+            .max_by_key(|(seq, _)| *seq)
+            .map_or_else(
+                || ModDroppedDisplay {
+                    flat: ModFlatDisplay::Vanilla,
+                    blocks: ModBlockDisplay::Vanilla,
+                    shadows: true,
+                },
+                |(_, display)| display.clone(),
+            )
+    }
+
     /// The first running mod driving a camera, if any.
     fn camera_winner(&self) -> Option<usize> {
         self.entries.iter().position(|e| {
@@ -2518,6 +2939,52 @@ impl From<ModPoseTarget> for PoseKey {
             ModPoseTarget::SelfPlayer => PoseKey::SelfPlayer,
             ModPoseTarget::Entity(id) => PoseKey::Entity(id),
         }
+    }
+}
+
+/// `item-model.set-model-rules`' limits (API 23): at most
+/// [`MODEL_RULES`] rules, at most [`MODEL_MATCHES`] component
+/// matches a rule, the strings clipped as the other stores'
+/// are. A rule naming no item or no model is dropped — it
+/// could only ever be inert, and a dropped rule keeps the
+/// evaluation index honest about what it holds. The values
+/// themselves are parsed when the index builds
+/// ([`ParsedMatch::parse`]).
+fn sanitize_model_rules(rules: Vec<ModModelRule>) -> Vec<ModModelRule> {
+    rules
+        .into_iter()
+        .take(MODEL_RULES)
+        .filter_map(|mut rule| {
+            rule.match_.item = clip_to(std::mem::take(&mut rule.match_.item), 256);
+            rule.model = clip_to(std::mem::take(&mut rule.model), 256);
+            if rule.match_.item.is_empty() || rule.model.is_empty() {
+                return None;
+            }
+            rule.match_.components.truncate(MODEL_MATCHES);
+            for m in &mut rule.match_.components {
+                m.name = clip_to(std::mem::take(&mut m.name), 256);
+                m.value = clip_to(std::mem::take(&mut m.value), 4096);
+            }
+            Some(rule)
+        })
+        .collect()
+}
+
+impl item_model::Host for State {
+    fn set_model_rules(&mut self, rules: Vec<ModModelRule>) {
+        self.model_rules = sanitize_model_rules(rules);
+        self.model_rules_version += 1;
+    }
+    fn set_decorations(&mut self, mut decorations: Vec<ModDecoration>) {
+        // The store is clamped here, at the door, and the stack
+        // matches parsed with it: what the aggregate later reads
+        // back is what the game draws.
+        decorations.truncate(ITEM_DECORATIONS);
+        self.item_decorations = decorations.iter().map(ItemDecoration::parse).collect();
+    }
+    fn set_dropped_display(&mut self, display: ModDroppedDisplay) {
+        let seq = ITEM_DISPLAY_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.dropped_display = Some((seq, display));
     }
 }
 

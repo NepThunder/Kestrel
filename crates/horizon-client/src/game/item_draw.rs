@@ -5,7 +5,7 @@
 //! (`ItemEnv`) and the special renderers' registries to the game.
 use super::{Dim, Game};
 use horizon_assets::item_model::{
-    Components, DisplayContext, GlobalPos, ItemEnv, LevelState, OwnerState, StackView,
+    Components, DisplayContext, GlobalPos, ItemEnv, ItemModels, LevelState, OwnerState, StackView,
 };
 use horizon_client::{
     block_entity_render::{diffuse_lights, vertex_light},
@@ -170,7 +170,7 @@ pub(super) fn owner_at(position: [f64; 3], yaw: f32, entity_type: &str) -> Owner
 }
 /// `UseDuration` of a stack (`Item.getUseDuration`): 72000 for drawn items
 /// and for `blocks_attacks` items (shields), the consume time for food.
-fn use_duration(components: &Components) -> i32 {
+pub(super) fn use_duration(components: &Components) -> i32 {
     if let Some(c) = components.get("minecraft:consumable") {
         let seconds = c["consume_seconds"].as_f64().unwrap_or(1.6);
         return (seconds * 20.0) as i32;
@@ -194,6 +194,14 @@ fn use_duration(components: &Components) -> i32 {
         "minecraft:brush" => 200,
         _ => 0,
     }
+}
+
+/// A mob's use duration for its held stack (API 23's owner
+/// fix): the same helper the local player's reads, over the
+/// stack's merged components — the remaining-based dispatch
+/// in third person reads true values, not a stand-in.
+pub(super) fn mob_use_duration(models: &ItemModels, stack: &ItemStack) -> i32 {
+    use_duration(&models.components(&item_render::stack_view(stack)))
 }
 
 impl Game<'_> {
@@ -285,7 +293,10 @@ impl Game<'_> {
         owner.is_carried = owner.is_selected;
         owner
     }
-    /// `ItemModelResolver.updateForTopItem`.
+    /// `ItemModelResolver.updateForTopItem`. The one swap point
+    /// (API 23): a mod's model rule rewrites the stack's
+    /// `minecraft:item_model` before resolution — every display
+    /// of the stack, the hand's included, reads the same state.
     pub(super) fn resolve_item(
         &self,
         stack: &ItemStack,
@@ -293,14 +304,38 @@ impl Game<'_> {
         owner: Option<&OwnerState>,
         seed: i32,
     ) -> ItemRenderState {
+        self.resolve_item_display(
+            stack,
+            display,
+            owner,
+            seed,
+            item_render::DroppedItemDisplay::default(),
+        )
+    }
+    /// [`Game::resolve_item`] under a dropped-display record
+    /// (API 23): only a dropped item's own resolve passes the
+    /// mods' policy, so the sprite bake reaches item entities
+    /// and nothing else — the hand and the screens keep the
+    /// extruded bake of the same (possibly swapped) model.
+    pub(super) fn resolve_item_display(
+        &self,
+        stack: &ItemStack,
+        display: DisplayContext,
+        owner: Option<&OwnerState>,
+        seed: i32,
+        dropped: item_render::DroppedItemDisplay,
+    ) -> ItemRenderState {
         let level = self.item_level();
+        let view = item_render::stack_view(stack);
+        let view = self.mod_item_swap(&view, display).unwrap_or(view);
         self.pack.item_renderer.resolve(
-            &item_render::stack_view(stack),
+            &view,
             display,
             owner,
             Some(&level),
             seed,
             &self.item_env(),
+            dropped,
         )
     }
     /// `GuiGraphics.renderItem(player, level, stack, x, y, 0)`.
@@ -403,6 +438,11 @@ impl Game<'_> {
         alpha: f64,
         out: &mut Vec<Vertex>,
     ) {
+        // The mods' dropped display (API 23), read once: the
+        // policy the item entities below resolve and pose by.
+        // Pickup particles in flight are not dropped items and
+        // keep the vanilla lie.
+        let (dropped_policy, _) = self.mod_dropped_display();
         let live = self.dropped.iter().map(|item| {
             let (p, q) = (item.previous, item.position);
             let at = [
@@ -439,12 +479,22 @@ impl Game<'_> {
             }
             // `extractItemGroupRenderState`: GROUND, seeded by the entity id.
             let owner = owner_at([q.x, q.y, q.z], 0.0, "minecraft:item");
-            let state = self.resolve_item(
-                &item.stack,
-                DisplayContext::Ground,
-                Some(&owner),
-                item.id as i32,
-            );
+            let state = if entity {
+                self.resolve_item_display(
+                    &item.stack,
+                    DisplayContext::Ground,
+                    Some(&owner),
+                    item.id as i32,
+                    dropped_policy,
+                )
+            } else {
+                self.resolve_item(
+                    &item.stack,
+                    DisplayContext::Ground,
+                    Some(&owner),
+                    item.id as i32,
+                )
+            };
             if state.is_empty() {
                 continue;
             }
@@ -452,7 +502,20 @@ impl Game<'_> {
             let (lo, _) = state.bounding_box();
             let min_offset_y = -lo.y + 0.0625;
             let bob = (age / 10.0 + item.bob_offset).sin() * 0.1 + 0.1;
-            let spin = item_render::item_spin(age, item.bob_offset);
+            // The billboard lie (API 23): a stack the policy
+            // turns to face the camera — a flat stack under
+            // `sprite`, a block-shaped one under `billboard` —
+            // poses at the yaw that faces it, its front toward
+            // the viewer; every other stack spins as vanilla's
+            // does. The bob above is untouched either way.
+            let billboard = entity
+                && ((state.flat && dropped_policy.flat_sprites)
+                    || (!state.flat && dropped_policy.block_billboards));
+            let spin = if billboard {
+                (-pos.x as f32).atan2(-pos.z as f32)
+            } else {
+                item_render::item_spin(age, item.bob_offset)
+            };
             let pose = glam::Mat4::from_translation(pos.as_vec3())
                 * glam::Mat4::from_translation(glam::Vec3::new(0.0, bob + min_offset_y, 0.0))
                 * glam::Mat4::from_rotation_y(spin);
@@ -514,5 +577,31 @@ mod tests {
         assert_eq!(use_duration(&bow), 72_000);
         // Anything else is not used at all.
         assert_eq!(use_duration(&Components::new()), 0);
+    }
+
+    #[test]
+    fn a_mobs_use_duration_reads_its_stack() {
+        // The owner fix (API 23): a mob's held stack reads the
+        // real helper over its merged components — an apple's
+        // 32 ticks, so ten ticks in, 22 remain; the old
+        // stand-in read 72000 for everything.
+        let mut prototypes = std::collections::BTreeMap::new();
+        let mut apple = Components::new();
+        apple.insert(
+            "minecraft:consumable".into(),
+            json!({"consume_seconds": 1.6}),
+        );
+        prototypes.insert("minecraft:apple".into(), apple);
+        let models = ItemModels {
+            definitions: std::collections::BTreeMap::new(),
+            prototypes,
+        };
+        let stack = ItemStack::new("minecraft:apple", 1);
+        let duration = mob_use_duration(&models, &stack);
+        assert_eq!(duration, 32);
+        assert_eq!(duration - 10, 22);
+        // A plain stick is not used at all.
+        let stick = ItemStack::new("minecraft:stick", 1);
+        assert_eq!(mob_use_duration(&models, &stick), 0);
     }
 }

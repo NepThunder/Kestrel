@@ -75,6 +75,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "screen-probe",
                 "-p",
+                "item-probe",
+                "-p",
                 "horizon-mods-test-guest",
                 "-p",
                 "horizon-mods-test-ui-guest",
@@ -111,6 +113,7 @@ fn mods_dir() -> &'static Path {
             ("pose_probe", example("pose-probe")),
             ("action_probe", example("action-probe")),
             ("screen_probe", example("screen-probe")),
+            ("item_probe", example("item-probe")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
         ];
@@ -499,6 +502,187 @@ fn pose_states_flow_and_offsets_clamp_and_drop() {
         .expect("the probe's offset stands");
     assert_eq!(scale, 1.0);
     assert_eq!(offset.parts[0].pitch, -45.0);
+}
+
+/// Capability `render`'s item models (API 23): the index
+/// evaluates newest-loaded-mod first against a stack's merged
+/// components — a component held from the item's defaults
+/// holds, a patch value holds, an unparseable value never
+/// does; a rule naming a missing definition is inert and the
+/// walk goes on; the declaration clamps land (64 rules, 4
+/// matches a rule, 256 marks); the dropped aggregate follows
+/// the newest write; and a stopped mod's declarations drop
+/// with it.
+#[test]
+fn item_model_rules_clamp_resolve_and_drop() {
+    use horizon_mods::{ItemDecorationTarget, ModBlockDisplay, ModDisplayContext, ModFlatDisplay};
+    use std::collections::BTreeMap;
+    let strings = |pairs: &[(&str, &str)]| -> BTreeMap<String, serde_json::Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
+            .collect()
+    };
+    let mut mods = Mods::load(
+        &[
+            mods_dir().join("horizon_mods_test_guest.kmod"),
+            mods_dir().join("item_probe.kmod"),
+        ],
+        |_| true,
+        |_| false,
+    );
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert_eq!(mods.entries()[1].status, Status::Running);
+    // The probe declared at load: its component-less apple rule
+    // wins the apple in every group it names, and no other.
+    let index = mods.item_model_index();
+    assert_eq!(
+        index.evaluate(
+            "minecraft:apple",
+            &strings(&[]),
+            ModDisplayContext::Gui,
+            |_| true
+        ),
+        Some("minecraft:golden_apple")
+    );
+    assert_eq!(
+        index.evaluate(
+            "minecraft:apple",
+            &strings(&[]),
+            ModDisplayContext::Ground,
+            |_| true
+        ),
+        None
+    );
+    assert!(!index.rules_item("minecraft:dirt"));
+    // The guest declares 65 rules: the host keeps 64, the last
+    // (on `minecraft:dropped_item`) dropped — and precedence is
+    // load order, not write order: the probe's rule still wins.
+    assert!(mods.command("imrules"));
+    mods.drain();
+    let index = mods.item_model_index();
+    assert_eq!(index.rules().count(), 65);
+    assert!(!index.rules_item("minecraft:dropped_item"));
+    assert_eq!(
+        index.evaluate(
+            "minecraft:apple",
+            &strings(&[]),
+            ModDisplayContext::Gui,
+            |_| true
+        ),
+        Some("minecraft:golden_apple")
+    );
+    // A definition that does not exist is inert, and the walk
+    // goes on to the guest's rarity rule: a rarity the stack
+    // holds from its item's defaults (the fixture map IS the
+    // merged set) holds.
+    let no_golden = |id: &str| id != "minecraft:golden_apple";
+    assert_eq!(
+        index.evaluate(
+            "minecraft:apple",
+            &strings(&[("minecraft:rarity", "rare")]),
+            ModDisplayContext::Gui,
+            no_golden,
+        ),
+        Some("test:rare_apple")
+    );
+    // No definitions at all: nothing swaps.
+    assert_eq!(
+        index.evaluate(
+            "minecraft:apple",
+            &strings(&[("minecraft:rarity", "rare")]),
+            ModDisplayContext::Gui,
+            |_| false,
+        ),
+        None
+    );
+    // A patch value holds: the renamed apple matches the
+    // compound the guest keyed on, in the hand's group too.
+    let mut renamed = BTreeMap::new();
+    renamed.insert(
+        "minecraft:custom_name".into(),
+        serde_json::json!({"text": "Bob"}),
+    );
+    assert_eq!(
+        index.evaluate(
+            "minecraft:apple",
+            &renamed,
+            ModDisplayContext::FirstPerson,
+            no_golden,
+        ),
+        Some("test:bob_apple")
+    );
+    // The stone's value never parsed: the rule never holds,
+    // whatever the stack carries.
+    assert_eq!(
+        index.evaluate(
+            "minecraft:stone",
+            &strings(&[("minecraft:custom_data", "anything")]),
+            ModDisplayContext::Gui,
+            |_| true,
+        ),
+        None
+    );
+    // The stick declared five matches; the host kept four: it
+    // holds when a to d hold, and only then.
+    let abcd: BTreeMap<String, serde_json::Value> = [("a", 1), ("b", 2), ("c", 3), ("d", 4)]
+        .iter()
+        .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+        .collect();
+    assert_eq!(
+        index.evaluate("minecraft:stick", &abcd, ModDisplayContext::Gui, |_| true),
+        Some("test:stick")
+    );
+    let abc = abcd
+        .iter()
+        .take(3)
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    assert_eq!(
+        index.evaluate("minecraft:stick", &abc, ModDisplayContext::Gui, |_| true),
+        None
+    );
+    // Marks: the probe's two stand; the guest's 257 declared
+    // are 256 kept, the slot-9999 mark dropped, the union in
+    // load order (the guest's marks first, the probe's last).
+    assert_eq!(mods.decorations().len(), 2);
+    assert!(mods.command("immarks"));
+    mods.drain();
+    let marks = mods.decorations();
+    assert_eq!(marks.len(), 256 + 2);
+    assert!(
+        !marks
+            .iter()
+            .any(|d| matches!(d.target, ItemDecorationTarget::Slot(9999)))
+    );
+    assert!(matches!(marks[257].target, ItemDecorationTarget::Slot(0)));
+    // The dropped aggregate is the probe's until the guest
+    // writes, then the guest's newest write — an all-vanilla
+    // record still counts as a write.
+    assert_eq!(mods.dropped_display().flat, ModFlatDisplay::Sprite);
+    assert!(mods.command("imdropped full"));
+    mods.drain();
+    let d = mods.dropped_display();
+    assert_eq!(
+        (d.flat, d.blocks, d.shadows),
+        (ModFlatDisplay::Sprite, ModBlockDisplay::Billboard, false)
+    );
+    assert!(mods.command("imdropped off"));
+    mods.drain();
+    assert_eq!(mods.dropped_display().flat, ModFlatDisplay::Vanilla);
+    // Stopping the guest drops its rules, marks and policy;
+    // the probe's declarations stand.
+    assert!(mods.command("panic"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Stopped {
+            name: "Test Guest".into(),
+            reason: "it crashed (a panic)".into(),
+        }]
+    );
+    assert_eq!(mods.item_model_index().rules().count(), 1);
+    assert_eq!(mods.decorations().len(), 2);
+    assert_eq!(mods.dropped_display().flat, ModFlatDisplay::Sprite);
 }
 
 /// Capability `actions` (API 21): the snapshot's target reaches
@@ -1318,6 +1502,8 @@ experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audi
     assert_eq!(level("action_probe.kmod"), 21);
     // The screen probe reads the open screen (`screen.state`, level 22).
     assert_eq!(level("screen_probe.kmod"), 22);
+    // The item probe swaps an item's model (`item-model.set-model-rules`, level 23).
+    assert_eq!(level("item_probe.kmod"), 23);
 }
 
 #[test]

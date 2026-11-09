@@ -107,6 +107,29 @@ pub fn bake_item_model(
     sprites: &dyn SpriteLookup,
     name: &str,
 ) -> Result<BakedItemModel> {
+    bake_item_model_flat_or_not(library, sprites, name, false)
+}
+
+/// The flat bake (API 23's `sprite` dropped display): the same
+/// bake with the item generator's extrusion cut to its front
+/// face — the sprite un-extruded, one layer of quads, no back,
+/// no edges. A model the generator did not make bakes exactly
+/// as [`bake_item_model`]: flatness is the generator's shape,
+/// and a block-shaped model keeps it.
+pub fn bake_item_model_flat(
+    library: &ModelLibrary,
+    sprites: &dyn SpriteLookup,
+    name: &str,
+) -> Result<BakedItemModel> {
+    bake_item_model_flat_or_not(library, sprites, name, true)
+}
+
+fn bake_item_model_flat_or_not(
+    library: &ModelLibrary,
+    sprites: &dyn SpriteLookup,
+    name: &str,
+    flat: bool,
+) -> Result<BakedItemModel> {
     let model = library
         .resolve(name)
         .or_else(|_| library.resolve(crate::resolve::MISSING_MODEL))?;
@@ -138,7 +161,14 @@ pub fn bake_item_model(
                     .mask(&m.sprite)
                     .unwrap_or_else(|| SpriteMask::opaque(16, 16))
             };
-            quads.extend(extrude_layer(&mask, &m, layer as i32)?);
+            let mut layer_quads = extrude_layer(&mask, &m, layer as i32)?;
+            if flat {
+                // `extrude_layer` emits the front (south) face
+                // first: the sprite's own quad. The back and
+                // the edges are the extrusion — cut.
+                layer_quads.truncate(1);
+            }
+            quads.extend(layer_quads);
         }
         quads
     } else {

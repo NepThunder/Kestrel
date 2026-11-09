@@ -546,8 +546,15 @@ impl Game<'_> {
             owner.main_arm_left = mob.main_arm_left();
             if off_hand == mob.extra.using_off_hand && mob.extra.using_item > 0 {
                 owner.using_this_item = true;
-                owner.use_duration = 72_000;
-                owner.use_item_remaining_ticks = 72_000 - mob.extra.using_item;
+                // `ItemStack.getUseDuration`, the real helper
+                // over the stack's merged components (API 23):
+                // the remaining-based dispatch reads true
+                // values — a drawn bow its full duration, an
+                // eating mob its food's — not a stand-in.
+                let duration =
+                    super::item_draw::mob_use_duration(&self.pack.item_renderer.models, &stack);
+                owner.use_duration = duration;
+                owner.use_item_remaining_ticks = duration - mob.extra.using_item;
                 owner.crossbow_charge_duration = 25;
             }
             use horizon_assets::item_model::DisplayContext as Context;

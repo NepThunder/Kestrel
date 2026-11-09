@@ -916,6 +916,7 @@ fn slot(
             None,
             0,
             &NoEnv,
+            item_render::DroppedItemDisplay::default(),
         );
         if !state.is_empty() {
             pending.push((state, x + 1.0, y + 1.0));

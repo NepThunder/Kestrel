@@ -1931,6 +1931,7 @@ dependencies = [
 name = "horizon-mods"
 version = "0.1.0"
 dependencies = [
+ "horizon-client-core",
  "horizon-shader-api",
  "log",
  "minisign-verify",
@@ -2391,6 +2392,13 @@ checksum = "173609498df190136aa7dea1a91db051746d339e18476eed5ca40521f02d7aa5"
 dependencies = [
  "is-docker",
  "once_cell",
+]
+
+[[package]]
+name = "item-probe"
+version = "0.1.0"
+dependencies = [
+ "horizon-mod-sdk",
 ]
 
 [[package]]

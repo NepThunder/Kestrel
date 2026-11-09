@@ -8,11 +8,11 @@
 //! test written in TOML, `tests/<name>.toml` in the mod's folder: steps, each
 //! saying what happens and what the mod must have shown by then.
 use crate::{
-    BlockPos, Clock, Container, Corner, Entity, GameMode, InvStack, ModAction, ModActionTarget,
-    ModArmPose, ModBlockTarget, ModEffect, ModEntityPoseState, ModEntityTarget, ModFace, ModHand,
-    ModItemUse, ModPoseSwingAnim, ModScreenEvent, ModScreenState, ModSelfState, ModTradeList,
-    ModTradeOffer, ModTradeStack, Mods, Output, Panel, Player, PlayerInventory, ServerPlayer,
-    Snapshot, Status, Target, WorldDrawLine,
+    BlockPos, Clock, Container, Corner, Entity, GameMode, InvStack, ItemModelIndex, ModAction,
+    ModActionTarget, ModArmPose, ModBlockDisplay, ModBlockTarget, ModEffect, ModEntityPoseState,
+    ModEntityTarget, ModFace, ModFlatDisplay, ModHand, ModItemUse, ModPoseSwingAnim,
+    ModScreenEvent, ModScreenState, ModSelfState, ModTradeList, ModTradeOffer, ModTradeStack, Mods,
+    Output, Panel, Player, PlayerInventory, ServerPlayer, Snapshot, Status, Target, WorldDrawLine,
 };
 use serde::Deserialize;
 use std::{
@@ -1312,6 +1312,19 @@ pub struct Expect {
     /// The trade indices the mod chose during the step, in
     /// order (capability `screen`, API 22).
     select_trades: Option<Vec<u32>>,
+    /// The running mods' model rules after the step, in
+    /// evaluation order, each as `ItemModelIndex`'s rule
+    /// spelling names it (capability `render`'s `item-model`,
+    /// API 23).
+    item_rules: Option<Vec<String>>,
+    /// The running mods' slot marks after the step, in load
+    /// order, each as `ItemDecoration`'s spelling names it
+    /// (capability `render`'s `item-model`, API 23).
+    decorations: Option<Vec<String>>,
+    /// How dropped items display after the step, as
+    /// `flat <..> blocks <..> shadows <..>` (capability
+    /// `render`'s `item-model`, API 23).
+    dropped_display: Option<String>,
     /// The mod is turned off during this step, for a reason holding this text.
     /// Without it, a mod that stops fails the test.
     stopped: Option<String>,
@@ -1660,6 +1673,36 @@ impl Step {
                 })
                 .collect();
             same("select-trades", want, &got)?;
+        }
+        if let Some(want) = &e.item_rules {
+            let index = game.mods.item_model_index();
+            let got: Vec<String> = index.rules().map(ItemModelIndex::rule_spelling).collect();
+            same("item-rules", want, &got)?;
+        }
+        if let Some(want) = &e.decorations {
+            let got: Vec<String> = game
+                .mods
+                .decorations()
+                .iter()
+                .map(|d| d.spelling())
+                .collect();
+            same("decorations", want, &got)?;
+        }
+        if let Some(want) = &e.dropped_display {
+            let d = game.mods.dropped_display();
+            let got = format!(
+                "flat {} blocks {} shadows {}",
+                match d.flat {
+                    ModFlatDisplay::Vanilla => "vanilla",
+                    ModFlatDisplay::Sprite => "sprite",
+                },
+                match d.blocks {
+                    ModBlockDisplay::Vanilla => "vanilla",
+                    ModBlockDisplay::Billboard => "billboard",
+                },
+                if d.shadows { "on" } else { "off" },
+            );
+            same("dropped-display", &Some(want.clone()), &Some(got))?;
         }
         let feedback = |error: bool| {
             out.iter().rev().find_map(|o| match o {

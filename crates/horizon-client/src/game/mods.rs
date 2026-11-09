@@ -29,10 +29,10 @@ use {
         ui,
     },
     horizon_mods::{
-        Clock, ModAction, ModArmPose, ModBlockTarget, ModEntityPoseState, ModFace, ModHand,
-        ModHandState, ModItemUse, ModKey, ModPoseSwingAnim, ModPoseTarget, ModSwingAnim,
-        ModSwingKind, Mods, Output, Player, Runs, ServerPlayer, Snapshot, SnapshotCamera, Status,
-        UiScreen, UiWidget, WorldView,
+        Clock, ModAction, ModArmPose, ModBlockDisplay, ModBlockTarget, ModDisplayContext,
+        ModEntityPoseState, ModFace, ModFlatDisplay, ModHand, ModHandState, ModItemUse, ModKey,
+        ModPoseSwingAnim, ModPoseTarget, ModSwingAnim, ModSwingKind, Mods, Output, Player, Runs,
+        ServerPlayer, Snapshot, SnapshotCamera, Status, UiScreen, UiWidget, WorldView,
     },
     std::time::Instant,
     winit::{event::MouseButton, keyboard::KeyCode},
@@ -241,6 +241,222 @@ mod action_tests {
             [-1, 0, 0],
             &target(ModFace::West)
         ));
+    }
+}
+
+#[cfg(all(test, feature = "mods"))]
+mod item_model_tests {
+    use super::item_model_group;
+    use horizon_assets::item_model::DisplayContext as Context;
+    use horizon_mods::{
+        ItemModelIndex, ModComponentMatch, ModDisplayContext, ModModelMatch, ModModelRule,
+    };
+    use serde_json::{Value, json};
+    use std::collections::BTreeMap;
+
+    fn rule(
+        item: &str,
+        matches: &[(&str, &str)],
+        contexts: &[ModDisplayContext],
+        model: &str,
+    ) -> ModModelRule {
+        ModModelRule {
+            match_: ModModelMatch {
+                item: item.into(),
+                components: matches
+                    .iter()
+                    .map(|(name, value)| ModComponentMatch {
+                        name: (*name).into(),
+                        value: (*value).into(),
+                    })
+                    .collect(),
+            },
+            contexts: contexts.to_vec(),
+            model: model.into(),
+        }
+    }
+    fn comps(pairs: &[(&str, Value)]) -> BTreeMap<String, Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+
+    /// The match (API 23): the item must be the stack's; a
+    /// component's parsed value compares against the stack's
+    /// merged set — a value the item holds from its defaults
+    /// (the rarity case: the fixture map IS the merged set,
+    /// defaults included) and a value its patch sets both
+    /// hold, and a component the patch removed — absent from
+    /// the merged set — does not.
+    #[test]
+    fn a_match_reads_the_merged_components() {
+        let rules = [rule(
+            "minecraft:dragon_egg",
+            &[("minecraft:rarity", "epic")],
+            &[ModDisplayContext::Gui],
+            "test:epic_egg",
+        )];
+        let index = ItemModelIndex::from_mod_rules([rules.as_slice()]);
+        // The rarity held from the item's defaults.
+        let defaults = comps(&[("minecraft:rarity", json!("epic"))]);
+        assert_eq!(
+            index.evaluate(
+                "minecraft:dragon_egg",
+                &defaults,
+                ModDisplayContext::Gui,
+                |_| true
+            ),
+            Some("test:epic_egg")
+        );
+        // Another item carrying the same component is not the stack.
+        assert_eq!(
+            index.evaluate("minecraft:apple", &defaults, ModDisplayContext::Gui, |_| {
+                true
+            }),
+            None
+        );
+        // The renamed apple: a patch value holds.
+        let rules = [rule(
+            "minecraft:apple",
+            &[("minecraft:custom_name", "{text:\"Bob\"}")],
+            &[ModDisplayContext::Gui],
+            "test:bob_apple",
+        )];
+        let index = ItemModelIndex::from_mod_rules([rules.as_slice()]);
+        let renamed = comps(&[("minecraft:custom_name", json!({"text": "Bob"}))]);
+        assert_eq!(
+            index.evaluate("minecraft:apple", &renamed, ModDisplayContext::Gui, |_| {
+                true
+            }),
+            Some("test:bob_apple")
+        );
+        // A patch that REMOVES the component: the merged set
+        // has no such key, and the match does not hold.
+        assert_eq!(
+            index.evaluate(
+                "minecraft:apple",
+                &comps(&[]),
+                ModDisplayContext::Gui,
+                |_| true
+            ),
+            None
+        );
+        // A number spelled in SNBT is the prototype's number.
+        let rules = [rule(
+            "minecraft:stick",
+            &[("minecraft:max_stack_size", "64")],
+            &[ModDisplayContext::Gui],
+            "test:stick",
+        )];
+        let index = ItemModelIndex::from_mod_rules([rules.as_slice()]);
+        let numbered = comps(&[("minecraft:max_stack_size", json!(64))]);
+        assert_eq!(
+            index.evaluate("minecraft:stick", &numbered, ModDisplayContext::Gui, |_| {
+                true
+            }),
+            Some("test:stick")
+        );
+    }
+
+    /// Precedence (API 23): the newest-loaded mod wins; within
+    /// a mod, the first matching rule; a rule naming a
+    /// definition that does not exist is inert and the walk
+    /// goes on past it.
+    #[test]
+    fn newest_mod_and_first_rule_win_and_missing_models_are_inert() {
+        let older = [
+            rule(
+                "minecraft:apple",
+                &[],
+                &[ModDisplayContext::Gui],
+                "test:older",
+            ),
+            rule(
+                "minecraft:apple",
+                &[],
+                &[ModDisplayContext::Gui],
+                "test:older_second",
+            ),
+        ];
+        let newer = [rule(
+            "minecraft:apple",
+            &[],
+            &[ModDisplayContext::Gui],
+            "test:missing",
+        )];
+        let index = ItemModelIndex::from_mod_rules([older.as_slice(), newer.as_slice()]);
+        // Every definition exists: the newer mod's rule wins.
+        assert_eq!(
+            index.evaluate(
+                "minecraft:apple",
+                &comps(&[]),
+                ModDisplayContext::Gui,
+                |_| true
+            ),
+            Some("test:missing")
+        );
+        // The newer rule's model is missing: inert — the older
+        // mod's first rule answers.
+        assert_eq!(
+            index.evaluate(
+                "minecraft:apple",
+                &comps(&[]),
+                ModDisplayContext::Gui,
+                |id| id != "test:missing",
+            ),
+            Some("test:older")
+        );
+        // A group the rules do not name reads nothing.
+        assert_eq!(
+            index.evaluate(
+                "minecraft:apple",
+                &comps(&[]),
+                ModDisplayContext::Ground,
+                |_| true
+            ),
+            None
+        );
+    }
+
+    /// The context groups (API 23): the game's ten display
+    /// contexts in the interface's six groups.
+    #[test]
+    fn display_contexts_group_as_the_interface_names() {
+        assert_eq!(
+            item_model_group(Context::FirstPersonLeftHand),
+            Some(ModDisplayContext::FirstPerson)
+        );
+        assert_eq!(
+            item_model_group(Context::FirstPersonRightHand),
+            Some(ModDisplayContext::FirstPerson)
+        );
+        assert_eq!(
+            item_model_group(Context::ThirdPersonLeftHand),
+            Some(ModDisplayContext::ThirdPerson)
+        );
+        assert_eq!(
+            item_model_group(Context::ThirdPersonRightHand),
+            Some(ModDisplayContext::ThirdPerson)
+        );
+        assert_eq!(item_model_group(Context::Gui), Some(ModDisplayContext::Gui));
+        assert_eq!(
+            item_model_group(Context::Ground),
+            Some(ModDisplayContext::Ground)
+        );
+        assert_eq!(
+            item_model_group(Context::Fixed),
+            Some(ModDisplayContext::Fixed)
+        );
+        assert_eq!(
+            item_model_group(Context::OnShelf),
+            Some(ModDisplayContext::Fixed)
+        );
+        assert_eq!(
+            item_model_group(Context::Head),
+            Some(ModDisplayContext::Head)
+        );
+        assert_eq!(item_model_group(Context::None), None);
     }
 }
 
@@ -523,6 +739,21 @@ impl Game<'_> {
     }
     pub(super) fn draw_mod_screen_buttons(&self, _batch: &mut HudBatch) {}
     pub(super) fn draw_mod_screen_highlights(&self, _batch: &mut HudBatch, _ox: f32, _oy: f32) {}
+    /// API 23: no mod runs, so no slot carries an item mark.
+    pub(super) fn draw_mod_screen_decorations_under(
+        &mut self,
+        _batch: &mut HudBatch,
+        _ox: f32,
+        _oy: f32,
+    ) {
+    }
+    pub(super) fn draw_mod_screen_decorations_over(
+        &mut self,
+        _batch: &mut HudBatch,
+        _ox: f32,
+        _oy: f32,
+    ) {
+    }
     pub(super) fn draw_mod_pause_buttons(&self, _batch: &mut HudBatch, _row3: bool) {}
     pub(super) fn mod_pause_press(&mut self, _w: f32, _h: f32, _row3: bool) -> bool {
         false
@@ -536,6 +767,30 @@ impl Game<'_> {
     }
     pub(super) fn mod_debug_claimed(&self) -> bool {
         false
+    }
+    /// API 23: no mod runs, so no stack's model is swapped, no
+    /// slot carries a mark and dropped items lie as vanilla's do.
+    pub(super) fn mod_item_swap(
+        &self,
+        _view: &horizon_assets::item_model::StackView,
+        _display: horizon_assets::item_model::DisplayContext,
+    ) -> Option<horizon_assets::item_model::StackView> {
+        None
+    }
+    pub(super) fn mod_dropped_display(
+        &self,
+    ) -> (horizon_client::item_render::DroppedItemDisplay, bool) {
+        (
+            horizon_client::item_render::DroppedItemDisplay::default(),
+            true,
+        )
+    }
+    pub(super) fn draw_mod_hotbar_decorations(
+        &self,
+        _batch: &mut HudBatch,
+        _rects: &[(u32, f32, f32)],
+        _under: bool,
+    ) {
     }
     pub(super) fn lend_client_world(&mut self) -> bool {
         false
@@ -704,6 +959,30 @@ fn state_string(registry: &BlockRegistry, state: BlockStateId) -> String {
         .map(|(k, v)| format!("{k}={v}"))
         .collect();
     format!("{}[{}]", s.name, props.join(","))
+}
+
+/// The item-model group (API 23) a display context reads its
+/// rules under: the game's ten contexts in the WIT interface's
+/// six groups. `None`'s display (a bare model part) reads no
+/// rules.
+#[cfg(feature = "mods")]
+pub(super) fn item_model_group(
+    display: horizon_assets::item_model::DisplayContext,
+) -> Option<ModDisplayContext> {
+    use horizon_assets::item_model::DisplayContext as Context;
+    Some(match display {
+        Context::FirstPersonLeftHand | Context::FirstPersonRightHand => {
+            ModDisplayContext::FirstPerson
+        }
+        Context::ThirdPersonLeftHand | Context::ThirdPersonRightHand => {
+            ModDisplayContext::ThirdPerson
+        }
+        Context::Gui => ModDisplayContext::Gui,
+        Context::Ground => ModDisplayContext::Ground,
+        Context::Fixed | Context::OnShelf => ModDisplayContext::Fixed,
+        Context::Head => ModDisplayContext::Head,
+        Context::None => return None,
+    })
 }
 
 #[cfg(feature = "mods")]
@@ -1504,6 +1783,99 @@ impl Game<'_> {
     /// hat: a body that would draw anyway keeps vanilla's rules.
     fn mod_forces_own_body(&self) -> bool {
         self.mods_show_own_body() && !self.own_body_in_view() && !self.pack_shadow_casters.0
+    }
+    /// The item-model swap (API 23): the stack view a mod's
+    /// model rule redirects, or None for the stack's own. The
+    /// one substitution `resolve_item` applies before
+    /// resolution: the index's prefilter answers for the
+    /// overwhelming majority of stacks (nothing rules them),
+    /// and only a ruled item pays for its merged components
+    /// and the walk. A rule naming a definition this build
+    /// does not have is inert — the resolver never sees it.
+    pub(super) fn mod_item_swap(
+        &self,
+        view: &horizon_assets::item_model::StackView,
+        display: horizon_assets::item_model::DisplayContext,
+    ) -> Option<horizon_assets::item_model::StackView> {
+        let index = self.mods.mods.item_model_index();
+        if !index.rules_item(&view.item) {
+            return None;
+        }
+        let group = item_model_group(display)?;
+        let models = &self.pack.item_renderer.models;
+        let components = models.components(view);
+        let model = index.evaluate(&view.item, &components, group, |id| {
+            models.definitions.contains_key(id)
+        })?;
+        let mut swapped = view.clone();
+        swapped
+            .patch
+            .insert("minecraft:item_model".into(), Some(model.into()));
+        Some(swapped)
+    }
+    /// How dropped items display (API 23): the runtime's
+    /// aggregate in the renderer's terms, and whether dropped
+    /// items cast shadows under it.
+    pub(super) fn mod_dropped_display(
+        &self,
+    ) -> (horizon_client::item_render::DroppedItemDisplay, bool) {
+        let display = self.mods.mods.dropped_display();
+        (
+            horizon_client::item_render::DroppedItemDisplay {
+                flat_sprites: display.flat == ModFlatDisplay::Sprite,
+                block_billboards: display.blocks == ModBlockDisplay::Billboard,
+            },
+            display.shadows,
+        )
+    }
+    /// The mods' marks on the hotbar (API 23): drawn over the
+    /// slots the HUD pass just laid out — `under` beneath the
+    /// stacks, then again above them — keyed on the hotbar's
+    /// own stacks (slots 0 to 8, and 40 the offhand, in
+    /// inventory numbering).
+    pub(super) fn draw_mod_hotbar_decorations(
+        &self,
+        batch: &mut HudBatch,
+        rects: &[(u32, f32, f32)],
+        under: bool,
+    ) {
+        let marks = self.mods.mods.decorations();
+        if marks.is_empty() {
+            return;
+        }
+        let models = &self.pack.item_renderer.models;
+        let slots: Vec<(
+            u32,
+            f32,
+            f32,
+            Option<(String, horizon_assets::item_model::Components)>,
+        )> = rects
+            .iter()
+            .map(|&(slot, x, y)| {
+                let stack = if slot == 504 {
+                    self.offhand.as_ref()
+                } else {
+                    self.inventory.get(slot as usize).and_then(Option::as_ref)
+                };
+                let stack = stack.map(|s| {
+                    (
+                        s.item.to_string(),
+                        models
+                            .components(&horizon_client::item_render::stack_view(s))
+                            .into_owned(),
+                    )
+                });
+                (slot, x, y, stack)
+            })
+            .collect();
+        super::mod_screen::draw_mod_decorations(
+            &self.gui.atlas,
+            batch,
+            &marks,
+            &slots,
+            true,
+            under,
+        );
     }
     /// `/command` typed in chat: true when a mod owns it.
     pub(super) fn mod_command(&mut self, command: &str) -> bool {

@@ -1293,6 +1293,157 @@ interface entity-pose {
     set-first-person-body: func(shown: bool);
 }
 
+/// Capability `render` (experimental), interface `item-model`:
+/// how items themselves are shown. A mod may say which item
+/// model definition a stack displays as, put marks of its own
+/// on the game's item slots, and choose how dropped items lie
+/// in the world. Everything here is a picture on this client:
+/// no call moves, spends, creates or changes an item, and a
+/// rule names definitions that already exist — in the game's
+/// own assets, a resource pack, or a content mod's — never a
+/// model the mod supplies.
+interface item-model {
+    /// One component a stack must carry for a match to hold:
+    /// its name, and its value in SNBT — the syntax `inventory`
+    /// spells components in. The test is against the stack's
+    /// full components, the item's own defaults included (a
+    /// rarity every dragon egg carries matches; a name only a
+    /// renamed stack carries matches that stack).
+    record component-match {
+        name: string,
+        value: string,
+    }
+
+    /// What a rule keys on: an item, and every component match
+    /// holding. An empty match list keys on the item alone.
+    record model-match {
+        item: string,
+        components: list<component-match>,
+    }
+
+    /// Where an item is on display, as a rule names it: the
+    /// game's own display contexts, grouped the way mods think
+    /// of them. (`ground` is every ground display — a dropped
+    /// item, an item on a campfire's grill alike; see the
+    /// district's limits for what that means.)
+    enum display-context {
+        first-person,
+        third-person,
+        gui,
+        ground,
+        fixed,
+        head,
+    }
+
+    /// A stack displays as another item model definition.
+    record model-rule {
+        match: model-match,
+        /// The displays the swap applies to. An empty list
+        /// applies nowhere.
+        contexts: list<display-context>,
+        /// The definition to display instead: the id a stack's
+        /// `minecraft:item_model` component would name
+        /// (`minecraft:apple`, `eatinganimation:apple`). A rule
+        /// naming a definition that does not exist is inert —
+        /// the stack displays as itself — never an error and
+        /// never the missing model.
+        model: string,
+    }
+
+    /// Replaces the mod's model rules: at most 64, each with
+    /// at most 4 component matches. When rules from several
+    /// mods could swap one stack's display, the later-loaded
+    /// mod's rule wins; within one mod, the first matching
+    /// rule in this list wins. A declaration survives until
+    /// replaced or the mod stops. Declare rules once (in
+    /// `init`, or when settings change), not per frame.
+    set-model-rules: func(rules: list<model-rule>);
+
+    /// What a slot mark keys on: one slot, by number, or every
+    /// slot whose stack matches. A stack match with an empty
+    /// item matches every item — a mark on a component alone
+    /// (a rarity, wherever it sits).
+    variant decoration-target {
+        slot(u32),
+        stack(model-match),
+    }
+
+    /// Where a mark shows: on the playing hotbar, on the
+    /// inventory and container screens, or both. (The creative
+    /// screen's own item grid is not a place; see the limits.)
+    enum decoration-place {
+        hotbar,
+        screens,
+    }
+
+    /// A mark on an item slot, drawn by the game in its own
+    /// hand: a soft fill under the slot's stack, an outline
+    /// around it, a star at its corner. Colours are 0xRRGGBB.
+    record decoration {
+        target: decoration-target,
+        places: list<decoration-place>,
+        /// A translucent fill in this colour under the stack —
+        /// a glow behind the item. None: no fill.
+        fill: option<u32>,
+        /// An outline in this colour around the slot, its
+        /// bottom edge lit — the game's border hand. None: no
+        /// outline.
+        border: option<u32>,
+        /// A small star at the slot's top-right corner, in the
+        /// border's colour, or the fill's when there is no
+        /// border. Drawn only when one of them names a colour.
+        star: bool,
+    }
+
+    /// Replaces the mod's slot marks: at most 256. Marks from
+    /// several mods on one slot all draw, in load order. They
+    /// survive until replaced or the mod stops; a mark for a
+    /// slot no open screen has simply draws nowhere until a
+    /// screen has it.
+    set-decorations: func(decorations: list<decoration>);
+
+    /// How a dropped flat item (a potion, a tool — an item
+    /// whose model is a sprite) lies in the world.
+    enum flat-display {
+        /// As the game drops it: its full model, spinning.
+        vanilla,
+        /// One flat face, turned to face you, its edges and
+        /// back left undrawn. It still bobs, stacks and glows
+        /// as before.
+        sprite,
+    }
+
+    /// How a dropped block item lies in the world.
+    enum block-display {
+        /// As the game drops it: its 3D model, spinning.
+        vanilla,
+        /// Its 3D model whole, turned to face you instead of
+        /// spinning.
+        billboard,
+    }
+
+    /// How dropped items — item entities, and items flying to
+    /// the player on pickup — are displayed. Nothing else that
+    /// shows an item on the ground (a vault's prize, a thrown
+    /// potion) is an item entity, and is not this record's.
+    record dropped-display {
+        flat: flat-display,
+        blocks: block-display,
+        /// Dropped items cast the game's round shadow under
+        /// themselves. False leaves them shadowless (the game's
+        /// own entity-shadows setting still governs the rest).
+        shadows: bool,
+    }
+
+    /// Sets how dropped items display, for every dropped item
+    /// on this client. One policy applies: the latest call
+    /// across the running mods wins, as the hand's one offset
+    /// wins the hand. Writing the all-vanilla record
+    /// (`vanilla`, `vanilla`, `true`) hands the display back;
+    /// a stopped mod's policy goes with it.
+    set-dropped-display: func(display: dropped-display);
+}
+
 /// What the game calls for sounds (API 15). Only the first mod in
 /// load order with this export is asked; mods built before API 15
 /// have no such export and simply never hear sounds. The call must
@@ -1908,6 +2059,7 @@ world horizon-ui-mod {
     import audio;
     import hand;
     import entity-pose;
+    import item-model;
     import actions;
     import screen;
     export ui-events;
@@ -1938,12 +2090,16 @@ world audio-host {
 /// acting is not presentation. API 22's `screen` likewise: its
 /// reads are presentation, but `select-trade` spends items, so
 /// the interface is its own capability with a consent line that
-/// names both halves.
+/// names both halves. API 23's `item-model` rides along with the
+/// hand and the poses: its writes are display only — a stack's
+/// picture, marks on its slots, dropped items' lie — so it is
+/// render's, with no consent line of its own.
 world render-host {
     import render;
     import input;
     import hand;
     import entity-pose;
+    import item-model;
     import actions;
     import screen;
 }

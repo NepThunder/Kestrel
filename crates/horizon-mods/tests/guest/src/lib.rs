@@ -14,13 +14,16 @@
 //! `/actslot` and `/actspam` capability `actions`' clicks (API 21);
 //! `/scrnstate`, `/scrnbuttons`, `/scrnhighlight`, `/scrntrade`,
 //! `/scrndebug` and `/scrnpoll` capability `screen`'s reads,
-//! declarations and events (API 22); `tick` and `frame` do
+//! declarations and events (API 22); `/imrules`, `/immarks` and
+//! `/imdropped` capability `render`'s item models, slot marks
+//! and dropped display (API 23); `tick` and `frame` do
 //! nothing, to measure the cost of a call.
 use horizon_mod_sdk::{
-    ActionHand, ActionTarget, Anchor, BlockTarget, Face, HandFov, HandFovMode, HandTransform,
-    Highlight, Mod, PartOffset, PoseOffset, PoseTarget, Registration, ScreenButton, ScreenEvent,
-    SoundAdjustment, SoundQuery, SwingAnim, actions, audio, chat, entity_pose, game, hand, input,
-    render, screen, storage,
+    ActionHand, ActionTarget, Anchor, BlockDisplay, BlockTarget, ComponentMatch, Decoration,
+    DecorationPlace, DecorationTarget, DisplayContext, DroppedDisplay, Face, FlatDisplay, HandFov,
+    HandFovMode, HandTransform, Highlight, Mod, ModelMatch, ModelRule, PartOffset, PoseOffset,
+    PoseTarget, Registration, ScreenButton, ScreenEvent, SoundAdjustment, SoundQuery, SwingAnim,
+    actions, audio, chat, entity_pose, game, hand, input, item_model, render, screen, storage,
 };
 
 struct Guest {
@@ -68,6 +71,9 @@ impl Mod for Guest {
             "scrntrade",
             "scrndebug",
             "scrnpoll",
+            "imrules",
+            "immarks",
+            "imdropped",
         ]
         .into_iter()
         .fold(Registration::new(), Registration::command)
@@ -538,6 +544,153 @@ impl Mod for Guest {
                     })
                     .collect();
                 Ok(Some(format!("events [{}]", parts.join("; "))))
+            }
+            "imrules" => {
+                // 65 declared rules: the host keeps 64. The last
+                // one (on `minecraft:dropped_item`) is the dropped
+                // sixty-fifth; the stick's five matches are the
+                // fifth dropped; the stone's value never parses.
+                let matched = |item: &str, name: &str, value: &str| ModelRule {
+                    match_: ModelMatch {
+                        item: item.into(),
+                        components: vec![ComponentMatch {
+                            name: name.into(),
+                            value: value.into(),
+                        }],
+                    },
+                    contexts: vec![DisplayContext::Gui],
+                    model: format!("test:{item}"),
+                };
+                let mut rules = vec![
+                    ModelRule {
+                        match_: ModelMatch {
+                            item: "minecraft:apple".into(),
+                            components: vec![ComponentMatch {
+                                name: "minecraft:rarity".into(),
+                                value: "rare".into(),
+                            }],
+                        },
+                        contexts: vec![DisplayContext::Gui],
+                        model: "test:rare_apple".into(),
+                    },
+                    ModelRule {
+                        match_: ModelMatch {
+                            item: "minecraft:apple".into(),
+                            components: vec![ComponentMatch {
+                                name: "minecraft:custom_name".into(),
+                                value: "{text:\"Bob\"}".into(),
+                            }],
+                        },
+                        contexts: vec![DisplayContext::Gui, DisplayContext::FirstPerson],
+                        model: "test:bob_apple".into(),
+                    },
+                    ModelRule {
+                        match_: ModelMatch {
+                            item: "minecraft:stone".into(),
+                            components: vec![ComponentMatch {
+                                name: "minecraft:custom_data".into(),
+                                value: "{oops".into(),
+                            }],
+                        },
+                        contexts: vec![DisplayContext::Gui],
+                        model: "test:broken".into(),
+                    },
+                    ModelRule {
+                        match_: ModelMatch {
+                            item: "minecraft:stick".into(),
+                            components: ["a", "b", "c", "d", "e"]
+                                .iter()
+                                .enumerate()
+                                .map(|(i, name)| ComponentMatch {
+                                    name: (*name).into(),
+                                    value: format!("{}", i + 1),
+                                })
+                                .collect(),
+                        },
+                        contexts: vec![DisplayContext::Gui],
+                        model: "test:stick".into(),
+                    },
+                ];
+                for i in 0..60 {
+                    rules.push(matched(
+                        &format!("minecraft:filler_{i}"),
+                        "minecraft:rarity",
+                        "common",
+                    ));
+                }
+                rules.push(matched(
+                    "minecraft:dropped_item",
+                    "minecraft:rarity",
+                    "common",
+                ));
+                item_model::set_model_rules(&rules);
+                Ok(Some("rules set".into()))
+            }
+            "immarks" => {
+                // 257 declared marks: the host keeps 256. The
+                // last one (slot 9999) is the dropped 257th.
+                let mut marks = vec![
+                    Decoration {
+                        target: DecorationTarget::Slot(5),
+                        places: vec![DecorationPlace::Hotbar, DecorationPlace::Screens],
+                        fill: Some(0xff0000),
+                        border: None,
+                        star: false,
+                    },
+                    Decoration {
+                        target: DecorationTarget::Stack(ModelMatch {
+                            item: "minecraft:apple".into(),
+                            components: vec![ComponentMatch {
+                                name: "minecraft:rarity".into(),
+                                value: "rare".into(),
+                            }],
+                        }),
+                        places: vec![DecorationPlace::Screens],
+                        fill: None,
+                        border: Some(0x00ff00),
+                        star: true,
+                    },
+                ];
+                for i in 0..254u32 {
+                    marks.push(Decoration {
+                        target: DecorationTarget::Slot(1000 + i),
+                        places: vec![DecorationPlace::Screens],
+                        fill: Some(0x0000ff),
+                        border: None,
+                        star: false,
+                    });
+                }
+                marks.push(Decoration {
+                    target: DecorationTarget::Slot(9999),
+                    places: vec![DecorationPlace::Screens],
+                    fill: Some(0xffffff),
+                    border: None,
+                    star: false,
+                });
+                item_model::set_decorations(&marks);
+                Ok(Some("marks set".into()))
+            }
+            "imdropped" => {
+                let display = match args {
+                    "sprite" => DroppedDisplay {
+                        flat: FlatDisplay::Sprite,
+                        blocks: BlockDisplay::Vanilla,
+                        shadows: true,
+                    },
+                    "full" => DroppedDisplay {
+                        flat: FlatDisplay::Sprite,
+                        blocks: BlockDisplay::Billboard,
+                        shadows: false,
+                    },
+                    "off" => DroppedDisplay {
+                        flat: FlatDisplay::Vanilla,
+                        blocks: BlockDisplay::Vanilla,
+                        shadows: true,
+                    },
+                    _ => return Err("Usage: /imdropped <sprite|full|off>".into()),
+                };
+                item_model::set_dropped_display(display);
+                Ok(Some("dropped set".into()))
             }
             _ => {
                 chat::show(&format!("hello {args} after {} ticks", self.ticks));

@@ -17,7 +17,7 @@ use crate::{
 use glam::{Mat3, Mat4, Vec3};
 use horizon_assets::{
     animation::AnimationMetadata,
-    item_bake::{BakedItemModel, SpriteLookup, SpriteMask, bake_item_model},
+    item_bake::{BakedItemModel, SpriteLookup, SpriteMask, bake_item_model, bake_item_model_flat},
     item_model::{
         ClientItem, Components, Context, DisplayContext, FoilType, ItemEnv, ItemModels,
         LayerContent, LevelState, OwnerState, SpecialModel, StackView,
@@ -201,6 +201,26 @@ pub struct ItemRenderState {
     pub layers: Vec<LayerRender>,
     pub oversized_in_gui: bool,
     pub animated: bool,
+    /// The stack displays flat (API 23): every layer's model
+    /// came out of the item generator — a sprite the bake
+    /// extruded — so the `sprite` dropped display can lie it
+    /// down un-extruded. A block-shaped model, a special
+    /// renderer or a missing model is not flat, and neither is
+    /// an empty state.
+    pub flat: bool,
+}
+/// How dropped items lie (API 23): the resolved form of the
+/// runtime's dropped-display record, carried only by the
+/// dropped item's resolve — every other display keeps the
+/// vanilla default. `flat_sprites`: flat stacks bake
+/// un-extruded; `block_billboards`: block-shaped stacks face
+/// the camera instead of spinning. The shadows half of the
+/// record is the game's own pass's business, not the
+/// resolver's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DroppedItemDisplay {
+    pub flat_sprites: bool,
+    pub block_billboards: bool,
 }
 impl ItemRenderState {
     pub fn is_empty(&self) -> bool {
@@ -483,6 +503,10 @@ pub struct ItemRenderer {
     library: Arc<ModelLibrary>,
     sprites: FileSprites,
     baked: Mutex<HashMap<String, Arc<BakedItemModel>>>,
+    /// The flat bakes (API 23): each generated model baked
+    /// un-extruded, cached apart from `baked` — the same model
+    /// name, a different geometry.
+    baked_flat: Mutex<HashMap<String, Arc<BakedItemModel>>>,
     extents: Mutex<HashMap<String, Arc<Vec<Vec3>>>>,
     /// GUI items already drawn: the HUD vertices (and any animated glint quad UVs)
     /// of an item at a GUI position (`gui::draw`), reused across frames.
@@ -588,6 +612,7 @@ impl ItemRenderer {
                 translucent: Mutex::default(),
             },
             baked: Mutex::default(),
+            baked_flat: Mutex::default(),
             extents: Mutex::default(),
             gui_drawn: Mutex::default(),
             parts,
@@ -616,6 +641,33 @@ impl ItemRenderer {
                 })
             });
         if let Ok(mut cache) = self.baked.lock() {
+            cache.insert(model.to_owned(), baked.clone());
+        }
+        baked
+    }
+    /// The flat bake of a generated model (API 23), cached per
+    /// model apart from [`ItemRenderer::bake`].
+    pub fn bake_flat(&self, model: &str) -> Arc<BakedItemModel> {
+        if let Ok(cache) = self.baked_flat.lock()
+            && let Some(hit) = cache.get(model)
+        {
+            return hit.clone();
+        }
+        let baked = bake_item_model_flat(&self.library, &self.sprites, model)
+            .or_else(|_| bake_item_model_flat(&self.library, &self.sprites, MISSING_MODEL))
+            .map(Arc::new)
+            .unwrap_or_else(|_| {
+                Arc::new(BakedItemModel {
+                    quads: Vec::new(),
+                    uses_block_light: false,
+                    particle: horizon_assets::model::Material {
+                        sprite: horizon_assets::item_bake::MISSING_SPRITE.to_owned(),
+                        force_translucent: false,
+                    },
+                    transforms: Default::default(),
+                })
+            });
+        if let Ok(mut cache) = self.baked_flat.lock() {
             cache.insert(model.to_owned(), baked.clone());
         }
         baked
@@ -655,7 +707,12 @@ impl ItemRenderer {
         }
         out
     }
-    /// `ItemModelResolver.updateForTopItem`.
+    /// `ItemModelResolver.updateForTopItem`. `dropped` is the
+    /// dropped items' display (API 23): only a dropped item's
+    /// own resolve passes a non-default record, and it changes
+    /// only which bake a generated layer reads — the state
+    /// reports the stack flat either way.
+    #[allow(clippy::too_many_arguments)]
     pub fn resolve(
         &self,
         stack: &StackView,
@@ -664,6 +721,7 @@ impl ItemRenderer {
         level: Option<&LevelState>,
         seed: i32,
         env: &dyn ItemEnv,
+        dropped: DroppedItemDisplay,
     ) -> ItemRenderState {
         let ctx = Context {
             display,
@@ -673,17 +731,34 @@ impl ItemRenderer {
         };
         let resolved = self.models.resolve(stack, &ctx, env);
         let mut animated = false;
+        let mut flat = !resolved.layers.is_empty();
         let layers = resolved
             .layers
             .into_iter()
             .map(|layer| {
                 let (geometry, baked, extents) = match layer.content {
                     LayerContent::Model { model } => {
-                        let baked = self.bake(&model);
-                        let extents = self.quad_extents(&model, &baked);
+                        let generated = self
+                            .library
+                            .resolve(&model)
+                            .is_ok_and(|m| m.uses_item_generator());
+                        flat &= generated;
+                        let (baked, extents) = if dropped.flat_sprites && generated {
+                            let baked = self.bake_flat(&model);
+                            // The flat bake's corners cache apart
+                            // from the extruded bake's: the same
+                            // model name, a different geometry.
+                            let extents = self.quad_extents(&format!("{model}\u{0}flat"), &baked);
+                            (baked, extents)
+                        } else {
+                            let baked = self.bake(&model);
+                            let extents = self.quad_extents(&model, &baked);
+                            (baked, extents)
+                        };
                         (LayerGeometry::Quads(baked.clone()), baked, extents)
                     }
                     LayerContent::Missing => {
+                        flat = false;
                         let baked = self.bake(MISSING_MODEL);
                         let extents = self.quad_extents(MISSING_MODEL, &baked);
                         (LayerGeometry::Quads(baked.clone()), baked, extents)
@@ -693,6 +768,7 @@ impl ItemRenderer {
                         model,
                         argument,
                     } => {
+                        flat = false;
                         let baked = self.bake(&base);
                         let extents = self.special_extents(&model);
                         (LayerGeometry::Special { model, argument }, baked, extents)
@@ -717,6 +793,7 @@ impl ItemRenderer {
             layers,
             oversized_in_gui: resolved.oversized_in_gui,
             animated,
+            flat,
         }
     }
     /// `GrassColor.get` over the loaded colormap.

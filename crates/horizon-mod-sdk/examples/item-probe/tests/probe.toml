@@ -1,0 +1,10 @@
+# Item models (API 23): the probe's declarations land at load —
+# the apple rule in evaluation order, both marks in declared
+# order, and the dropped policy — beside its panel.
+[[step]]
+ticks = 1
+[step.expect]
+panel = ["apple -> minecraft:golden_apple", "dropped flat sprite"]
+item-rules = ["minecraft:apple -> minecraft:golden_apple @ first-person,third-person,gui"]
+decorations = ["stack * minecraft:rarity=rare @ screens,hotbar border 5555ff", "slot 0 @ hotbar fill ffaa00"]
+dropped-display = "flat sprite blocks vanilla shadows on"

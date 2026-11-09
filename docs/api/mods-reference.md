@@ -14,7 +14,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `command` | [`command`](#command) | run commands as you, with your permissions |
 | `registries` | data files (`assets/`, `data/`), no interface | add blocks, items, mob effects and entity types to your worlds |
 | `ui` | [`ui`](#ui) | show its own screens and a settings page |
-| `render` | [`render`](#render) | draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it, turn off distance fog, move your hand and held item in first person, hide the whole HUD, make the hand's field of view follow the zoom, cap the frame rate and shift how player models are posed |
+| `render` | [`render`](#render) | draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it, turn off distance fog, move your hand and held item in first person, hide the whole HUD, make the hand's field of view follow the zoom, cap the frame rate, shift how player models are posed and change how items themselves are shown: the model an item displays as, marks on item slots, and how dropped items lie in the world |
 | `input` | [`input`](#input) | see the keys you hold, your clicks and how long since you last gave input, take over the use button on its own items and the mouse wheel, and add keys |
 | `players` | [`players`](#players) | see who is on the server and message them |
 | `world` | [`world`](#world) | read the world's blocks, and change them where the game runs the world |
@@ -43,7 +43,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `audio`, `hand`, `entity-pose`, `actions`, `screen`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `audio`, `hand`, `entity-pose`, `item-model`, `actions`, `screen`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
 - Exports (what the mod provides): `ui-events`, `audio-events`, `events`
 
 ## World `ui-host`
@@ -62,9 +62,9 @@ The game's side of capability `audio` (API 15) beyond `horizon-mod`: a second wo
 
 ## World `render-host`
 
-The game's side of capability `render` (imports only). API 16's `hand` rides along: it is a render extension, checked against the `render` capability, not one of its own. API 20's `entity-pose` rides along the same way. API 21's `actions` is hosted here too — the frame/tick-adjacent client surfaces live in this world — but it is its own capability, not render's: acting is not presentation. API 22's `screen` likewise: its reads are presentation, but `select-trade` spends items, so the interface is its own capability with a consent line that names both halves.
+The game's side of capability `render` (imports only). API 16's `hand` rides along: it is a render extension, checked against the `render` capability, not one of its own. API 20's `entity-pose` rides along the same way. API 21's `actions` is hosted here too — the frame/tick-adjacent client surfaces live in this world — but it is its own capability, not render's: acting is not presentation. API 22's `screen` likewise: its reads are presentation, but `select-trade` spends items, so the interface is its own capability with a consent line that names both halves. API 23's `item-model` rides along with the hand and the poses: its writes are display only — a stack's picture, marks on its slots, dropped items' lie — so it is render's, with no consent line of its own.
 
-- Imports (what the game offers): `render`, `input`, `hand`, `entity-pose`, `actions`, `screen`
+- Imports (what the game offers): `render`, `input`, `hand`, `entity-pose`, `item-model`, `actions`, `screen`
 - Exports (what the mod provides): 
 
 ## World `recipes-host`
@@ -976,6 +976,117 @@ A whole pose offset for one target: the parts to shift and the parts to hide out
 | `clear-pose-offset` | `func(target: pose-target)` | Drops the caller's offset for a target (another mod's offset for it is untouched). |
 | `set-pose-scale` | `func(target: pose-target, scale: f32)` | How much of the vanilla pose applies to a target: 1 is vanilla (the default), 0 is none of it — the model stands in its rest pose and the mod's offset is the animation. Clamped to 0..=2, non-finite reads as 1. Latest writer wins per target, as the offsets; writing 1 releases it. |
 | `set-first-person-body` | `func(shown: bool)` | Shows the player's own body in first person while true (any running mod asking is enough): the whole model — body, armour, cape, elytra, held items — except the head and hat, which never draw in first person. Everything the pose offsets say applies to it. Third person is unaffected. |
+
+## `item-model`
+
+Access: not granted by any capability.
+
+Capability `render` (experimental), interface `item-model`: how items themselves are shown. A mod may say which item model definition a stack displays as, put marks of its own on the game's item slots, and choose how dropped items lie in the world. Everything here is a picture on this client: no call moves, spends, creates or changes an item, and a rule names definitions that already exist — in the game's own assets, a resource pack, or a content mod's — never a model the mod supplies.
+
+### record `component-match`
+
+One component a stack must carry for a match to hold: its name, and its value in SNBT — the syntax `inventory` spells components in. The test is against the stack's full components, the item's own defaults included (a rarity every dragon egg carries matches; a name only a renamed stack carries matches that stack).
+
+| Field | Type | |
+| --- | --- | --- |
+| `name` | `string` |  |
+| `value` | `string` |  |
+
+### record `model-match`
+
+What a rule keys on: an item, and every component match holding. An empty match list keys on the item alone.
+
+| Field | Type | |
+| --- | --- | --- |
+| `item` | `string` |  |
+| `components` | `list<component-match>` |  |
+
+### enum `display-context`
+
+Where an item is on display, as a rule names it: the game's own display contexts, grouped the way mods think of them. (`ground` is every ground display — a dropped item, an item on a campfire's grill alike; see the district's limits for what that means.)
+
+| Case | |
+| --- | --- |
+| `first-person` |  |
+| `third-person` |  |
+| `gui` |  |
+| `ground` |  |
+| `fixed` |  |
+| `head` |  |
+
+### record `model-rule`
+
+A stack displays as another item model definition.
+
+| Field | Type | |
+| --- | --- | --- |
+| `match` | `model-match` |  |
+| `contexts` | `list<display-context>` | The displays the swap applies to. An empty list applies nowhere. |
+| `model` | `string` | The definition to display instead: the id a stack's `minecraft:item_model` component would name (`minecraft:apple`, `eatinganimation:apple`). A rule naming a definition that does not exist is inert — the stack displays as itself — never an error and never the missing model. |
+
+### variant `decoration-target`
+
+What a slot mark keys on: one slot, by number, or every slot whose stack matches. A stack match with an empty item matches every item — a mark on a component alone (a rarity, wherever it sits).
+
+| Case | Payload | |
+| --- | --- | --- |
+| `slot` | `u32` |  |
+| `stack` | `model-match` |  |
+
+### enum `decoration-place`
+
+Where a mark shows: on the playing hotbar, on the inventory and container screens, or both. (The creative screen's own item grid is not a place; see the limits.)
+
+| Case | |
+| --- | --- |
+| `hotbar` |  |
+| `screens` |  |
+
+### record `decoration`
+
+A mark on an item slot, drawn by the game in its own hand: a soft fill under the slot's stack, an outline around it, a star at its corner. Colours are 0xRRGGBB.
+
+| Field | Type | |
+| --- | --- | --- |
+| `target` | `decoration-target` |  |
+| `places` | `list<decoration-place>` |  |
+| `fill` | `option<u32>` | A translucent fill in this colour under the stack — a glow behind the item. None: no fill. |
+| `border` | `option<u32>` | An outline in this colour around the slot, its bottom edge lit — the game's border hand. None: no outline. |
+| `star` | `bool` | A small star at the slot's top-right corner, in the border's colour, or the fill's when there is no border. Drawn only when one of them names a colour. |
+
+### enum `flat-display`
+
+How a dropped flat item (a potion, a tool — an item whose model is a sprite) lies in the world.
+
+| Case | |
+| --- | --- |
+| `vanilla` | As the game drops it: its full model, spinning. |
+| `sprite` | One flat face, turned to face you, its edges and back left undrawn. It still bobs, stacks and glows as before. |
+
+### enum `block-display`
+
+How a dropped block item lies in the world.
+
+| Case | |
+| --- | --- |
+| `vanilla` | As the game drops it: its 3D model, spinning. |
+| `billboard` | Its 3D model whole, turned to face you instead of spinning. |
+
+### record `dropped-display`
+
+How dropped items — item entities, and items flying to the player on pickup — are displayed. Nothing else that shows an item on the ground (a vault's prize, a thrown potion) is an item entity, and is not this record's.
+
+| Field | Type | |
+| --- | --- | --- |
+| `flat` | `flat-display` |  |
+| `blocks` | `block-display` |  |
+| `shadows` | `bool` | Dropped items cast the game's round shadow under themselves. False leaves them shadowless (the game's own entity-shadows setting still governs the rest). |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `set-model-rules` | `func(rules: list<model-rule>)` | Replaces the mod's model rules: at most 64, each with at most 4 component matches. When rules from several mods could swap one stack's display, the later-loaded mod's rule wins; within one mod, the first matching rule in this list wins. A declaration survives until replaced or the mod stops. Declare rules once (in `init`, or when settings change), not per frame. |
+| `set-decorations` | `func(decorations: list<decoration>)` | Replaces the mod's slot marks: at most 256. Marks from several mods on one slot all draw, in load order. They survive until replaced or the mod stops; a mark for a slot no open screen has simply draws nowhere until a screen has it. |
+| `set-dropped-display` | `func(display: dropped-display)` | Sets how dropped items display, for every dropped item on this client. One policy applies: the latest call across the running mods wins, as the hand's one offset wins the hand. Writing the all-vanilla record (`vanilla`, `vanilla`, `true`) hands the display back; a stopped mod's policy goes with it. |
 
 ## `audio-events`
 

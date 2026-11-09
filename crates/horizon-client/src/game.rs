@@ -8253,6 +8253,21 @@ impl Game<'_> {
                 let attack_left = None;
                 let draws = hud_layout::hotbar_with_attack_side(wi, hi, &inputs, attack_left);
                 hud_layout::paint(&mut batch, &self.gui.atlas, &draws);
+                // The mods' item decorations (API 23): the
+                // fills under the hotbar's stacks, the borders
+                // and stars over them — the two passes the
+                // screens draw, on the slots just laid out (the
+                // offhand in its inventory number, 504).
+                let hotbar_rects: Vec<(u32, f32, f32)> = draws
+                    .iter()
+                    .filter_map(|d| match *d {
+                        hud_layout::GuiDraw::Item { slot, x, y, .. } => {
+                            Some((if slot == 40 { 504 } else { slot }, x as f32, y as f32))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                self.draw_mod_hotbar_decorations(&mut batch, &hotbar_rects, true);
                 for d in &draws {
                     if let hud_layout::GuiDraw::Item { slot, x, y, .. } = *d {
                         let stack = if slot == 40 {
@@ -8265,6 +8280,7 @@ impl Game<'_> {
                         }
                     }
                 }
+                self.draw_mod_hotbar_decorations(&mut batch, &hotbar_rects, false);
             }
             horizon_client::hud::inset_overlay(&mut batch, margins, |b| self.draw_effect_icons(b));
             // Hud: the action bar and titles draw over the hotbar (nextStratum).
@@ -9011,13 +9027,19 @@ impl Game<'_> {
             self.draw_inventory_player(batch, ox, oy);
         }
         self.draw_hovered_slot_highlight(batch, false, ox, oy);
+        // The mods' item decorations (API 23): the fills ride
+        // under the slot loop's stacks.
+        self.draw_mod_screen_decorations_under(batch, ox, oy);
         self.draw_inventory_slots(batch, ox, oy);
         self.draw_hovered_slot_highlight(batch, true, ox, oy);
         self.draw_sort_buttons(batch, ox, oy);
         // Capability `screen` (API 22): the mods' slot marks and
         // buttons ride the same point of the draw — over the
-        // slots, under the carried stack and the tooltips.
+        // slots, under the carried stack and the tooltips. The
+        // item decorations' borders and stars (API 23) ride
+        // with them.
         self.draw_mod_screen_highlights(batch, ox, oy);
+        self.draw_mod_screen_decorations_over(batch, ox, oy);
         self.draw_mod_screen_buttons(batch);
         self.draw_recipe_book(batch);
         let effect_tip = if self.container.is_none() && self.craft_size == 2 && !self.mount_active()
@@ -10652,11 +10674,16 @@ impl Game<'_> {
             let mut casters: Vec<(glam::DVec3, f32, f32)> =
                 horizon_client::shadows::mob_casters(&self.mobs, a).collect();
             let item = horizon_client::shadows::shadow_params("minecraft:item");
-            casters.extend(
-                self.dropped
-                    .iter()
-                    .map(|i| (lerp(i.previous, i.position), item.0, item.1)),
-            );
+            // A mod's dropped display (API 23) can turn dropped
+            // items' shadows off; every other caster is the
+            // game's own business.
+            if self.mod_dropped_display().1 {
+                casters.extend(
+                    self.dropped
+                        .iter()
+                        .map(|i| (lerp(i.previous, i.position), item.0, item.1)),
+                );
+            }
             let orb = horizon_client::shadows::shadow_params("minecraft:experience_orb");
             casters.extend(
                 self.orbs
