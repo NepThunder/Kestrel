@@ -9,12 +9,14 @@
 //! and `/fpscap` capability `render`'s zoom truth, HUD hide, hand FOV
 //! and frame-rate cap, and `/idle` capability `input`'s idle clock
 //! (API 19); `/posestates`, `/poseoffset`, `/poseclear`, `/posescale`
-//! and `/ownbody` capability `render`'s entity poses (API 20); `tick` and
-//! `frame` do nothing, to measure the cost of a call.
+//! and `/ownbody` capability `render`'s entity poses (API 20);
+//! `/acttarget`, `/actuse`, `/actattack`, `/acton`, `/actheld`,
+//! `/actslot` and `/actspam` capability `actions`' clicks (API 21);
+//! `tick` and `frame` do nothing, to measure the cost of a call.
 use horizon_mod_sdk::{
-    HandFov, HandFovMode, HandTransform, Mod, PartOffset, PoseOffset, PoseTarget, Registration,
-    SoundAdjustment, SoundQuery, SwingAnim, audio, chat, entity_pose, game, hand, input, render,
-    storage,
+    ActionHand, ActionTarget, BlockTarget, Face, HandFov, HandFovMode, HandTransform, Mod,
+    PartOffset, PoseOffset, PoseTarget, Registration, SoundAdjustment, SoundQuery, SwingAnim,
+    actions, audio, chat, entity_pose, game, hand, input, render, storage,
 };
 
 struct Guest {
@@ -49,6 +51,13 @@ impl Mod for Guest {
             "poseclear",
             "posescale",
             "ownbody",
+            "acttarget",
+            "actuse",
+            "actattack",
+            "acton",
+            "actheld",
+            "actslot",
+            "actspam",
         ]
         .into_iter()
         .fold(Registration::new(), Registration::command)
@@ -63,7 +72,11 @@ impl Mod for Guest {
     /// reverb's character set on the way through.
     fn sound(&mut self, _query: &SoundQuery) -> SoundAdjustment {
         audio::set_environment(0.3, 2.5);
-        SoundAdjustment { gain: 0.5, lowpass: 0.25, reverb: 0.75 }
+        SoundAdjustment {
+            gain: 0.5,
+            lowpass: 0.25,
+            reverb: 0.75,
+        }
     }
     fn command(&mut self, name: &str, args: &str) -> Result<Option<String>, String> {
         match name {
@@ -192,13 +205,8 @@ impl Mod for Guest {
                 Ok(Some("toggled".into()))
             }
             "zoomstate" => {
-                let spy = render::get_spyglass_zoom()
-                    .map_or("none".into(), |f| format!("{f}"));
-                Ok(Some(format!(
-                    "zoom can {} spy {}",
-                    render::can_zoom(),
-                    spy
-                )))
+                let spy = render::get_spyglass_zoom().map_or("none".into(), |f| format!("{f}"));
+                Ok(Some(format!("zoom can {} spy {}", render::can_zoom(), spy)))
             }
             "hidehud" => {
                 let hidden = match args {
@@ -226,8 +234,8 @@ impl Mod for Guest {
                     Some("keep") => HandFovMode::Keep,
                     _ => {
                         return Err(
-                            "Usage: /handfov <multiply|add|keep> <base>, or /handfov off".into()
-                        )
+                            "Usage: /handfov <multiply|add|keep> <base>, or /handfov off".into(),
+                        );
                     }
                 };
                 let base: f32 = words
@@ -351,7 +359,86 @@ impl Mod for Guest {
                     _ => return Err("Usage: /ownbody <on|off>".into()),
                 };
                 entity_pose::set_first_person_body(shown);
-                Ok(Some(if shown { "body on".into() } else { "body off".into() }))
+                Ok(Some(if shown {
+                    "body on".into()
+                } else {
+                    "body off".into()
+                }))
+            }
+            "acttarget" => {
+                let text = match actions::target() {
+                    None => "target none".into(),
+                    Some(ActionTarget::Block(b)) => format!(
+                        "target block {} {} {} {} {} {:.2} {:.2} {:.2}",
+                        b.block_x,
+                        b.block_y,
+                        b.block_z,
+                        b.block,
+                        match b.face {
+                            Face::Down => "down",
+                            Face::Up => "up",
+                            Face::North => "north",
+                            Face::South => "south",
+                            Face::West => "west",
+                            Face::East => "east",
+                        },
+                        b.cursor_x,
+                        b.cursor_y,
+                        b.cursor_z
+                    ),
+                    Some(ActionTarget::Entity(e)) => {
+                        format!("target entity {} {} {:.2}", e.id, e.kind, e.distance)
+                    }
+                };
+                Ok(Some(text))
+            }
+            "actuse" => {
+                actions::use_();
+                Ok(Some("used".into()))
+            }
+            "actattack" => {
+                actions::attack();
+                Ok(Some("attacked".into()))
+            }
+            "acton" => {
+                // A malformed cursor (1.5) errs at call time and
+                // queues nothing; the well-formed one queues.
+                let mut target = BlockTarget {
+                    block_x: 3,
+                    block_y: 64,
+                    block_z: -2,
+                    block: "minecraft:wheat[age=7]".into(),
+                    face: Face::Up,
+                    cursor_x: 1.5,
+                    cursor_y: 1.0,
+                    cursor_z: 0.5,
+                };
+                let bad = actions::use_on_block(&target, ActionHand::Main)
+                    .expect_err("a cursor of 1.5 is outside the block");
+                target.cursor_x = 0.5;
+                actions::use_on_block(&target, ActionHand::Main)?;
+                Ok(Some(format!("bad {bad}; queued")))
+            }
+            "actheld" => {
+                match args {
+                    "attack" => actions::set_held(true, false),
+                    "off" => actions::set_held(false, false),
+                    _ => return Err("Usage: /actheld <attack|off>".into()),
+                }
+                Ok(Some("held set".into()))
+            }
+            "actslot" => {
+                // Slot 9 errs at call time; slot 3 queues.
+                let bad = actions::select_slot(9).expect_err("slot 9 is outside 0 to 8");
+                actions::select_slot(3)?;
+                Ok(Some(format!("bad {bad}; queued")))
+            }
+            "actspam" => {
+                // Ten uses in one call: the host keeps eight.
+                for _ in 0..10 {
+                    actions::use_();
+                }
+                Ok(Some("spammed".into()))
             }
             _ => {
                 chat::show(&format!("hello {args} after {} ticks", self.ticks));

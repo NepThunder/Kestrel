@@ -6993,10 +6993,17 @@ impl Game<'_> {
         false
     }
 
+    /// Whether a survival block break is running, which
+    /// `remote_use` refuses to use through: capability `actions`'
+    /// use-on-block (game/mods.rs) honours the same refusal.
+    pub(super) fn remote_break_active(&self) -> bool {
+        self.remote.as_ref().is_some_and(|r| r.is_destroying)
+    }
+
     /// `Minecraft.startUseItem`'s block turn for `hand`: a use that swung drops
     /// the hand (`LocalPlayer.itemUsed`) when it spent the held item or the
     /// player has infinite materials.
-    fn remote_use_block(&mut self, hand: Hand) -> bool {
+    pub(super) fn remote_use_block(&mut self, hand: Hand) -> bool {
         let before = self.with_hand(hand, |g| g.held().map(|s| s.count));
         let swings = self.swings_started;
         let done = self.remote_use_item_on(hand);
@@ -7973,8 +7980,16 @@ impl Game<'_> {
             self.stop_remote_mining();
         }
         if !ready {
+            // Capability `actions` (API 21): a queued click whose
+            // tick cannot act is dropped, never carried over.
+            self.clear_mod_actions();
             return;
         }
+        // Capability `actions` (API 21): the mods' queued clicks
+        // join this tick's input step — presses into the same
+        // queue physical clicks use, a slot choice ahead of the
+        // carried sync below, a use-on-block against a fresh pick.
+        self.perform_mod_actions(&mut input);
         // MultiPlayerGameMode.tick syncs the carried slot before keybinds.
         let carried_changed = self.remote.as_mut().is_some_and(|r| {
             if r.carried == Some(self.selected) {
@@ -7989,7 +8004,11 @@ impl Game<'_> {
                 slot: self.selected as i16,
             }));
         }
-        let (attack, use_item) = (self.left, self.right);
+        // A mod's held buttons (capability `actions`, API 21) are
+        // a second holder of the same buttons: the game reads a
+        // button as down while either holds it.
+        let held = self.mod_held_buttons();
+        let (attack, use_item) = (self.left || held.0, self.right || held.1);
         input.tick(&mut RemoteInputWorld(self), attack, use_item);
         // handleKeybinds' keybind polls: the queued presses act now, in tick
         // order, so no packet goes out between CLIENT_TICK_END and a pong.

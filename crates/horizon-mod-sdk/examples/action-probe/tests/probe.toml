@@ -1,0 +1,21 @@
+# Actions (API 21): with no fixture the crosshair rests on
+# nothing; a step's own block target then flows in — the wheat
+# block, its top face — and `/act` queues one use, which the
+# step's drained actions show.
+[[step]]
+ticks = 1
+[step.expect]
+panel = ["target none"]
+
+[[step]]
+ticks = 1
+[step.target]
+block = { x = 3, y = 64, z = -2, block = "minecraft:wheat[age=7]", face = "up", cursor = [0.5, 1.0, 0.5] }
+[step.expect]
+panel = ["target 3 64 -2", "minecraft:wheat[age=7] up"]
+
+[[step]]
+command = "act"
+[step.expect]
+feedback = "used"
+actions = ["use"]

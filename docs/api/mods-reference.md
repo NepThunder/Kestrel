@@ -22,6 +22,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `inventory` | [`inventory`](#inventory) | see your inventory and open containers |
 | `entity` | [`entity`](#entity) | see the mobs around you and the entity you look at |
 | `audio` | [`audio`](#audio) | change how sounds play around you |
+| `actions` | [`actions`](#actions) | act as you in the world: use and place with the item in your hand, attack, and choose your hotbar slot — only what your own clicks could do, at the speed your own clicks could do it |
 
 ## World `horizon-mod`
 
@@ -41,7 +42,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `audio`, `hand`, `entity-pose`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `audio`, `hand`, `entity-pose`, `actions`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
 - Exports (what the mod provides): `ui-events`, `audio-events`, `events`
 
 ## World `ui-host`
@@ -60,9 +61,9 @@ The game's side of capability `audio` (API 15) beyond `horizon-mod`: a second wo
 
 ## World `render-host`
 
-The game's side of capability `render` (imports only). API 16's `hand` rides along: it is a render extension, checked against the `render` capability, not one of its own. API 20's `entity-pose` rides along the same way.
+The game's side of capability `render` (imports only). API 16's `hand` rides along: it is a render extension, checked against the `render` capability, not one of its own. API 20's `entity-pose` rides along the same way. API 21's `actions` is hosted here too — the frame/tick-adjacent client surfaces live in this world — but it is its own capability, not render's: acting is not presentation.
 
-- Imports (what the game offers): `render`, `input`, `hand`, `entity-pose`
+- Imports (what the game offers): `render`, `input`, `hand`, `entity-pose`, `actions`
 - Exports (what the mod provides): 
 
 ## World `recipes-host`
@@ -688,6 +689,77 @@ A shift of the hand's pose, in view space: the game applies the translation, the
 | `clear-offset` | `func()` | Takes this mod's hand offset back. Another mod's offset is not this call's to clear. |
 | `get-swing-anim` | `func() -> swing-anim` | The swing animation playing now (API 17), as of the game's last push, read the way `get-state` reads the hand state. |
 | `set-swing-scale` | `func(scale: f32)` | How much of the vanilla swing pose applies (API 17): 1.0 is vanilla in full, 0.0 is none of it — the mod's own offset, driven by the swing's progress, is the whole animation — and up to 2.0 exaggerates the vanilla swing. The base equip pose is never scaled, only the swing's own terms, so 0.0 leaves the hand exactly at its rest pose. Poses that are not swings (using, charging, eating, ...) are never scaled. There is one swing: the latest call across the running mods wins, as with the offset, and a stopped mod's value is dropped with it. The game clamps to 0.0..=2.0 and a non-finite value reads as 1.0. Writing 1.0 hands the swing back to vanilla; there is no separate clear. |
+
+## `actions`
+
+Access: capability `actions`.
+
+Capability `actions` (experimental: the manifest needs `experimental = ["actions"]`): the player's own clicks, made by the game for the mod. Every request is performed as the player, with the player's permissions, through the same path a real click takes — the server sees ordinary clicks and may refuse any of them, and a request the game cannot perform (a screen is open, an item is in use, the target has moved) is dropped, not queued for later. Requests made in a hook are performed after the hook returns, in the next tick's input step, in the order they were made; at most 8 are kept from one hook call and at most 8 from one mod in one tick.
+
+### enum `hand`
+
+Which hand an action uses. `use` on its own tries the main hand, then the off hand, as a click does.
+
+| Case | |
+| --- | --- |
+| `main` |  |
+| `off` |  |
+
+### enum `face`
+
+The face of a block a hit landed on, as the game's pick names it.
+
+| Case | |
+| --- | --- |
+| `down` |  |
+| `up` |  |
+| `north` |  |
+| `south` |  |
+| `west` |  |
+| `east` |  |
+
+### record `block-target`
+
+A block the player is looking at, with what a use needs: the face hit and where on the block the view met it (each 0 to 1 within the block). As of this tick.
+
+| Field | Type | |
+| --- | --- | --- |
+| `block-x` | `s32` |  |
+| `block-y` | `s32` |  |
+| `block-z` | `s32` |  |
+| `block` | `string` | `minecraft:wheat[age=7]`, ... |
+| `face` | `face` |  |
+| `cursor-x` | `f32` |  |
+| `cursor-y` | `f32` |  |
+| `cursor-z` | `f32` |  |
+
+### record `entity-target`
+
+An entity the player is looking at: the id `entity` lists it by. As of this tick.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `u32` |  |
+| `kind` | `string` |  |
+| `distance` | `f32` | Blocks from the eye to the hit point. |
+
+### variant `crosshair-target`
+
+What is under the crosshair now, block or entity, in the game's own pick order (an entity in front of a block is the target; the block behind it is not offered). (Not named `target`: a WIT interface's types and functions share one namespace, and `target` is the function below.)
+
+| Case | Payload | |
+| --- | --- | --- |
+| `block` | `block-target` |  |
+| `entity` | `entity-target` |  |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `target` | `func() -> option<crosshair-target>` | The crosshair's target, as the game picks it this tick: the block within block reach, or the entity in front of it. None when nothing is hit, and on the title screen. (`game.raycast` cannot serve here: its hit has no face, and a use needs the face.) |
+| `use` | `func()` | One click of the use button, exactly as the player clicking: the entity under the crosshair is used first, then the block (it reacts, or the held item is placed against it), then the held item itself; the off hand has its turn when the main hand's passes. A click while an item is in use is drained by the game, as a real one is. |
+| `use-on-block` | `func(target: block-target, hand: hand) -> result<_, string>` | One use of `hand` on this block target: the block reacts or the hand's item is used on it (a block item is placed against `face`), as a click aimed at it would. For a target `target` gave earlier: when the action is performed, the game picks again, and if the crosshair no longer rests on this block and face the request is dropped — a mod can only ever use what the player is looking at. Errs only on a target that is malformed now (a face's cursor outside the block); a dropped request is not an error. |
+| `attack` | `func()` | One click of the attack button, exactly as the player clicking: an entity under the crosshair is attacked, a block under it starts (or, in creative, completes) being mined, air is swung at. Holding the button is `set-held`; this is the click alone. |
+| `set-held` | `func(attack: bool, use: bool)` | Holds the attack and/or use buttons down for the mod, as if the player held them: held use repeats at the game's own cadence (every 4 ticks, never while an item is in use), held attack keeps mining the block under the crosshair and swings at what it meets. Either button the player is really holding is unaffected — this adds a second, virtual holder of the same buttons, and the game reads a button as down while either holds it. The hold ends when the mod calls this with both false, when the mod stops, when a screen opens, or when the world is left; it does not survive any of those. |
+| `select-slot` | `func(slot: u32) -> result<_, string>` | Chooses hotbar slot 0 to 8, as the hotbar keys or the wheel do: the server is told in the same tick's step, and a claimed use in progress ends, as on a real switch. Errs on a slot outside 0 to 8. |
 
 ## `entity-pose`
 

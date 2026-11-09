@@ -7309,6 +7309,10 @@ impl Game<'_> {
         // items, popped crops) moves on the tick it appears, as in vanilla.
         // On the server thread the window is a hub guest: drain its packets
         // here too, before falling-block schedules run (#4510).
+        // Capability `actions` (API 21) on this deprecated path: the
+        // mods' queued clicks bump the shared counters the local
+        // hand is about to consume, nothing more.
+        self.drain_mod_actions_in_frame();
         horizon_client::spans::time("tick_local_hand", || self.tick_local_hand())?;
         horizon_client::spans::time("postprocess_chunks", || self.postprocess_chunks())?;
         if running {
@@ -7400,8 +7404,10 @@ impl Game<'_> {
         // ServerBossEvent broadcasts, after this level's entities have ticked.
         self.publish_boss_bars();
         // Minecraft.handleKeybinds: held use repeats only while no item is in
-        // use (a raised shield or a drawn bow places and uses nothing).
-        if self.right
+        // use (a raised shield or a drawn bow places and uses nothing). A
+        // mod's held use button (capability `actions`, API 21) is a second
+        // holder of the same button, as on the remote path.
+        if (self.right || self.mod_held_buttons().1)
             && self.use_delay == 0
             && self.using.is_none()
             && self.screen == Screen::Playing
@@ -13414,10 +13420,8 @@ impl Game<'_> {
         // API 16: a mod's hand offset rides the whole hand pose, the
         // arms and the items alike — but not while a two-handed map
         // is held: its pose is its own, and offsets skip it entirely.
-        let two_handed_map = items[0]
-            .as_ref()
-            .is_some_and(|s| maps::map_id(s).is_some())
-            && off_hand_empty;
+        let two_handed_map =
+            items[0].as_ref().is_some_and(|s| maps::map_id(s).is_some()) && off_hand_empty;
         let to_world = self.mod_hand_pose(to_world, two_handed_map);
         // API 17: how much of the vanilla swing pose the mods leave
         // standing, read once for the whole pose pass and threaded
@@ -13475,14 +13479,9 @@ impl Game<'_> {
                 // renderOneHandedMap and renderTwoHandedMap: the arms under
                 // the map, unless the player is invisible.
                 if !self.own_invisible() {
-                    for (arm, pose) in map_arm_poses(
-                        hold,
-                        left,
-                        self.pitch,
-                        inverse_height,
-                        attack,
-                        swing_scale,
-                    ) {
+                    for (arm, pose) in
+                        map_arm_poses(hold, left, self.pitch, inverse_height, attack, swing_scale)
+                    {
                         self.first_person_arm(arm, to_world * pose, packed, &mut out);
                     }
                 }
@@ -13497,8 +13496,7 @@ impl Game<'_> {
                         swing_scale,
                     ),
                     MapHold::OneHanded => self.held_map(
-                        to_world
-                            * one_handed_map_pose(left, inverse_height, attack, swing_scale),
+                        to_world * one_handed_map_pose(left, inverse_height, attack, swing_scale),
                         id,
                         packed,
                         &mut out,

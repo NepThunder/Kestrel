@@ -101,6 +101,18 @@ mod render_bindings {
         additional_derives: [PartialEq],
     });
 }
+use render_bindings::horizon::mods::actions;
+/// The crosshair's target and the clicks a mod asks the game to
+/// make (WIT `interface actions`, API 21): its own capability,
+/// hosted with the render world as the hand and the poses are.
+/// `ModHand` here is THIS interface's `hand` enum — which hand an
+/// action uses — not the hand district's types (`ModHandState`,
+/// `ModHandTransform`); WIT interfaces cannot share types, and
+/// the name collision is the entity-pose swing-anim one again.
+pub use render_bindings::horizon::mods::actions::{
+    BlockTarget as ModBlockTarget, CrosshairTarget as ModActionTarget,
+    EntityTarget as ModEntityTarget, Face as ModFace, Hand as ModHand,
+};
 use render_bindings::horizon::mods::entity_pose;
 /// Player models' pose states and the offsets a mod sets on them
 /// (WIT `interface entity-pose`, API 20): a `render` extension,
@@ -169,6 +181,10 @@ const CHAT_PER_CALL: usize = 8;
 /// `command.run-quiet` lines one call of a mod may queue (a quiet payload's
 /// cap, `horizon_protocol::quiet::MAX_LINES`).
 const QUIET_PER_CALL: usize = 256;
+/// Actions one hook call of a mod may queue (capability `actions`,
+/// API 21): a held button's own cadence bounds what a tick can
+/// spend, and the queue is a click queue, not a script.
+pub const ACTIONS_PER_CALL: usize = 8;
 /// How far `game.raycast` sees, in blocks.
 pub const RAYCAST_MAX: f32 = 1024.0;
 /// How far `entity.targeted` sees, in blocks.
@@ -277,6 +293,14 @@ pub struct Snapshot {
     /// `input`, API 19): the game's own inactivity clock, the one
     /// its idle framerate limit reads, filled where the mappings are.
     pub last_input_ms: u64,
+    /// What the crosshair rests on, in the game's own pick order
+    /// (capability `actions`, API 21): the block within block
+    /// reach — with the face and cursor `game.raycast`'s hit
+    /// lacks — or the entity in front of it; the game fills it
+    /// beside the raycast hit, and only while a mod reads it
+    /// ([`Mods::wants_actions`]). None when nothing is hit, and
+    /// on the title screen.
+    pub action_target: Option<ModActionTarget>,
 }
 
 impl Default for Snapshot {
@@ -308,6 +332,7 @@ impl Default for Snapshot {
             can_zoom: false,
             spyglass_zoom: None,
             last_input_ms: 0,
+            action_target: None,
         }
     }
 }
@@ -351,6 +376,29 @@ impl Runs {
             Runs::Server => side == Side::Server,
         }
     }
+}
+
+/// One click a mod asked the game to make (capability `actions`,
+/// API 21), as an [`Output::Action`]: performed as the player in
+/// the next tick's input step, through the same path a real click
+/// takes, and dropped — never retried — when the game cannot
+/// perform it then. Held buttons are not here: they are state
+/// ([`Mods::held_buttons`]), not requests.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ModAction {
+    /// `actions.use`: one click of the use button.
+    Use,
+    /// `actions.use-on-block`: one use of `hand` on this block
+    /// target, against a fresh pick when it is performed.
+    UseOnBlock {
+        target: ModBlockTarget,
+        hand: ModHand,
+    },
+    /// `actions.attack`: one click of the attack button.
+    Attack,
+    /// `actions.select-slot`: hotbar slot 0 to 8, validated by
+    /// the host call.
+    SelectSlot(u32),
 }
 
 /// What mods asked the game to show since the last [`Mods::drain`].
@@ -413,6 +461,11 @@ pub enum Output {
         sprint: Option<bool>,
         sneak: Option<bool>,
     },
+    /// `actions` (API 21): one click for the game to perform as
+    /// the player in the next tick's input step. The game collects
+    /// these instead of acting on them where they drain: actions
+    /// may only perform inside the input step.
+    Action { mod_id: String, action: ModAction },
 }
 
 /// The game's world as capability `world` reads it during a call: the
@@ -512,6 +565,8 @@ struct Running {
     reads_world_shapes: bool,
     /// It imports `game.get-effects` or `game.get-self-state` (API 18).
     reads_self: bool,
+    /// It imports capability `actions` (API 21).
+    reads_actions: bool,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -682,6 +737,17 @@ struct State {
     /// ([`Mods::own_body`]). The flag is the mod's own store's, so
     /// a stopped mod's ask dies with it.
     own_body: bool,
+    /// The buttons this mod holds down (API 21): `(attack, use)`
+    /// from its last `actions.set-held`, read by the aggregate
+    /// ([`Mods::held_buttons`]). State, not a request — set in
+    /// place by the host call, and a stopped mod's hold dies with
+    /// its store, as its pose offsets do.
+    held: (bool, bool),
+    /// This mod's hold is latched off (API 21): a screen opened
+    /// (or the world was left) while it held, so the aggregate
+    /// skips it until the mod calls `set-held` again — a hold
+    /// never resumes silently ([`Mods::release_held_buttons`]).
+    held_latched: bool,
     /// The movement toggle options this mod last asked to set in the
     /// current call (API 18): `Mods::call` moves it into an
     /// [`Output::SetMovementToggles`] when the call ends, as it does
@@ -971,6 +1037,8 @@ impl Mods {
             pose_offsets: std::collections::HashMap::new(),
             pose_scales: std::collections::HashMap::new(),
             own_body: false,
+            held: (false, false),
+            held_latched: false,
             movement_toggles: None,
             camera_seq: 0,
             aggregate_camera: None,
@@ -1052,6 +1120,7 @@ impl Mods {
             reads_self: functions
                 .iter()
                 .any(|f| f == "game.get-effects" || f == "game.get-self-state"),
+            reads_actions: functions.iter().any(|f| f.starts_with("actions.")),
         }))
     }
 
@@ -1424,6 +1493,13 @@ impl Mods {
             .iter()
             .any(|e| e.run.as_ref().is_some_and(|r| r.reads_self))
     }
+    /// Some running mod imports capability `actions` (API 21):
+    /// the snapshot needs [`Snapshot::action_target`].
+    pub fn wants_actions(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.reads_actions))
+    }
     /// Some running mod has a `frame` hook: the game refreshes the snapshot
     /// every frame for it.
     pub fn wants_frames(&self) -> bool {
@@ -1712,7 +1788,7 @@ impl Mods {
             .iter()
             .filter_map(|e| e.run.as_ref()?.store.data().hand_offset.as_ref())
             .max_by_key(|(seq, _)| *seq)
-            .map(|(_, offset)| offset.clone())
+            .map(|(_, offset)| *offset)
     }
 
     /// The swing animation for this frame (API 17): the game pushes
@@ -1808,6 +1884,41 @@ impl Mods {
             .iter()
             .filter_map(|e| e.run.as_ref())
             .any(|r| r.store.data().own_body)
+    }
+
+    /// The buttons the running mods hold down (capability
+    /// `actions`, API 21), `(attack, use)`: any unlatched holder
+    /// holds the button, as any own-body ask shows the body. The
+    /// game ORs these with the player's physical buttons where it
+    /// reads them. A stopped mod's hold dies with its store.
+    pub fn held_buttons(&self) -> (bool, bool) {
+        let mut held = (false, false);
+        for data in self
+            .entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .map(|r| r.store.data())
+        {
+            if !data.held_latched {
+                held.0 |= data.held.0;
+                held.1 |= data.held.1;
+            }
+        }
+        held
+    }
+    /// Latches every running mod's hold off (API 21): the game
+    /// calls this as a screen opens or the world is left, beside
+    /// `input`'s release of the mods' keys. A latched hold reads
+    /// as released in [`Mods::held_buttons`] until its mod calls
+    /// `set-held` again — it must opt back in, never resumes
+    /// silently.
+    pub fn release_held_buttons(&mut self) {
+        for run in self.entries.iter_mut().filter_map(|e| e.run.as_mut()) {
+            let data = run.store.data_mut();
+            if data.held != (false, false) {
+                data.held_latched = true;
+            }
+        }
     }
 
     /// The first running mod driving a camera, if any.
@@ -2243,6 +2354,65 @@ impl entity_pose::Host for State {
     }
     fn set_first_person_body(&mut self, shown: bool) {
         self.own_body = shown;
+    }
+}
+
+impl State {
+    /// Queues one action for the game to perform after this hook
+    /// returns (API 21), unless the call already queued
+    /// [`ACTIONS_PER_CALL`] — the `command.run` discipline: past
+    /// the cap the request is dropped, never deferred.
+    fn queue_action(&mut self, action: ModAction) {
+        let queued = self
+            .out
+            .iter()
+            .filter(|o| matches!(o, Output::Action { .. }))
+            .count();
+        if queued < ACTIONS_PER_CALL {
+            self.out.push(Output::Action {
+                mod_id: self.id.clone(),
+                action,
+            });
+        }
+    }
+}
+
+impl actions::Host for State {
+    fn target(&mut self) -> Option<ModActionTarget> {
+        self.snapshot.action_target.clone()
+    }
+    fn use_(&mut self) {
+        self.queue_action(ModAction::Use);
+    }
+    fn use_on_block(&mut self, target: ModBlockTarget, hand: ModHand) -> Result<(), String> {
+        // The one malformed case a target can carry: its cursor
+        // outside the block it names (the face is an enum, the
+        // position any block in the world).
+        let in_block = |v: f32| v.is_finite() && (0.0..=1.0).contains(&v);
+        if ![target.cursor_x, target.cursor_y, target.cursor_z]
+            .iter()
+            .all(|v| in_block(*v))
+        {
+            return Err("the target's cursor is outside its block".into());
+        }
+        self.queue_action(ModAction::UseOnBlock { target, hand });
+        Ok(())
+    }
+    fn attack(&mut self) {
+        self.queue_action(ModAction::Attack);
+    }
+    fn set_held(&mut self, attack: bool, use_: bool) {
+        // State, not a request: set in place, and the mod's own
+        // call re-arms a hold a screen latched off.
+        self.held = (attack, use_);
+        self.held_latched = false;
+    }
+    fn select_slot(&mut self, slot: u32) -> Result<(), String> {
+        if slot > 8 {
+            return Err(format!("slot {slot} is outside 0 to 8"));
+        }
+        self.queue_action(ModAction::SelectSlot(slot));
+        Ok(())
     }
 }
 

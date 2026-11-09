@@ -208,6 +208,10 @@ impl Game<'_> {
         let playing = self.mod_playing();
         if self.mods.playing && !playing {
             self.mods.mods.release_keys();
+            // Capability `actions` (API 21): a held button is let
+            // up the same way — the hold latches off and the mod
+            // must call `set-held` again to resume it.
+            self.mods.mods.release_held_buttons();
         }
         self.mods.playing = playing;
     }

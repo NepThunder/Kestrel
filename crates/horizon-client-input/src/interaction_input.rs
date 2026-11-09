@@ -191,6 +191,44 @@ mod tests {
         assert_eq!(world.events, ["continue"]);
     }
 
+    /// A mod's synthesized click (capability `actions`, API 21)
+    /// enters through the same `press` a physical one does —
+    /// there is no second entry — so it inherits the queue's
+    /// whole behaviour: pressed while an item is in use it is
+    /// drained and discarded with the tick's release, and a held
+    /// use fires on the 4-tick cadence the delay sets.
+    #[test]
+    fn a_synthesized_press_is_drained_and_held_like_a_physical_one() {
+        let mut input = InteractionInput::default();
+        let mut world = World {
+            using: true,
+            ..Default::default()
+        };
+        input.press(Button::Use);
+        input.tick(&mut world, false, false);
+        assert_eq!(
+            world.events,
+            ["release", "continue"],
+            "the press is discarded while using, as a physical one is"
+        );
+        // Held from here: the first tick fires, the delay (which
+        // the game counts down between ticks) holds it off for
+        // three, and it fires again on the fourth.
+        world.events.clear();
+        input.tick(&mut world, false, true);
+        assert_eq!(world.events, ["use", "continue"]);
+        for _ in 0..3 {
+            world.delay -= 1;
+            world.events.clear();
+            input.tick(&mut world, false, true);
+            assert_eq!(world.events, ["continue"]);
+        }
+        world.delay -= 1;
+        world.events.clear();
+        input.tick(&mut world, false, true);
+        assert_eq!(world.events, ["use", "continue"]);
+    }
+
     #[test]
     fn a_quick_use_click_releases_on_the_following_tick() {
         let mut input = InteractionInput::default();

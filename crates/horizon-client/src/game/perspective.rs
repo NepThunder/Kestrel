@@ -1574,6 +1574,7 @@ mod preview_tests {
                 0xF0F0,
                 &data,
                 &armour,
+                &horizon_client::mobs::anim::PoseFold::NONE,
                 &mut out,
             );
             out

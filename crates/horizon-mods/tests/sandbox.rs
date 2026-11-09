@@ -20,8 +20,8 @@ id = "test_guest"
 name = "Test Guest"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "storage", "audio", "render", "input"]
-experimental = ["audio", "render", "input"]
+capabilities = ["game-read", "chat", "storage", "audio", "render", "input", "actions"]
+experimental = ["audio", "render", "input", "actions"]
 "#;
 const UI_MANIFEST: &str = r#"
 id = "test_ui_guest"
@@ -71,6 +71,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "pose-probe",
                 "-p",
+                "action-probe",
+                "-p",
                 "horizon-mods-test-guest",
                 "-p",
                 "horizon-mods-test-ui-guest",
@@ -105,6 +107,7 @@ fn mods_dir() -> &'static Path {
             ("self_probe", example("self-probe")),
             ("zoom_probe", example("zoom-probe")),
             ("pose_probe", example("pose-probe")),
+            ("action_probe", example("action-probe")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
         ];
@@ -493,6 +496,154 @@ fn pose_states_flow_and_offsets_clamp_and_drop() {
         .expect("the probe's offset stands");
     assert_eq!(scale, 1.0);
     assert_eq!(offset.parts[0].pitch, -45.0);
+}
+
+/// Capability `actions` (API 21): the snapshot's target reaches
+/// the mod verbatim; clicks queue as outputs in call order, the
+/// ninth in one call dropped; a malformed use-on-block errs at
+/// call time and queues nothing, as does a slot outside 0 to 8;
+/// the held aggregate reads back, latches off on the game's
+/// release, re-arms on the mod's own call, and drops with a
+/// stopped mod.
+#[test]
+fn actions_queue_in_order_clamp_and_drop() {
+    use horizon_mods::{
+        ModAction, ModActionTarget, ModBlockTarget, ModEntityTarget, ModFace, ModHand,
+    };
+    let mut mods = load("horizon_mods_test_guest.kmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let actions = |mods: &mut Mods| -> Vec<ModAction> {
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Action { action, .. } => Some(action),
+                _ => None,
+            })
+            .collect()
+    };
+    // No target in the snapshot: none under the crosshair.
+    mods.set_snapshot(player());
+    assert!(mods.command("acttarget"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "target none".into(),
+            error: false,
+        }]
+    );
+    // The fixture's block target reads back verbatim: position,
+    // state, face and cursor.
+    let wheat = ModBlockTarget {
+        block_x: 3,
+        block_y: 64,
+        block_z: -2,
+        block: "minecraft:wheat[age=7]".into(),
+        face: ModFace::Up,
+        cursor_x: 0.5,
+        cursor_y: 1.0,
+        cursor_z: 0.5,
+    };
+    let mut snapshot = player();
+    snapshot.action_target = Some(ModActionTarget::Block(wheat.clone()));
+    mods.set_snapshot(snapshot);
+    assert!(mods.command("acttarget"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "target block 3 64 -2 minecraft:wheat[age=7] up 0.50 1.00 0.50".into(),
+            error: false,
+        }]
+    );
+    // And the entity in front of a block.
+    let mut snapshot = player();
+    snapshot.action_target = Some(ModActionTarget::Entity(ModEntityTarget {
+        id: 42,
+        kind: "minecraft:zombie".into(),
+        distance: 3.25,
+    }));
+    mods.set_snapshot(snapshot);
+    assert!(mods.command("acttarget"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "target entity 42 minecraft:zombie 3.25".into(),
+            error: false,
+        }]
+    );
+    // Clicks queue in the order they were made.
+    assert!(mods.command("actuse"));
+    assert!(mods.command("actattack"));
+    assert_eq!(actions(&mut mods), [ModAction::Use, ModAction::Attack]);
+    // The malformed use-on-block errs at call time and queues
+    // nothing; the well-formed one queues behind nothing.
+    assert!(mods.command("acton"));
+    let out = mods.drain();
+    assert_eq!(
+        out.iter()
+            .filter_map(|o| match o {
+                Output::Feedback { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        ["bad the target's cursor is outside its block; queued"]
+    );
+    assert_eq!(
+        out.iter()
+            .filter_map(|o| match o {
+                Output::Action { action, .. } => Some(action.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        [ModAction::UseOnBlock {
+            target: wheat,
+            hand: ModHand::Main,
+        }]
+    );
+    // Slot 9 errs and queues nothing; slot 3 queues.
+    assert!(mods.command("actslot"));
+    let out = mods.drain();
+    assert_eq!(
+        out.iter()
+            .filter_map(|o| match o {
+                Output::Feedback { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        ["bad slot 9 is outside 0 to 8; queued"]
+    );
+    assert_eq!(
+        out.iter()
+            .filter_map(|o| match o {
+                Output::Action { action, .. } => Some(action.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        [ModAction::SelectSlot(3)]
+    );
+    // The ninth action in one call is dropped: eight are kept.
+    assert!(mods.command("actspam"));
+    assert_eq!(actions(&mut mods), vec![ModAction::Use; 8]);
+    // The held aggregate: set, latched off by the game's
+    // release, re-armed by the mod's own call, and gone when
+    // the mod stops.
+    assert_eq!(mods.held_buttons(), (false, false));
+    assert!(mods.command("actheld attack"));
+    mods.drain();
+    assert_eq!(mods.held_buttons(), (true, false));
+    mods.release_held_buttons();
+    assert_eq!(mods.held_buttons(), (false, false));
+    assert!(mods.command("actheld attack"));
+    mods.drain();
+    assert_eq!(mods.held_buttons(), (true, false));
+    assert!(mods.command("panic"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Stopped {
+            name: "Test Guest".into(),
+            reason: "it crashed (a panic)".into(),
+        }]
+    );
+    assert_eq!(mods.held_buttons(), (false, false));
 }
 
 /// Capability `game-read`'s self reads (API 18): the snapshot's
@@ -943,8 +1094,8 @@ id = "too_new"
 name = "Too New"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world", "inventory", "entity", "audio"]
-experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audio"]
+capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world", "inventory", "entity", "audio", "actions"]
+experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audio", "actions"]
 "#;
     std::fs::write(dir.join("horizon-mod.toml"), manifest).unwrap();
     std::fs::write(dir.join("mod.wasm"), wasm).unwrap();
@@ -979,6 +1130,8 @@ experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audi
     assert_eq!(level("zoom_probe.kmod"), 19);
     // The pose probe reads pose states (`entity-pose.get-pose-states`, level 20).
     assert_eq!(level("pose_probe.kmod"), 20);
+    // The action probe reads the crosshair's target (`actions.target`, level 21).
+    assert_eq!(level("action_probe.kmod"), 21);
 }
 
 #[test]

@@ -115,9 +115,15 @@ pub enum Capability {
     /// and the shared reverb's character (interface `audio`,
     /// calls `audio-events`, API 15).
     Audio,
+    /// The player's own clicks, made by the game for the mod
+    /// (interface `actions`, API 21): use, attack, held buttons
+    /// and the hotbar slot, through the same path a real click
+    /// takes. Its own capability, not `input`'s: acting spends
+    /// items and breaks blocks, as `command`'s acting does.
+    Actions,
 }
 impl Capability {
-    pub const ALL: [Capability; 15] = [
+    pub const ALL: [Capability; 16] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -133,6 +139,7 @@ impl Capability {
         Capability::Inventory,
         Capability::Entity,
         Capability::Audio,
+        Capability::Actions,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -159,6 +166,7 @@ impl Capability {
             Capability::Inventory => "inventory",
             Capability::Entity => "entity",
             Capability::Audio => "audio",
+            Capability::Actions => "actions",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -173,6 +181,7 @@ impl Capability {
                 | Capability::Inventory
                 | Capability::Entity
                 | Capability::Audio
+                | Capability::Actions
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -205,6 +214,9 @@ impl Capability {
             Capability::Inventory => "see your inventory and open containers",
             Capability::Entity => "see the mobs around you and the entity you look at",
             Capability::Audio => "change how sounds play around you",
+            Capability::Actions => {
+                "act as you in the world: use and place with the item in your hand, attack, and choose your hotbar slot — only what your own clicks could do, at the speed your own clicks could do it"
+            }
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -232,6 +244,13 @@ impl Capability {
         if interface == "entity-pose" {
             return Ok(Some(Capability::Render));
         }
+        // The player's own clicks (API 21) are their own
+        // capability: acting is not `input`'s key reads, and
+        // folding it into `input` would widen what every shipped
+        // `input` mod's consent line says.
+        if interface == "actions" {
+            return Ok(Some(Capability::Actions));
+        }
         Capability::ALL
             .into_iter()
             .filter(|c| *c != Capability::Registries)
@@ -258,6 +277,7 @@ impl fmt::Display for Capability {
             Capability::Inventory => "inventory",
             Capability::Entity => "entity",
             Capability::Audio => "audio",
+            Capability::Actions => "actions",
         };
         f.write_str(name)
     }

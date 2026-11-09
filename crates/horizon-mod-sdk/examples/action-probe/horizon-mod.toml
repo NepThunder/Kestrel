@@ -1,0 +1,9 @@
+id = "action_probe"
+name = "Action Probe"
+version = "0.1.0"
+description = "Prototype for actions: shows the crosshair's target and uses it on its key."
+authors = ["Horizon"]
+api = "0.1"
+side = "client"
+capabilities = ["hud", "input", "actions"]
+experimental = ["input", "actions"]

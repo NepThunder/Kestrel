@@ -8,9 +8,10 @@
 //! test written in TOML, `tests/<name>.toml` in the mod's folder: steps, each
 //! saying what happens and what the mod must have shown by then.
 use crate::{
-    BlockPos, Clock, Container, Corner, Entity, GameMode, InvStack, ModArmPose, ModEffect,
-    ModEntityPoseState, ModItemUse, ModPoseSwingAnim, ModSelfState, Mods, Output, Panel, Player,
-    PlayerInventory, ServerPlayer, Snapshot, Status, Target, WorldDrawLine,
+    BlockPos, Clock, Container, Corner, Entity, GameMode, InvStack, ModAction, ModActionTarget,
+    ModArmPose, ModBlockTarget, ModEffect, ModEntityPoseState, ModEntityTarget, ModFace, ModHand,
+    ModItemUse, ModPoseSwingAnim, ModSelfState, Mods, Output, Panel, Player, PlayerInventory,
+    ServerPlayer, Snapshot, Status, Target, WorldDrawLine,
 };
 use serde::Deserialize;
 use std::{
@@ -84,6 +85,16 @@ pub struct TestGame {
     /// screen; copied into the mod's store at every snapshot, as
     /// the game pushes them every frame.
     pub pose_states: Vec<ModEntityPoseState>,
+    /// What the mod reads with `actions.target` (API 21): the
+    /// crosshair's target, as the game's snapshot builder picks
+    /// it. None until a test sets it, as when nothing is hit;
+    /// copied into the snapshot at every step, as the game fills
+    /// it beside the raycast hit.
+    pub action_target: Option<ModActionTarget>,
+    /// Every action the mod queued, oldest first, in the
+    /// `expect.actions` spelling: the log of what the game would
+    /// have performed, for a test to read back.
+    pub actions: Vec<String>,
 }
 
 /// The world a script's mod reads: [`TestGame::world`] and
@@ -201,6 +212,8 @@ impl TestGame {
             spyglass_zoom: None,
             last_input_ms: 0,
             pose_states: Vec::new(),
+            action_target: None,
+            actions: Vec::new(),
         };
         copy_mod(kmod, &copy)?;
         game.start()?;
@@ -269,6 +282,7 @@ impl TestGame {
             can_zoom: self.can_zoom,
             spyglass_zoom: self.spyglass_zoom,
             last_input_ms: self.last_input_ms,
+            action_target: self.action_target.clone(),
             ..Snapshot::default()
         });
         // The game's per-frame pose push (API 20), played by the
@@ -872,6 +886,115 @@ impl PoseSet {
     }
 }
 
+/// The crosshair's target for a step (API 21), in the WIT
+/// variant's shape: a `block` (its position, state, face and
+/// cursor) or an `entity` (its id, kind and distance).
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct ActionTargetSet {
+    block: Option<ActionBlockSet>,
+    entity: Option<ActionEntitySet>,
+}
+
+/// A step's block target (API 21): the position, the state
+/// string, the face by its WIT name, and the cursor within the
+/// block (each 0 to 1).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct ActionBlockSet {
+    #[serde(default)]
+    x: i32,
+    #[serde(default)]
+    y: i32,
+    #[serde(default)]
+    z: i32,
+    #[serde(default)]
+    block: String,
+    #[serde(default)]
+    face: String,
+    #[serde(default = "default_cursor")]
+    cursor: [f32; 3],
+}
+
+fn default_cursor() -> [f32; 3] {
+    [0.5, 0.5, 0.5]
+}
+
+/// A step's entity target (API 21).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct ActionEntitySet {
+    #[serde(default)]
+    id: u32,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    distance: f32,
+}
+
+impl ActionTargetSet {
+    fn to_target(&self) -> Option<ModActionTarget> {
+        if let Some(b) = &self.block {
+            return Some(ModActionTarget::Block(ModBlockTarget {
+                block_x: b.x,
+                block_y: b.y,
+                block_z: b.z,
+                block: if b.block.is_empty() {
+                    "minecraft:stone".into()
+                } else {
+                    b.block.clone()
+                },
+                face: match b.face.as_str() {
+                    "down" => ModFace::Down,
+                    "north" => ModFace::North,
+                    "south" => ModFace::South,
+                    "west" => ModFace::West,
+                    "east" => ModFace::East,
+                    _ => ModFace::Up,
+                },
+                cursor_x: b.cursor[0],
+                cursor_y: b.cursor[1],
+                cursor_z: b.cursor[2],
+            }));
+        }
+        self.entity.as_ref().map(|e| {
+            ModActionTarget::Entity(ModEntityTarget {
+                id: e.id,
+                kind: e.kind.clone(),
+                distance: e.distance,
+            })
+        })
+    }
+}
+
+/// One queued action as a script's `expect.actions` names it
+/// (API 21): the click the game would have performed.
+fn action_line(action: &ModAction) -> String {
+    match action {
+        ModAction::Use => "use".into(),
+        ModAction::Attack => "attack".into(),
+        ModAction::SelectSlot(slot) => format!("select-slot {slot}"),
+        ModAction::UseOnBlock { target, hand } => {
+            let face = match target.face {
+                ModFace::Down => "down",
+                ModFace::Up => "up",
+                ModFace::North => "north",
+                ModFace::South => "south",
+                ModFace::West => "west",
+                ModFace::East => "east",
+            };
+            let hand = match hand {
+                ModHand::Main => "main",
+                ModHand::Off => "off",
+            };
+            format!(
+                "use-on-block {} {} {} {face} {hand}",
+                target.block_x, target.block_y, target.block_z
+            )
+        }
+    }
+}
+
 impl SelfSet {
     fn to_self_state(&self) -> ModSelfState {
         ModSelfState {
@@ -922,7 +1045,7 @@ impl EntitySet {
 /// One step. Its parts happen in this order: `reload`, `title-screen`,
 /// `blocks`, `lights`, `join`, `player`, `clock`, `inventory`, `container`,
 /// `close-container`, `dead`, `entities`, `effects`, `self`, `can-zoom`,
-/// `spyglass`, `idle-ms`, `poses`, `multiplayer`, `ticks`,
+/// `spyglass`, `idle-ms`, `poses`, `target`, `multiplayer`, `ticks`,
 /// `frames`, `chat`, `command`, `break`, `place`, `leave`; then the blocks the mod set are made, and `expect`
 /// is checked against what the mod showed and changed during the step.
 /// For a server mod, `player`, `chat`, `command`, `break` and `place` are
@@ -971,6 +1094,10 @@ pub struct Step {
     /// The drawn players' pose states (API 20): replaces the
     /// fixture wholesale; a step without it keeps the last one.
     poses: Option<Vec<PoseSet>>,
+    /// The crosshair's target (API 21): replaces the fixture; a
+    /// step without it keeps the last one. (A script cannot clear
+    /// it back to none — no probe needs to.)
+    target: Option<ActionTargetSet>,
     /// Multiplayer from this step on (capability `entity`): the list
     /// reads empty and health reads None, while the crosshair target
     /// still answers.
@@ -1027,6 +1154,10 @@ pub struct Expect {
     /// Blocks of the Overworld after the step, the mod's changes made
     /// (capability `world`).
     blocks: Option<Vec<BlockSet>>,
+    /// The actions the mod queued during the step, in order, in
+    /// the spelling `action_line` gives them (capability
+    /// `actions`, API 21).
+    actions: Option<Vec<String>>,
     /// The mod is turned off during this step, for a reason holding this text.
     /// Without it, a mod that stops fails the test.
     stopped: Option<String>,
@@ -1126,6 +1257,9 @@ impl Step {
         }
         if self.poses.is_some() {
             parts.push("poses".to_string());
+        }
+        if self.target.is_some() {
+            parts.push("target".to_string());
         }
         if self.multiplayer {
             parts.push("multiplayer".to_string());
@@ -1245,6 +1379,9 @@ impl Step {
         if let Some(set) = &self.poses {
             game.pose_states = set.iter().map(PoseSet::to_state).collect();
         }
+        if let Some(set) = &self.target {
+            game.action_target = set.to_target();
+        }
         if self.multiplayer {
             game.multiplayer = true;
         }
@@ -1288,6 +1425,9 @@ impl Step {
                     game.world.insert((b.x, b.y, b.z), b.state.clone());
                 }
             }
+            if let Output::Action { action, .. } = o {
+                game.actions.push(action_line(action));
+            }
         }
         let stopped = out.iter().find_map(|o| match o {
             Output::Stopped { reason, .. } => Some(reason.as_str()),
@@ -1324,6 +1464,16 @@ impl Step {
                 })
                 .collect();
             same("chat", want, &got)?;
+        }
+        if let Some(want) = &e.actions {
+            let got: Vec<String> = out
+                .iter()
+                .filter_map(|o| match o {
+                    Output::Action { action, .. } => Some(action_line(action)),
+                    _ => None,
+                })
+                .collect();
+            same("actions", want, &got)?;
         }
         let feedback = |error: bool| {
             out.iter().rev().find_map(|o| match o {

@@ -837,6 +837,119 @@ interface hand {
     set-swing-scale: func(scale: f32);
 }
 
+/// Capability `actions` (experimental: the manifest needs
+/// `experimental = ["actions"]`): the player's own clicks, made by
+/// the game for the mod. Every request is performed as the player,
+/// with the player's permissions, through the same path a real
+/// click takes — the server sees ordinary clicks and may refuse
+/// any of them, and a request the game cannot perform (a screen is
+/// open, an item is in use, the target has moved) is dropped, not
+/// queued for later. Requests made in a hook are performed after
+/// the hook returns, in the next tick's input step, in the order
+/// they were made; at most 8 are kept from one hook call and at
+/// most 8 from one mod in one tick.
+interface actions {
+    /// Which hand an action uses. `use` on its own tries the main
+    /// hand, then the off hand, as a click does.
+    enum hand {
+        main,
+        off,
+    }
+
+    /// The face of a block a hit landed on, as the game's pick
+    /// names it.
+    enum face {
+        down, up, north, south, west, east,
+    }
+
+    /// A block the player is looking at, with what a use needs:
+    /// the face hit and where on the block the view met it (each
+    /// 0 to 1 within the block). As of this tick.
+    record block-target {
+        block-x: s32,
+        block-y: s32,
+        block-z: s32,
+        /// `minecraft:wheat[age=7]`, ...
+        block: string,
+        face: face,
+        cursor-x: f32,
+        cursor-y: f32,
+        cursor-z: f32,
+    }
+
+    /// An entity the player is looking at: the id `entity`
+    /// lists it by. As of this tick.
+    record entity-target {
+        id: u32,
+        kind: string,
+        /// Blocks from the eye to the hit point.
+        distance: f32,
+    }
+
+    /// What is under the crosshair now, block or entity, in the
+    /// game's own pick order (an entity in front of a block is
+    /// the target; the block behind it is not offered). (Not
+    /// named `target`: a WIT interface's types and functions
+    /// share one namespace, and `target` is the function below.)
+    variant crosshair-target {
+        block(block-target),
+        entity(entity-target),
+    }
+
+    /// The crosshair's target, as the game picks it this tick:
+    /// the block within block reach, or the entity in front of
+    /// it. None when nothing is hit, and on the title screen.
+    /// (`game.raycast` cannot serve here: its hit has no face,
+    /// and a use needs the face.)
+    target: func() -> option<crosshair-target>;
+
+    /// One click of the use button, exactly as the player
+    /// clicking: the entity under the crosshair is used first,
+    /// then the block (it reacts, or the held item is placed
+    /// against it), then the held item itself; the off hand has
+    /// its turn when the main hand's passes. A click while an
+    /// item is in use is drained by the game, as a real one is.
+    %use: func();
+
+    /// One use of `hand` on this block target: the block reacts
+    /// or the hand's item is used on it (a block item is placed
+    /// against `face`), as a click aimed at it would. For a
+    /// target `target` gave earlier: when the action is
+    /// performed, the game picks again, and if the crosshair no
+    /// longer rests on this block and face the request is
+    /// dropped — a mod can only ever use what the player is
+    /// looking at. Errs only on a target that is malformed now
+    /// (a face's cursor outside the block); a dropped request is
+    /// not an error.
+    use-on-block: func(target: block-target, hand: hand) -> result<_, string>;
+
+    /// One click of the attack button, exactly as the player
+    /// clicking: an entity under the crosshair is attacked, a
+    /// block under it starts (or, in creative, completes) being
+    /// mined, air is swung at. Holding the button is `set-held`;
+    /// this is the click alone.
+    attack: func();
+
+    /// Holds the attack and/or use buttons down for the mod, as
+    /// if the player held them: held use repeats at the game's
+    /// own cadence (every 4 ticks, never while an item is in
+    /// use), held attack keeps mining the block under the
+    /// crosshair and swings at what it meets. Either button the
+    /// player is really holding is unaffected — this adds a
+    /// second, virtual holder of the same buttons, and the game
+    /// reads a button as down while either holds it. The hold
+    /// ends when the mod calls this with both false, when the
+    /// mod stops, when a screen opens, or when the world is
+    /// left; it does not survive any of those.
+    set-held: func(attack: bool, %use: bool);
+
+    /// Chooses hotbar slot 0 to 8, as the hotbar keys or the
+    /// wheel do: the server is told in the same tick's step, and
+    /// a claimed use in progress ends, as on a real switch. Errs
+    /// on a slot outside 0 to 8.
+    select-slot: func(slot: u32) -> result<_, string>;
+}
+
 /// Capability `render` (API 20): player models' poses. The game
 /// hands the mod every drawn player's pose inputs each frame —
 /// the local player's first — and the mod hands back per-part
@@ -1611,6 +1724,7 @@ world horizon-ui-mod {
     import audio;
     import hand;
     import entity-pose;
+    import actions;
     export ui-events;
     export audio-events;
 }
@@ -1633,12 +1747,16 @@ world audio-host {
 /// The game's side of capability `render` (imports only). API 16's
 /// `hand` rides along: it is a render extension, checked against
 /// the `render` capability, not one of its own. API 20's
-/// `entity-pose` rides along the same way.
+/// `entity-pose` rides along the same way. API 21's `actions` is
+/// hosted here too — the frame/tick-adjacent client surfaces live
+/// in this world — but it is its own capability, not render's:
+/// acting is not presentation.
 world render-host {
     import render;
     import input;
     import hand;
     import entity-pose;
+    import actions;
 }
 
 /// The game's side of capability `recipes` (imports only).

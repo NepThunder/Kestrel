@@ -40,6 +40,11 @@
 //! every drawn player's pose inputs each frame, per-part offsets
 //! folded into the finished vanilla pose, a pose scale, and the
 //! player's own body in first person (API level 20).
+//! `actions` (its own capability, API level 21) makes the player's
+//! own clicks for the mod: [`actions::target`] reads what the
+//! crosshair rests on, and `use`, `use_on_block`, `attack`,
+//! `set_held` and `select_slot` perform them as the player,
+//! through the same path a real click takes.
 //! Server mods: [`server`].
 //!
 //! Widgets (capability `ui`): a mod shows a screen it owns with
@@ -60,6 +65,9 @@ pub use exports::horizon::mods::audio_events::{
 };
 pub use exports::horizon::mods::events::{Guest as __Guest, Registration};
 pub use exports::horizon::mods::ui_events::Guest as __UiEventsGuest;
+pub use horizon::mods::actions::{
+    BlockTarget, CrosshairTarget as ActionTarget, EntityTarget, Face, Hand as ActionHand,
+};
 pub use horizon::mods::entity_pose::{
     ArmPose, EntityPoseState, ItemUse, PartOffset, PoseOffset, PoseTarget,
 };
@@ -67,8 +75,8 @@ pub use horizon::mods::game::{Effect, Mount, SelfState};
 pub use horizon::mods::hand::{HandState, HandTransform, SwingAnim, SwingKind};
 pub use horizon::mods::render::{HandFov, HandFovMode};
 pub use horizon::mods::{
-    audio, browser, chat, command, entity, entity_pose, game, hand, hud, input, inventory, log,
-    recipes, render, storage, ui, world,
+    actions, audio, browser, chat, command, entity, entity_pose, game, hand, hud, input, inventory,
+    log, recipes, render, storage, ui, world,
 };
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for

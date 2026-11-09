@@ -25,7 +25,22 @@
 //!   the pickable non-living types (boats, armor stands, ...) are v2.
 use super::Game;
 use horizon_client::{mobs::Mob, text::Text};
-use horizon_mods::{ENTITY_LIST_MAX, ENTITY_LIST_RANGE, ENTITY_TARGET_MAX, Entity, Target};
+use horizon_mods::{
+    ENTITY_LIST_MAX, ENTITY_LIST_RANGE, ENTITY_TARGET_MAX, Entity, ModActionTarget, ModBlockTarget,
+    ModEntityTarget, ModFace, Target,
+};
+
+/// A pick's face normal as capability `actions` names it (API 21).
+fn mod_face(face: [i32; 3]) -> ModFace {
+    match face {
+        [0, -1, 0] => ModFace::Down,
+        [0, 1, 0] => ModFace::Up,
+        [0, 0, -1] => ModFace::North,
+        [0, 0, 1] => ModFace::South,
+        [-1, 0, 0] => ModFace::West,
+        _ => ModFace::East,
+    }
+}
 
 #[cfg(feature = "mods")]
 impl Game<'_> {
@@ -112,6 +127,93 @@ impl Game<'_> {
 
     /// One mob as the WIT spells it. Health is the server's truth in
     /// singleplayer only, and never for another player.
+    /// The crosshair's target for capability `actions` (API 21):
+    /// what the game's own pick rests on, in its own order — an
+    /// entity in front of the block is the target, the block
+    /// behind it is not offered. The block carries the face and
+    /// the cursor `game.raycast`'s hit lacks, from the pick's own
+    /// `Hit`. None when no running mod reads it, on the title
+    /// screen, or when nothing is hit.
+    pub(super) fn mod_action_target(&self) -> Option<ModActionTarget> {
+        if !self.mods.mods.wants_actions() || self.player.is_none() {
+            return None;
+        }
+        let (eye, _) = self.aim()?;
+        let block = self.pick();
+        let block_distance = block.map(|hit| {
+            (0..3)
+                .map(|i| (hit.point[i] - eye[i]).powi(2))
+                .sum::<f64>()
+                .sqrt()
+        });
+        // The entity the pick meets first: the mob ray and the
+        // object ray `remote_use` dispatches on, the nearer wins.
+        let mut entity: Option<(u32, String, f64)> = None;
+        if let Some((i, distance)) = self.mob_hit() {
+            let mob = &self.mobs[i];
+            entity = Some((mob.id, mob.kind.id.clone(), distance));
+        }
+        if let Some(hit) = self.remote_object_hit(false)
+            && entity.as_ref().is_none_or(|(_, _, d)| hit.distance < *d)
+            && let Some(kind) = self.mod_object_kind(hit.id)
+        {
+            entity = Some((hit.id as u32, kind, hit.distance));
+        }
+        if let Some((id, kind, distance)) = entity
+            && block_distance.is_none_or(|b| distance < b)
+        {
+            return Some(ModActionTarget::Entity(ModEntityTarget {
+                id,
+                kind,
+                distance: distance as f32,
+            }));
+        }
+        let hit = block?;
+        let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
+        Some(ModActionTarget::Block(ModBlockTarget {
+            block_x: hit.pos[0],
+            block_y: hit.pos[1],
+            block_z: hit.pos[2],
+            block: self.res.facts().get(state).name.to_string(),
+            face: mod_face(hit.face),
+            cursor_x: (hit.point[0] - f64::from(hit.pos[0])) as f32,
+            cursor_y: (hit.point[1] - f64::from(hit.pos[1])) as f32,
+            cursor_z: (hit.point[2] - f64::from(hit.pos[2])) as f32,
+        }))
+    }
+
+    /// The entity type of one of the object ray's hits, by its
+    /// server id: the kind `actions.target` names it by. None for
+    /// a hit no collection here claims (a dragon part, whose kind
+    /// the part alone doesn't say).
+    fn mod_object_kind(&self, id: i32) -> Option<String> {
+        if self.paintings.iter().any(|p| p.id == id as u32) {
+            return Some("minecraft:painting".into());
+        }
+        if let Some(frame) = self.item_frames.iter().find(|f| f.id == id as u32) {
+            return Some(frame.kind().into());
+        }
+        if self.armor_stands.iter().any(|a| a.id == id as u32) {
+            return Some("minecraft:armor_stand".into());
+        }
+        if let Some(cushion) = self.cushions.iter().find(|c| c.id == id as u32) {
+            return Some(cushion.item());
+        }
+        if let Some(boat) = self.boats.iter().find(|b| b.id == id as u32) {
+            return Some(boat.entity_type());
+        }
+        if let Some(cart) = self.carts.iter().find(|c| c.id == id as u32) {
+            return Some(cart.kind.id().into());
+        }
+        if self.interactions.contains_key(&id) {
+            return Some("minecraft:interaction".into());
+        }
+        if self.crystals.iter().any(|c| c.id as i32 == id) {
+            return Some("minecraft:end_crystal".into());
+        }
+        None
+    }
+
     fn mod_entity(&self, m: &Mob, singleplayer: bool) -> Entity {
         let is_player = m.kind.id == "minecraft:player";
         Entity {

@@ -5,7 +5,7 @@
 //! a player joining, chatting, typing them and leaving), and import no more
 //! than its capabilities.
 use horizon_mods::{
-    Clock, GameMode, Mods, Output, Package, Player, ServerPlayer, Snapshot, Status,
+    Clock, GameMode, ModAction, Mods, Output, Package, Player, ServerPlayer, Snapshot, Status,
     index::{self, Facts, Kind},
     manifest::component_imports,
 };
@@ -296,6 +296,15 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
             Output::Shake { strength, seconds } => {
                 format!("shook the camera: {strength:.2} for {seconds:.1} s")
             }
+            Output::Action { action, .. } => match action {
+                ModAction::Use => "used the held item".to_string(),
+                ModAction::Attack => "attacked".to_string(),
+                ModAction::SelectSlot(slot) => format!("selected hotbar slot {slot}"),
+                ModAction::UseOnBlock { target, hand } => format!(
+                    "used on block {} {} {} with the {:?} hand",
+                    target.block_x, target.block_y, target.block_z, hand
+                ),
+            },
         });
     }
     let shapes = mods.hud_shapes().count();

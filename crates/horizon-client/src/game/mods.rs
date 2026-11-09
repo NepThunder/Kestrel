@@ -29,9 +29,10 @@ use {
         ui,
     },
     horizon_mods::{
-        Clock, ModArmPose, ModEntityPoseState, ModHandState, ModItemUse, ModKey, ModPoseSwingAnim,
-        ModPoseTarget, ModSwingAnim, ModSwingKind, Mods, Output, Player, Runs, ServerPlayer,
-        Snapshot, SnapshotCamera, Status, UiScreen, UiWidget, WorldView,
+        Clock, ModAction, ModArmPose, ModBlockTarget, ModEntityPoseState, ModFace, ModHand,
+        ModHandState, ModItemUse, ModKey, ModPoseSwingAnim, ModPoseTarget, ModSwingAnim,
+        ModSwingKind, Mods, Output, Player, Runs, ServerPlayer, Snapshot, SnapshotCamera, Status,
+        UiScreen, UiWidget, WorldView,
     },
     std::time::Instant,
     winit::{event::MouseButton, keyboard::KeyCode},
@@ -119,6 +120,13 @@ pub(super) struct ModsState {
     /// to the world never reads as one giant turn.
     #[cfg(feature = "mods")]
     hand_prev_look: Option<(f32, f32)>,
+    /// Capability `actions`' queued clicks (API 21), in request
+    /// order across mods: `route_mod_output` collects them — they
+    /// may not act where outputs drain — and the tick's input step
+    /// performs them (`Game::perform_mod_actions`), at most
+    /// [`horizon_mods::ACTIONS_PER_CALL`] per mod awaiting.
+    #[cfg(feature = "mods")]
+    pub(super) pending_actions: Vec<(String, ModAction)>,
     /// The view's zoom ratio (API 19), for `render.set-hand-fov`:
     /// 1 unzoomed, easing toward 1/factor beside the FOV ease in
     /// `tick_fov` (`Game::tick_mod_zoom_ratio`). None until the
@@ -128,6 +136,73 @@ pub(super) struct ModsState {
     /// the spyglass.
     #[cfg(feature = "mods")]
     pub(super) zoom_ratio: Option<f32>,
+}
+
+/// A mod action's face (API 21) as the game's pick names it: the
+/// face normal `Hit.face` carries.
+#[cfg(feature = "mods")]
+fn mod_face_normal(face: ModFace) -> [i32; 3] {
+    match face {
+        ModFace::Down => [0, -1, 0],
+        ModFace::Up => [0, 1, 0],
+        ModFace::North => [0, 0, -1],
+        ModFace::South => [0, 0, 1],
+        ModFace::West => [-1, 0, 0],
+        ModFace::East => [1, 0, 0],
+    }
+}
+
+/// Whether a fresh pick still rests on the block and face a
+/// `use-on-block` named (API 21): the whole of its re-pick rule —
+/// anything else (the crosshair moved on, another face of the
+/// same block) drops the request, silently.
+#[cfg(feature = "mods")]
+fn use_on_block_matches(hit_pos: [i32; 3], hit_face: [i32; 3], target: &ModBlockTarget) -> bool {
+    hit_pos == [target.block_x, target.block_y, target.block_z]
+        && hit_face == mod_face_normal(target.face)
+}
+
+#[cfg(all(test, feature = "mods"))]
+mod action_tests {
+    use super::{ModBlockTarget, ModFace, use_on_block_matches};
+
+    fn target(face: ModFace) -> ModBlockTarget {
+        ModBlockTarget {
+            block_x: 3,
+            block_y: 64,
+            block_z: -2,
+            block: "minecraft:wheat[age=7]".into(),
+            face,
+            cursor_x: 0.5,
+            cursor_y: 1.0,
+            cursor_z: 0.5,
+        }
+    }
+
+    /// The re-pick a `use-on-block` performs (API 21): the same
+    /// block on the same face performs, a stale position or a
+    /// turned head drops the request — no packet either way here,
+    /// the drop is the caller's `return`.
+    #[test]
+    fn a_use_on_block_repicks_its_named_block_and_face() {
+        let up = target(ModFace::Up);
+        assert!(use_on_block_matches([3, 64, -2], [0, 1, 0], &up));
+        // The crosshair moved to the next block: stale, dropped.
+        assert!(!use_on_block_matches([3, 64, -1], [0, 1, 0], &up));
+        // The same block from the side: another face, dropped.
+        assert!(!use_on_block_matches([3, 64, -2], [0, 0, 1], &up));
+        // A face names its own normal, each way.
+        assert!(use_on_block_matches(
+            [3, 64, -2],
+            [0, 0, -1],
+            &target(ModFace::North)
+        ));
+        assert!(use_on_block_matches(
+            [3, 64, -2],
+            [-1, 0, 0],
+            &target(ModFace::West)
+        ));
+    }
 }
 
 /// The mappings `input.mapping` answers for, with the default key their
@@ -387,6 +462,18 @@ impl Game<'_> {
     pub(super) fn merge_remote_tree(&mut self) {}
     pub(super) fn sync_mods(&mut self) {}
     pub(super) fn install_sound_hook(&mut self) {}
+    /// API 21: no mod runs, so no action is ever queued, no button
+    /// is held and the in-frame queue never fills.
+    pub(super) fn perform_mod_actions(
+        &mut self,
+        _input: &mut horizon_client::interaction_input::InteractionInput,
+    ) {
+    }
+    pub(super) fn clear_mod_actions(&mut self) {}
+    pub(super) fn mod_held_buttons(&self) -> (bool, bool) {
+        (false, false)
+    }
+    pub(super) fn drain_mod_actions_in_frame(&mut self) {}
     pub(super) fn lend_client_world(&mut self) -> bool {
         false
     }
@@ -787,6 +874,7 @@ impl Game<'_> {
             can_zoom: self.mod_can_zoom(),
             spyglass_zoom: self.mod_spyglass_zoom(),
             last_input_ms: self.last_input.elapsed().as_millis() as u64,
+            action_target: self.mod_action_target(),
         }
     }
     /// The camera the last frame rendered from, for `get-camera` /
@@ -1451,6 +1539,22 @@ impl Game<'_> {
                     self.mod_set_movement_toggles(sprint, sneak);
                     continue;
                 }
+                Output::Action { mod_id, action } => {
+                    // Not here (API 21): an action may only perform
+                    // inside the tick's input step, wherever this
+                    // drain happens to run. Collect it, capped per
+                    // mod as the runtime caps per call.
+                    let queued = self
+                        .mods
+                        .pending_actions
+                        .iter()
+                        .filter(|(id, _)| *id == mod_id)
+                        .count();
+                    if queued < horizon_mods::ACTIONS_PER_CALL {
+                        self.mods.pending_actions.push((mod_id, action));
+                    }
+                    continue;
+                }
             };
             self.add_mod_chat_line(line);
         }
@@ -1459,6 +1563,104 @@ impl Game<'_> {
         let rows = self.settings.mods.installed.iter_mut();
         for (row, e) in rows.zip(self.mods.mods.entries()) {
             row.has_settings = e.has_ui_settings();
+        }
+    }
+    /// Performs the queued mod actions (capability `actions`,
+    /// API 21) in this tick's input step, remote path: a use or
+    /// attack becomes a press in the very queue physical clicks
+    /// use — indistinguishable downstream, every vanilla gate
+    /// applying in vanilla's order — a slot choice writes the
+    /// carried slot before the step's own sync reports it, and a
+    /// use-on-block runs inline against a fresh pick. Called by
+    /// `remote_handle_input` once its `ready` gate passes; the
+    /// gate failing clears the queue instead
+    /// ([`Game::clear_mod_actions`]): drops are silent, never
+    /// retried, never carried over.
+    pub(super) fn perform_mod_actions(
+        &mut self,
+        input: &mut horizon_client::interaction_input::InteractionInput,
+    ) {
+        use horizon_client::interaction_input::Button;
+        for (_, action) in std::mem::take(&mut self.mods.pending_actions) {
+            match action {
+                ModAction::Use => input.press(Button::Use),
+                ModAction::Attack => input.press(Button::Attack),
+                ModAction::SelectSlot(slot) => self.selected = slot as usize,
+                ModAction::UseOnBlock { target, hand } => self.remote_use_on_block(&target, hand),
+            }
+        }
+    }
+    /// Drops the queued mod actions unperformed (API 21): the
+    /// input step's `ready` gate failed.
+    pub(super) fn clear_mod_actions(&mut self) {
+        self.mods.pending_actions.clear();
+    }
+    /// The buttons the running mods hold down (API 21), read once
+    /// per tick at the input step and OR'd with the player's own
+    /// buttons where the game reads them: a second, virtual
+    /// holder of the same buttons.
+    pub(super) fn mod_held_buttons(&self) -> (bool, bool) {
+        self.mods.mods.held_buttons()
+    }
+    /// One mod `use-on-block` (API 21), performed at the input
+    /// step's drain: the game picks again, and unless the
+    /// crosshair still rests on the named block and face, the
+    /// request is dropped silently — a mod can only ever use what
+    /// the player is looking at. The block turn runs with the
+    /// re-pick pinned as the tick's hit, as a click's turn does
+    /// inside `InteractionInput::tick`, and the 4-tick use delay
+    /// gates it and follows it, as `remote_use`'s does. A claimed
+    /// item keeps its veto: the claiming mod owns that item's
+    /// uses, as it owns the use button's.
+    pub(super) fn remote_use_on_block(&mut self, target: &ModBlockTarget, hand: ModHand) {
+        if self.use_delay > 0 || self.remote_break_active() {
+            return;
+        }
+        let hand = match hand {
+            ModHand::Main => horizon_client::first_person::Hand::Main,
+            ModHand::Off => horizon_client::first_person::Hand::Off,
+        };
+        let held = self.with_hand(hand, |g| g.held().cloned());
+        if let Some(stack) = &held
+            && self.mods.mods.claims(&stack.item.to_string())
+        {
+            return;
+        }
+        let Some(hit) = self.pick() else {
+            return;
+        };
+        if !use_on_block_matches(hit.pos, hit.face, target) {
+            return;
+        }
+        self.tick_hit = Some(Some(hit));
+        self.remote_use_block(hand);
+        self.tick_hit = None;
+        self.use_delay = 4;
+    }
+    /// The in-frame path's share of the district (API 21): the
+    /// queued clicks bump the same counters `play_mouse` fills
+    /// and the local hand consumes, a slot choice selects, and a
+    /// use-on-block is dropped — the deprecated path is not
+    /// extended beyond the shared counters. Called at the local
+    /// hand's point of the tick, behind the local hand's own
+    /// gates; failing them clears the queue, as the remote gate
+    /// does.
+    pub(super) fn drain_mod_actions_in_frame(&mut self) {
+        let pending = std::mem::take(&mut self.mods.pending_actions);
+        let ready = self.screen == Screen::Playing
+            && self.title.is_none()
+            && self.sleeping.is_none()
+            && !self.dialog_open();
+        if !ready {
+            return;
+        }
+        for (_, action) in pending {
+            match action {
+                ModAction::Use => self.use_clicks += 1,
+                ModAction::Attack => self.attack_clicks += 1,
+                ModAction::SelectSlot(slot) => self.selected = slot as usize,
+                ModAction::UseOnBlock { .. } => {}
+            }
         }
     }
     /// A mod's line in the window's chat; not through system_message: a mod
