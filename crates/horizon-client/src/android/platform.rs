@@ -297,7 +297,7 @@ pub fn cache_dir() -> Option<std::path::PathBuf> {
 }
 
 pub fn open_repository() -> bool {
-    open_url("https://github.com/Vasysik/horizon-android")
+    open_url("https://github.com/NepThunder/Kestrel")
 }
 
 /// Display-cap probe (Kestrel, temporary): dump the raw Android Display

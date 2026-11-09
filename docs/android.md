@@ -6,7 +6,7 @@ and Java multiplayer. It does not run arbitrary Minecraft JAR versions.
 
 ## Install and play
 
-1. Install the APK matching the device architecture from [Releases](https://github.com/Vasysik/horizon-android/releases).
+1. Install the APK matching the device architecture from [Releases](https://github.com/NepThunder/Kestrel/releases).
 2. Open Horizon and choose **Download Minecraft 26.3**.
 3. Wait for resource verification and installation, then choose **Play**.
 

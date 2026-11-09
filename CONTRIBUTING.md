@@ -12,7 +12,7 @@ the tools, tests and docs that build, check and release them.
 - Android work: start with [CONTRIBUTING_ANDROID.md](CONTRIBUTING_ANDROID.md).
 - Repository rules for anyone (human or agent) working in the tree:
   [AGENTS.md](AGENTS.md).
-- Bugs go to [issues](https://github.com/NepThunder/horizon-android/issues);
+- Bugs go to [issues](https://github.com/NepThunder/Kestrel/issues);
   use the Android bug template and include your build and reproduction
   steps.
 

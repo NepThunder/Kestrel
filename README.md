@@ -7,10 +7,10 @@ catalog inside the launcher.
 
 **Android 9+ · Vulkan · Touch controls · `.kmod` mod SDK**
 
-[Download the latest release](https://github.com/NepThunder/horizon-android/releases) ·
+[Download the latest release](https://github.com/NepThunder/Kestrel/releases) ·
 [Mod catalog](https://github.com/NepThunder/Kestrel-mods) ·
 [Build & play](docs/android.md) · [Contribute](CONTRIBUTING_ANDROID.md) ·
-[Report a bug](https://github.com/NepThunder/horizon-android/issues/new?template=android-bug.yml)
+[Report a bug](https://github.com/NepThunder/Kestrel/issues/new?template=android-bug.yml)
 
 ## Releases
 

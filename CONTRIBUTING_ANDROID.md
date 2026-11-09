@@ -16,7 +16,7 @@ performance reports, include the phone, Android version, renderer,
 resolution scale, render distance and the build you ran. Emulator FPS
 does not establish phone performance.
 
-[Report a bug](https://github.com/NepThunder/horizon-android/issues/new?template=android-bug.yml)
+[Report a bug](https://github.com/NepThunder/Kestrel/issues/new?template=android-bug.yml)
 or send a focused pull request against `android`. Reproduction steps and a
 short video often help more than a large log dump. Do not post
 account/session files, tokens, private server details, signing keys or
