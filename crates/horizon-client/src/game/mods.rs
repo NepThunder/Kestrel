@@ -29,8 +29,8 @@ use {
         ui,
     },
     horizon_mods::{
-        Clock, ModKey, Mods, Output, Player, Runs, ServerPlayer, Snapshot, Status, UiScreen,
-        UiWidget, WorldView,
+        Clock, ModKey, Mods, Output, Player, Runs, ServerPlayer, Snapshot, SnapshotCamera, Status,
+        UiScreen, UiWidget, WorldView,
     },
     std::time::Instant,
     winit::{event::MouseButton, keyboard::KeyCode},
@@ -683,7 +683,34 @@ impl Game<'_> {
             targeted,
             gamma: self.settings.gamma,
             fog: self.settings.horizon.fog,
+            camera: self.snapshot_camera(),
         }
+    }
+    /// The camera the last frame rendered from, for `get-camera` /
+    /// `project`: the locator bar's stored camera plus the mod roll, or
+    /// the panorama's on the title screen. None before the first frame.
+    fn snapshot_camera(&self) -> Option<SnapshotCamera> {
+        if let Some((position, yaw, pitch, fov)) = self.locator_camera {
+            return Some(SnapshotCamera {
+                x: position[0],
+                y: position[1],
+                z: position[2],
+                yaw,
+                pitch,
+                roll: self.mod_camera().map_or(0.0, |(c, _)| c.roll),
+                fov,
+            });
+        }
+        let (position, yaw, pitch) = self.title_camera?;
+        Some(SnapshotCamera {
+            x: position[0],
+            y: position[1],
+            z: position[2],
+            yaw,
+            pitch,
+            roll: 0.0,
+            fov: 85.0,
+        })
     }
     /// The first block along the player's view within
     /// [`horizon_mods::RAYCAST_MAX`] and its distance from the eye

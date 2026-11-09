@@ -181,7 +181,7 @@ impl Capability {
             }
             Capability::Ui => "show its own screens and a settings page",
             Capability::Render => {
-                "draw on your screen and in the world, shake and zoom the camera, brighten it and turn off distance fog"
+                "draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it and turn off distance fog"
             }
             Capability::Input => {
                 "see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys"

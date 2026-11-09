@@ -14,7 +14,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `command` | [`command`](#command) | run commands as you, with your permissions |
 | `registries` | data files (`assets/`, `data/`), no interface | add blocks, items, mob effects and entity types to your worlds |
 | `ui` | [`ui`](#ui) | show its own screens and a settings page |
-| `render` | [`render`](#render) | draw on your screen and in the world, shake and zoom the camera, brighten it and turn off distance fog |
+| `render` | [`render`](#render) | draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it and turn off distance fog |
 | `input` | [`input`](#input) | see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys |
 | `players` | [`players`](#players) | see who is on the server and message them |
 | `world` | [`world`](#world) | read the world's blocks, and change them where the game runs the world |
@@ -483,6 +483,41 @@ One world-space box: the two opposite corners, a 0xAARRGGBB colour, and a width 
 | `distance` | `u32` | How far the distant terrain reaches, in chunks: 64 to 1024. On integrated graphics other than Apple's the game caps it lower. |
 | `reduced` | `bool` | Coarser far tiles, as the Far Detail setting's Reduced: 2 to 4 ms less GPU time per frame on integrated graphics. |
 
+### record `camera-pose`
+
+The camera this frame renders from.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `f64` | World position, in blocks. |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+| `yaw` | `f32` | Degrees, as F3 shows them. |
+| `pitch` | `f32` | Degrees: -90 looks straight up, 90 straight down. |
+| `roll` | `f32` | Degrees of roll about the view direction: 0 is level, positive rolls clockwise as the player sees it. |
+
+### record `camera-override`
+
+What a mod asks the camera to do. `position` decides the mode: none keeps the camera at the player's eye and only the look changes (freelook); some detaches the camera to that position (freecam).
+
+| Field | Type | |
+| --- | --- | --- |
+| `position` | `option<world-point>` | None: freelook; some: freecam at this position. |
+| `yaw` | `f32` | The look direction the camera starts from. The mouse then turns it until the next call: a call replaces the look, it does not add to it. |
+| `pitch` | `f32` |  |
+| `roll` | `f32` | Degrees of roll about the view direction, -180 to 180. |
+
+### record `screen-point`
+
+A point on the screen, in GUI pixels from the top left.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `f32` |  |
+| `y` | `f32` |  |
+| `visible` | `bool` | False when the point is behind the camera. |
+| `depth` | `f64` | Blocks from the camera along the view direction; negative behind it. |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `set-hud` | `func(shapes: list<shape>)` | Replaces the mod's HUD shapes: up to 1024, drawn every frame in order over the HUD (after the hotbar, under chat and screens), hidden with the HUD (F1). An empty list removes them. |
@@ -500,6 +535,9 @@ One world-space box: the two opposite corners, a 0xAARRGGBB colour, and a width 
 | `set-gamma` | `func(value: f32)` | Sets this mod's gamma until the next call: 0.0 is the darkest the lightmap goes, 1.0 is the brightest the options screen allows, and values above 1.0 brighten further with diminishing returns — the lightmap saturates toward white, so colours wash out as the value grows. 10.0 is the 1000% Fullbright mods use. Values are clamped to 0.0..=10.0; a non-finite value reads as 1.0. The strongest gamma any running mod sets wins; when no running mod sets one, the player's own Brightness setting applies again. The player's stored setting is never changed. Only while playing: at the title screen there is no renderer to brighten, and the value is the stored setting. |
 | `get-fog` | `func() -> bool` | Whether distance fog is drawn right now: false while any running mod turned it off, otherwise the player's own Fog setting. Distance fog is the atmospheric and render-distance fog, including the Nether's; the fog of water, lava and powder snow, blindness, darkness and a boss's world fog are never removed by this. |
 | `set-fog` | `func(enabled: bool)` | Sets this mod's distance-fog flag until the next call: false removes distance fog (the same removal the Fog setting in the graphics options does), true leaves the player's setting alone. Any running mod turning fog off turns it off; when no running mod turns it off, the player's own Fog setting applies again. The player's stored setting is never changed. Only while playing. |
+| `get-camera` | `func() -> camera-pose` | The camera this frame renders from: the mod override when one is active, else the player's own camera (the first-person eye, or the third-person back-off). Only while playing. |
+| `set-camera` | `func(override: option<camera-override>)` | Detaches the camera until the next call (none releases it): freelook while `position` is none, freecam while it is some. Only one mod drives the camera: the first loaded mod that sets one wins; the others' calls are stored but ignored until it releases. While a camera is active the mouse turns the camera, not the player — the player's yaw and pitch do not move, so the player keeps walking, aiming and mining in the direction they faced. The player's stored settings are never changed. Only while playing: at the title screen there is no camera to move, and the value is the panorama's. |
+| `project` | `func(point: world-point) -> screen-point` | Projects a world position onto the screen through the camera this frame renders from (a mod camera when one is active, else the player's own), with the effective field of view, including a mod zoom. `visible` is false behind the camera; `x` and `y` are still given, so a mod can draw an off-screen arrow itself. No occlusion test: a point behind a wall still projects, as the HUD distances do. Only while playing. |
 
 ## `events`
 

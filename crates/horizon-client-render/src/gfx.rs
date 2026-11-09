@@ -465,6 +465,11 @@ pub struct Frame<'a> {
     /// The spinning effect multiplied into the level's projection only
     /// (`crate::camera::spinning_effect_matrix`), not the hand's.
     pub spin: Mat4,
+    /// A mod camera's roll (`render.set-camera`), multiplied into the
+    /// level's projection with the bob and the spin: a Z rotation in
+    /// view space, identity while no camera is active. The hand's pose
+    /// does not take it.
+    pub roll: Mat4,
     pub sky: Sky,
     /// Block edits and chunk membership that can change the shader pack's shadow map.
     pub shadow_scene_revision: (u64, u64),
@@ -6151,7 +6156,7 @@ impl Renderer {
             frame.boss_darken,
         );
         let views = self.views(frame);
-        let pose = frame.bob * frame.spin;
+        let pose = frame.bob * frame.spin * frame.roll;
         let view_proj = views.primary().view_proj(pose);
         // TAA runs where the world post pass does, not under a shader pack's own.
         let taa = !frame.title

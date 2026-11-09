@@ -34,6 +34,15 @@ impl Game<'_> {
     pub(super) fn mod_far_terrain(&self) -> Option<ModFarTerrain> {
         None
     }
+    pub(super) fn mod_camera(&self) -> Option<(ModCamera, u64)> {
+        None
+    }
+    pub(super) fn mod_camera_detached(&self) -> bool {
+        false
+    }
+    pub(super) fn mod_camera_roll(&self) -> glam::Mat4 {
+        glam::Mat4::IDENTITY
+    }
     pub(super) fn effective_gamma(&self) -> f32 {
         self.settings.gamma
     }
@@ -65,6 +74,29 @@ pub(super) struct ModMinimap {
 pub(super) struct ModFarTerrain {
     pub(super) distance: u32,
     pub(super) reduced: bool,
+}
+
+/// A mod's camera override (`render.set-camera`), clamped by the runtime:
+/// the position is none for a freelook, some for a freecam.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) struct ModCamera {
+    pub(super) position: Option<[f64; 3]>,
+    pub(super) yaw: f32,
+    pub(super) pitch: f32,
+    pub(super) roll: f32,
+}
+
+/// A mod camera override's per-frame state, kept while one is active:
+/// the mouse-driven look, the `set-camera` call and override it came
+/// from, the previous camera position for the wall-clip ray, and the
+/// player's feet and dimension then (a teleport resets the ray).
+#[derive(Clone, Copy)]
+pub(super) struct ModCameraState {
+    pub(super) look: (f32, f32),
+    pub(super) seq: u64,
+    pub(super) last: ModCamera,
+    pub(super) prev: [f64; 3],
+    pub(super) prev_player: ([f64; 3], super::Dim),
 }
 
 #[cfg(feature = "mods")]
@@ -187,6 +219,39 @@ impl Game<'_> {
             factor: z.factor,
             smooth: z.smooth,
             turn: z.turn,
+        })
+    }
+    /// The camera the first running mod drives (`render.set-camera`),
+    /// with the call count of the `set-camera` that set it, while
+    /// playing. A spectator's camera wins over it: `camera_view`
+    /// ignores the override while one is active.
+    pub(super) fn mod_camera(&self) -> Option<(ModCamera, u64)> {
+        if !self.mod_playing() {
+            return None;
+        }
+        let (c, seq) = self.mods.mods.camera()?;
+        Some((
+            ModCamera {
+                position: c.position.map(|p| [p.x, p.y, p.z]),
+                yaw: c.yaw,
+                pitch: c.pitch,
+                roll: c.roll,
+            },
+            seq,
+        ))
+    }
+    /// A freecam is active: the camera is detached from the player, so
+    /// the player's own model renders and the hand hides, as in third
+    /// person. A freelook keeps the camera at the eye, so it does not.
+    pub(super) fn mod_camera_detached(&self) -> bool {
+        self.mod_camera().is_some_and(|(c, _)| c.position.is_some())
+    }
+    /// A mod camera's roll as a pose matrix: a Z rotation in view space,
+    /// so a positive roll banks the horizon clockwise as the player sees
+    /// it. Identity while no camera is active.
+    pub(super) fn mod_camera_roll(&self) -> glam::Mat4 {
+        self.mod_camera().map_or(glam::Mat4::IDENTITY, |(c, _)| {
+            glam::Mat4::from_rotation_z(-c.roll.to_radians())
         })
     }
     /// The minimap the first mod showing one asks for.

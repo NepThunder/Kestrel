@@ -86,14 +86,17 @@ impl Game<'_> {
         ]
     }
     /// `FogRenderer.setupFog` for the frame's camera, and Horizon's Fog option.
+    /// `forward` is the camera's forward, not the player's: a detached
+    /// camera flown into water while the player stands on the bank gets
+    /// water fog.
     pub(super) fn frame_fog(
         &self,
         camera: glam::DVec3,
+        forward: [f64; 3],
         sky: &horizon_client::environment::Sky,
         biome: u16,
         water_fog_color: [f32; 3],
     ) -> FogData {
-        let forward = self.forward();
         let at = [camera.x, camera.y, camera.z];
         let fog_type = fog_type(&self.world, self.res.facts(), at, forward);
         let (rain, thunder) = if self.dim == Dim::Overworld {
