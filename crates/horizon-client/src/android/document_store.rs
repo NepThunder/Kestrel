@@ -143,7 +143,7 @@ fn resolve(home: &Path, id: &str) -> io::Result<Document> {
 fn row(home: &Path, id: &str) -> io::Result<Value> {
     if id == ROOT {
         return Ok(
-            json!({"document_id": ROOT, "_display_name": "Horizon Android",
+            json!({"document_id": ROOT, "_display_name": "Kestrel",
             "mime_type": DIRECTORY, "flags": 0}),
         );
     }
@@ -164,7 +164,7 @@ fn row(home: &Path, id: &str) -> io::Result<Value> {
     } else {
         match doc.path.extension().and_then(|s| s.to_str()) {
             Some("jsonl") => "application/x-ndjson",
-            Some("zip" | "hmod" | "hshader") => "application/zip",
+            Some("zip" | "kmod" | "hshader") => "application/zip",
             Some("png") => "image/png",
             Some("json") => "application/json",
             Some("txt" | "wgsl" | "glsl" | "fsh" | "vsh" | "toml") => "text/plain",
@@ -282,7 +282,7 @@ pub fn call(home: &Path, op: &str, id: &str, arg: &str) -> io::Result<Value> {
     }
     match op {
         "roots" => Ok(json!([{"root_id": ROOT, "document_id": ROOT,
-            "title": "Horizon Android", "flags": 18, "mime_types": "*/*"}])),
+            "title": "Kestrel", "flags": 18, "mime_types": "*/*"}])),
         "document" => Ok(json!([row(home, id)?])),
         "children" => Ok(json!(children(home, id)?)),
         "child" => Ok(json!(is_child(home, id, arg))),
@@ -412,13 +412,13 @@ mod tests {
         ] {
             assert!(resolve(&home, id).is_err(), "{id}");
         }
-        call(&home, "create", "p0/mods", "test.hmod").unwrap();
-        assert!(call(&home, "create", "p0/mods", "test.hmod").is_err());
-        fs::write(home.join("horizon-mods/test.hmod"), b"original").unwrap();
-        call(&home, "create", "p0/mods", "other.hmod").unwrap();
-        assert!(call(&home, "rename", "p0/mods/other.hmod", "test.hmod").is_err());
+        call(&home, "create", "p0/mods", "test.kmod").unwrap();
+        assert!(call(&home, "create", "p0/mods", "test.kmod").is_err());
+        fs::write(home.join("horizon-mods/test.kmod"), b"original").unwrap();
+        call(&home, "create", "p0/mods", "other.kmod").unwrap();
+        assert!(call(&home, "rename", "p0/mods/other.kmod", "test.kmod").is_err());
         assert_eq!(
-            fs::read(home.join("horizon-mods/test.hmod")).unwrap(),
+            fs::read(home.join("horizon-mods/test.kmod")).unwrap(),
             b"original"
         );
         assert!(call(&home, "delete", "p0/mods", "").is_err());
@@ -432,15 +432,15 @@ mod tests {
         assert!(open(&home, "reports/report.jsonl", "r").is_ok());
         assert!(open(&home, "reports/report.jsonl", "w").is_err());
         assert!(!is_child(&home, "p0/mods", "p0/packs/pack.zip"));
-        assert!(is_child(&home, ROOT, "p0/mods/test.hmod"));
+        assert!(is_child(&home, ROOT, "p0/mods/test.kmod"));
         assert_eq!(
-            call(&home, "path", "p0/mods/test.hmod", "").unwrap(),
-            json!(["horizon", "p0/mods", "p0/mods/test.hmod"])
+            call(&home, "path", "p0/mods/test.kmod", "").unwrap(),
+            json!(["horizon", "p0/mods", "p0/mods/test.kmod"])
         );
-        assert!(call(&home, "path", "p0/mods/test.hmod", "p0/packs").is_err());
+        assert!(call(&home, "path", "p0/mods/test.kmod", "p0/packs").is_err());
         fs::write(home.join("android-launcher.json"), br#"{"profile":7}"#).unwrap();
         assert_eq!(children(&home, ROOT).unwrap()[0]["document_id"], "p7/mods");
-        assert!(open(&home, "p0/mods/test.hmod", "r").is_ok());
+        assert!(open(&home, "p0/mods/test.kmod", "r").is_ok());
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(home.join("performance"), home.join("horizon-mods/link"))
@@ -605,7 +605,7 @@ pub fn validate_entry_name(name: &str) -> Result<(), String> {
         return Err("Name cannot contain slashes or special path characters.".into());
     }
     if is_protected_system_name(trimmed) {
-        return Err("This name is reserved by the Horizon launcher.".into());
+        return Err("This name is reserved by the Kestrel launcher.".into());
     }
     Ok(())
 }
@@ -613,7 +613,7 @@ pub fn validate_entry_name(name: &str) -> Result<(), String> {
 fn verify_no_symlinks(home: &Path, target: &Path) -> Result<(), String> {
     let rel = target
         .strip_prefix(home)
-        .map_err(|_| "Path escapes the Horizon home directory.".to_owned())?;
+        .map_err(|_| "Path escapes the Kestrel home directory.".to_owned())?;
     let mut cur = home.to_path_buf();
     for part in rel.components() {
         use std::path::Component;
@@ -630,7 +630,7 @@ fn verify_no_symlinks(home: &Path, target: &Path) -> Result<(), String> {
         }
         match fs::symlink_metadata(&cur) {
             Ok(meta) if meta.file_type().is_symlink() => {
-                return Err("Symbolic links are not permitted in Horizon directories.".into());
+                return Err("Symbolic links are not permitted in Kestrel directories.".into());
             }
             Ok(_) => {}
             Err(e) if e.kind() == ErrorKind::NotFound => {}
@@ -687,7 +687,7 @@ pub fn classify_entry_kind(path: &Path, is_dir: bool) -> String {
         .map(|s| s.to_ascii_lowercase())
         .as_deref()
     {
-        Some("hmod") => "Horizon Mod (.hmod)".into(),
+        Some("kmod") => "Kestrel Mod (.kmod)".into(),
         Some("hnmod") => "Native Mod (.hnmod)".into(),
         Some("jar") => "Java Mod (.jar)".into(),
         Some("hshader") => "Horizon Shader (.hshader)".into(),

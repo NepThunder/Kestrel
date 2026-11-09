@@ -7,7 +7,7 @@ Pull requests never receive the signing key or trigger this workflow.
 
 These APKs use the optimized Rust `release` profile (including ThinLTO), public
 payload checks and official resource downloads. The package is
-`dev.horizon.android.dev`, separate from the normal release, and the visible
+`com.kestrel.android.dev`, separate from the normal release, and the visible
 version contains the run number and source commit. Test data is separate;
 worlds and accounts are not automatically copied from the release app.
 The workflow does not publish GitHub Releases or send Discord messages.

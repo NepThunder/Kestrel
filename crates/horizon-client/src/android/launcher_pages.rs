@@ -54,6 +54,10 @@ fn my3_accent_soft() -> u32 {
     horizon_client::ui_theme::active_theme().accent_soft
 }
 #[inline]
+fn my3_success() -> u32 {
+    horizon_client::ui_theme::active_theme().success
+}
+#[inline]
 fn my3_on_accent() -> u32 {
     horizon_client::ui_theme::active_theme().on_accent
 }
@@ -245,6 +249,10 @@ pub(super) enum Action {
     CloseProjectModal,
     SelectModalVersion(usize),
     InstallModalProject,
+    AppUpdateDownload,
+    AppUpdateInstall,
+    AppUpdateDismiss,
+    AppUpdateCheck,
     Import(horizon_client::content_files::Kind),
     OpenFolder(horizon_client::content_files::Kind),
     ToggleSection(usize),
@@ -312,7 +320,6 @@ pub(super) enum Action {
     ToggleBundled(&'static str),
     WorldFiles,
     GameFiles,
-    StarlingDownload,
     WorkerLimit,
     ChooseWorkerLimit(u32),
     PerformanceHints,
@@ -423,21 +430,41 @@ pub(super) fn button(
     action: Action,
     accent: bool,
 ) {
+    let (fill, text) = if accent {
+        (my3_accent(), my3_on_accent())
+    } else {
+        (my3_surface_high(), my3_text())
+    };
+    button_styled(ui, targets, rect, label, action, fill, text, !accent);
+}
+
+/// Green button for the mod "Update" action, using the theme's success color
+/// so an available update stands out from the accent Install buttons. The
+/// text uses the background color, which contrasts with the success green in
+/// both the light theme (dark green) and the dark theme (bright green).
+pub(super) fn update_button(
+    ui: &mut Ui,
+    targets: &mut Vec<([f32; 4], Action)>,
+    rect: [f32; 4],
+    action: Action,
+) {
+    button_styled(ui, targets, rect, "Update", action, my3_success(), my3_bg(), false);
+}
+
+fn button_styled(
+    ui: &mut Ui,
+    targets: &mut Vec<([f32; 4], Action)>,
+    rect: [f32; 4],
+    label: &str,
+    action: Action,
+    fill: u32,
+    text_color: u32,
+    bordered: bool,
+) {
     let [x, y, w, h] = rect;
     let radius = (h * 0.42).clamp(10.0, 22.0);
-    ui.rounded(
-        x,
-        y,
-        w,
-        h,
-        radius,
-        if accent {
-            my3_accent()
-        } else {
-            my3_surface_high()
-        },
-    );
-    if !accent {
+    ui.rounded(x, y, w, h, radius, fill);
+    if bordered {
         ui.border(x, y, w, h, radius, my3_border());
     }
     let padding = (w * 0.10).clamp(8.0, 14.0);
@@ -457,14 +484,7 @@ pub(super) fn button(
         x + ((w - text_w) * 0.5).max(padding)
     };
     let ty = y + ((h - font * 1.45) * 0.5).max(2.0);
-    ui.text(
-        Face::Medium,
-        font,
-        tx,
-        ty,
-        if accent { my3_on_accent() } else { my3_text() },
-        &fitted,
-    );
+    ui.text(Face::Medium, font, tx, ty, text_color, &fitted);
     if let Some(c) = ui.clip_rect(rect) {
         targets.push((c, action));
     }
@@ -1141,7 +1161,7 @@ impl Launcher {
         self.targets.push((eq_btn_rect, Action::OpenControlEditor));
 
         let brand_w = (eq_btn_rect[0] - 66.0).max(70.0);
-        ui.text(Face::SemiBold, 16.0, 54.0, 10.0, my3_text(), "Horizon");
+        ui.text(Face::SemiBold, 16.0, 54.0, 10.0, my3_text(), "Kestrel");
         let version_line = format!("Android {}", crate::backend::VERSION);
         let fitted_version = ui.fit_text(Face::Regular, 11.0, &version_line, brand_w);
         ui.text(
@@ -1419,76 +1439,6 @@ impl Launcher {
                     ),
                 );
 
-                ui.text(
-                    Face::SemiBold,
-                    15.0,
-                    content_x + 22.0,
-                    card_y + 84.0,
-                    my3_text(),
-                    "Horizon Android is becoming Starling",
-                );
-                let notice = "Some Horizon Android features are still being transferred and merged. Export your worlds through Android Files (SAF) before moving.";
-                let mut line_y = card_y + 108.0;
-                let font_size = 11.5;
-                let mut line = String::new();
-                for word in notice.split_whitespace() {
-                    let candidate = if line.is_empty() {
-                        word.to_owned()
-                    } else {
-                        format!("{line} {word}")
-                    };
-                    if !line.is_empty()
-                        && ui.measure(Face::Regular, font_size, &candidate) > content_w - 44.0
-                    {
-                        ui.text(
-                            Face::Regular,
-                            font_size,
-                            content_x + 22.0,
-                            line_y,
-                            my3_muted(),
-                            &line,
-                        );
-                        line_y += 15.0;
-                        line.clear();
-                    }
-                    if !line.is_empty() {
-                        line.push(' ');
-                    }
-                    line.push_str(word);
-                }
-                if !line.is_empty() {
-                    ui.text(
-                        Face::Regular,
-                        font_size,
-                        content_x + 22.0,
-                        line_y,
-                        my3_muted(),
-                        &line,
-                    );
-                }
-                let migration_y = line_y + 24.0;
-                let migration_w = (content_w - 52.0) * 0.5;
-                button(
-                    &mut ui,
-                    &mut self.targets,
-                    [content_x + 22.0, migration_y, migration_w, 34.0],
-                    "Download Starling",
-                    Action::StarlingDownload,
-                    false,
-                );
-                button(
-                    &mut ui,
-                    &mut self.targets,
-                    [
-                        content_x + 30.0 + migration_w,
-                        migration_y,
-                        migration_w,
-                        34.0,
-                    ],
-                    "Export worlds (SAF)",
-                    Action::WorldFiles,
-                    false,
-                );
                 let btn_y = (h - 92.0).max(card_y + card_h + 12.0);
                 let play_w = content_w.min(256.0);
                 let is_launching = self.launching || self.session_worker.is_some();
@@ -1567,23 +1517,34 @@ impl Launcher {
             if matches!(page, Page::Shaders | Page::Mods) {
                 use crate::shader_catalog::Origin;
                 let seg_w = 100.0;
-                for (i, origin) in [Origin::Horizon, Origin::Modrinth].into_iter().enumerate() {
-                    let rx = content_x + content_w - (2 - i) as f32 * (seg_w + 6.0) + 6.0;
+                // The Horizon shaders tab is hidden for now: the registry
+                // index is Kestrel's (mods only), so Horizon lists no
+                // shaders; Modrinth covers shaders until the Horizon
+                // shaders are ported to Android/Kestrel. Restore
+                // Origin::Horizon here to show the tab again.
+                let origins: &[Origin] = if page == Page::Shaders {
+                    &[Origin::Modrinth]
+                } else {
+                    &[Origin::Horizon, Origin::Modrinth]
+                };
+                let n = origins.len();
+                for (i, origin) in origins.iter().enumerate() {
+                    let rx = content_x + content_w - (n - i) as f32 * (seg_w + 6.0) + 6.0;
                     let rect = [rx, header_y - 2.0, seg_w, 30.0];
                     let active = (if page == Page::Mods {
                         self.catalog.config.mod_source
                     } else {
-                        self.catalog.config.shader_source
-                    }) == origin;
+                        self.catalog.effective_shader_source()
+                    }) == *origin;
                     button(
                         &mut ui,
                         &mut self.targets,
                         rect,
                         origin.source().label(),
                         if page == Page::Mods {
-                            Action::ModSource(origin)
+                            Action::ModSource(*origin)
                         } else {
-                            Action::ShaderSource(origin)
+                            Action::ShaderSource(*origin)
                         },
                         active,
                     );
@@ -1595,7 +1556,7 @@ impl Launcher {
             let search_btn_w = 98.0;
             let field_w = (content_w - search_btn_w - 8.0).max(120.0);
             let search_hint = if page == Page::Mods {
-                "Search mods or paste .hmod HTTPS link..."
+                "Search mods or paste .kmod HTTPS link..."
             } else {
                 "Search catalog..."
             };
@@ -1616,7 +1577,7 @@ impl Launcher {
                 &mut self.targets,
                 [content_x + field_w + 8.0, search_y, search_btn_w, 36.0],
                 if page == Page::Mods && self.catalog.query.trim().starts_with("https://") {
-                    "Import .hmod"
+                    "Import .kmod"
                 } else {
                     "Search"
                 },
@@ -1782,7 +1743,7 @@ impl Launcher {
                     content_x + 64.0,
                     y + 45.0,
                     my3_accent(),
-                    "Horizon Built-in • Tap for versions, Modrinth info & screenshots",
+                    "Kestrel Built-in • Tap for versions, Modrinth info & screenshots",
                 );
                 if let Some(c) = ui.clip_rect(card_rect) {
                     self.targets.push((c, Action::OpenBundledProject(id)));
@@ -1800,10 +1761,11 @@ impl Launcher {
             for (row, (i, p)) in catalog_rows.into_iter().enumerate() {
                 let y = top + (row + bundled.len()) as f32 * row_h - self.catalog.scroll;
                 let download = self.catalog.download_label(p);
+                let update = self.catalog.update_available(p);
                 let card_rect = [content_x, y, content_w - 118.0, 64.0];
                 let btn_rect = [content_x + content_w - 112.0, y + 13.0, 100.0, 38.0];
                 self.list_targets.push((card_rect, Action::OpenProject(i)));
-                if download.is_none() {
+                if download.is_none() || update {
                     self.list_targets.push((btn_rect, Action::Install(i)));
                 }
                 if y + 64.0 < top || y > bottom {
@@ -1850,7 +1812,9 @@ impl Launcher {
                 let rich_summary = if crate::catalog::source_only_mod(p) {
                     "Native .hnmod temporarily unsupported on Android; built-in mods are available."
                 } else {
-                    self.catalog.enriched_summaries.get(&p.id)
+                    self.catalog
+                        .enriched_summaries
+                        .get(&p.id)
                         .map_or(p.summary.as_str(), String::as_str)
                 };
                 let summary = ui.fit_text(Face::Regular, 12.5, rich_summary, text_max);
@@ -1896,31 +1860,35 @@ impl Launcher {
                 }
 
                 if let Some(state) = download {
-                    ui.rounded(
-                        btn_rect[0],
-                        btn_rect[1],
-                        btn_rect[2],
-                        btn_rect[3],
-                        19.0,
-                        my3_surface_high(),
-                    );
-                    ui.icon(
-                        Icon::Check,
-                        btn_rect[0] + 10.0,
-                        btn_rect[1] + 11.0,
-                        15.0,
-                        my3_accent(),
-                    );
-                    ui.text(
-                        Face::Medium,
-                        13.0,
-                        btn_rect[0] + 28.0,
-                        btn_rect[1] + 9.0,
-                        my3_text(),
-                        &state,
-                    );
-                    if let Some(c) = ui.clip_rect(btn_rect) {
-                        self.targets.push((c, Action::OpenProject(i)));
+                    if update {
+                        update_button(&mut ui, &mut self.targets, btn_rect, Action::Install(i));
+                    } else {
+                        ui.rounded(
+                            btn_rect[0],
+                            btn_rect[1],
+                            btn_rect[2],
+                            btn_rect[3],
+                            19.0,
+                            my3_surface_high(),
+                        );
+                        ui.icon(
+                            Icon::Check,
+                            btn_rect[0] + 10.0,
+                            btn_rect[1] + 11.0,
+                            15.0,
+                            my3_accent(),
+                        );
+                        ui.text(
+                            Face::Medium,
+                            13.0,
+                            btn_rect[0] + 28.0,
+                            btn_rect[1] + 9.0,
+                            my3_text(),
+                            &state,
+                        );
+                        if let Some(c) = ui.clip_rect(btn_rect) {
+                            self.targets.push((c, Action::OpenProject(i)));
+                        }
                     }
                 } else {
                     button(
@@ -2034,6 +2002,15 @@ impl Launcher {
         if self.diagnostics_modal_open {
             self.draw_diagnostics_summary_modal(&mut ui, w, h);
         }
+        if matches!(
+            self.app_update.state(),
+            crate::app_update::State::Available
+                | crate::app_update::State::Downloading
+                | crate::app_update::State::Ready
+                | crate::app_update::State::Failed
+        ) {
+            self.draw_app_update_modal(&mut ui, w, h);
+        }
         if self.exit_confirmation {
             self.targets.clear();
             self.list_targets.clear();
@@ -2059,7 +2036,7 @@ impl Launcher {
                 x + 22.0,
                 y + 24.0,
                 my3_text(),
-                "Exit Horizon Android?",
+                "Exit Kestrel?",
             );
             let bw = (width - 52.0) * 0.5;
             button(
@@ -2350,7 +2327,7 @@ impl Launcher {
                     content_x + 74.0,
                     top + 42.0,
                     (content_w - 92.0).max(80.0),
-                    "Import .hmod/.jar mods, .zip resource packs, or shader packs — or browse files in File Manager.",
+                    "Import .kmod/.jar mods, .zip resource packs, or shader packs — or browse files in File Manager.",
                     my3_muted(),
                 );
                 let cta_y = top + card_h - 46.0;
@@ -2830,7 +2807,7 @@ impl Launcher {
 
             let entry_icon = if entry.is_dir {
                 Icon::Folder
-            } else if entry.name.ends_with(".hmod") || entry.name.ends_with(".jar") {
+            } else if entry.name.ends_with(".kmod") || entry.name.ends_with(".jar") {
                 Icon::Mods
             } else if entry.name.ends_with(".hshader") {
                 Icon::Shaders
@@ -3522,14 +3499,158 @@ impl Launcher {
             Action::CloseProjectModal,
             false,
         );
-        button(
-            ui,
-            &mut self.targets,
-            [mx + 136.0, my + mh - 48.0, mw - 154.0, 38.0],
-            &install_label,
-            Action::InstallModalProject,
-            true,
+        if install_label == "Update" {
+            update_button(
+                ui,
+                &mut self.targets,
+                [mx + 136.0, my + mh - 48.0, mw - 154.0, 38.0],
+                Action::InstallModalProject,
+            );
+        } else {
+            button(
+                ui,
+                &mut self.targets,
+                [mx + 136.0, my + mh - 48.0, mw - 154.0, 38.0],
+                &install_label,
+                Action::InstallModalProject,
+                true,
+            );
+        }
+    }
+
+    fn draw_app_update_modal(&mut self, ui: &mut Ui, w: f32, h: f32) {
+        use crate::app_update::State;
+        let state = self.app_update.state();
+        let Some(info) = self.app_update.release().cloned() else {
+            return;
+        };
+        let own = crate::app_update::own_build_number().unwrap_or(0);
+        let (title, body, primary_label, primary_action) = match state {
+            State::Available => {
+                let size = if info.apk_size > 0 {
+                    format!(" {:.1} MB", info.apk_size as f32 / 1_048_576.0)
+                } else {
+                    String::new()
+                };
+                (
+                    "Kestrel update available".to_owned(),
+                    format!(
+                        "Build {} is available (you have build {own}).{size}",
+                        info.build
+                    ),
+                    "Download",
+                    Action::AppUpdateDownload,
+                )
+            }
+            State::Downloading => (
+                format!("Downloading build {}", info.build),
+                format!("{:.0}%", self.app_update.progress() * 100.0),
+                "Cancel",
+                Action::AppUpdateDismiss,
+            ),
+            State::Ready => {
+                if crate::platform::can_install_packages() {
+                    (
+                        "Download complete".to_owned(),
+                        format!(
+                            "Build {} is ready to install. Android will ask you to confirm the install.",
+                            info.build
+                        ),
+                        "Install",
+                        Action::AppUpdateInstall,
+                    )
+                } else {
+                    // No "Install unknown apps" grant yet: the button opens
+                    // the system screen for Kestrel instead of the installer.
+                    (
+                        "Download complete".to_owned(),
+                        format!(
+                            "Build {} is ready, but Kestrel needs permission to install apps. Tap Allow, turn it on in Settings, then come back and tap Install.",
+                            info.build
+                        ),
+                        "Allow install",
+                        Action::AppUpdateInstall,
+                    )
+                }
+            }
+            State::Failed => (
+                "Download failed".to_owned(),
+                self.app_update
+                    .error()
+                    .unwrap_or("The download failed.")
+                    .to_owned(),
+                "Retry",
+                Action::AppUpdateDownload,
+            ),
+            State::Idle | State::Checking | State::Dismissed => return,
+        };
+        // A blocking prompt (like the exit confirmation): nothing behind it
+        // is tappable until the player chooses.
+        self.targets.clear();
+        self.list_targets.clear();
+        self.list_view = None;
+        let modal_t = self.anim.modal_anim.clamp(0.2, 1.0);
+        ui.rounded(
+            0.0,
+            0.0,
+            w,
+            h,
+            0.0,
+            horizon_client::hud::rgba(0, 0, 0, (180.0 * modal_t) as u8),
         );
+        let scale_in = 0.94 + 0.06 * modal_t;
+        let width = (w - 32.0).min(400.0) * scale_in;
+        let x = (w - width) * 0.5;
+        let height = 210.0;
+        let y = (h - height) * 0.5 + (1.0 - modal_t) * 8.0;
+        ui.rounded(x, y, width, height, 20.0, my3_surface());
+        ui.border(x, y, width, height, 20.0, my3_border());
+        ui.text(Face::SemiBold, 20.0, x + 22.0, y + 24.0, my3_text(), &title);
+        let body_fitted = ui.fit_text(Face::Regular, 14.0, &body, width - 44.0);
+        ui.text(
+            Face::Regular,
+            14.0,
+            x + 22.0,
+            y + 58.0,
+            my3_muted(),
+            &body_fitted,
+        );
+        if matches!(state, State::Downloading) {
+            let bar_y = y + 96.0;
+            let bar_w = width - 44.0;
+            ui.rounded(x + 22.0, bar_y, bar_w, 12.0, 6.0, my3_track());
+            let frac = self.app_update.progress().clamp(0.0, 1.0);
+            if frac > 0.0 {
+                let fill_w = (bar_w * frac).max(12.0).min(bar_w);
+                ui.rounded(x + 22.0, bar_y, fill_w, 12.0, 6.0, my3_accent());
+            }
+            button(
+                ui,
+                &mut self.targets,
+                [x + 20.0, y + height - 62.0, width - 40.0, 42.0],
+                primary_label,
+                primary_action,
+                true,
+            );
+        } else {
+            let bw = (width - 52.0) * 0.5;
+            button(
+                ui,
+                &mut self.targets,
+                [x + 20.0, y + height - 62.0, bw, 42.0],
+                "Later",
+                Action::AppUpdateDismiss,
+                false,
+            );
+            button(
+                ui,
+                &mut self.targets,
+                [x + 32.0 + bw, y + height - 62.0, bw, 42.0],
+                primary_label,
+                primary_action,
+                true,
+            );
+        }
     }
 
     fn draw_diagnostics_summary_modal(&mut self, ui: &mut Ui, w: f32, h: f32) {
@@ -4102,7 +4223,7 @@ impl Launcher {
             }
             SettingsCategory::Launcher => {
                 let c = &self.catalog.config;
-                let count = 12;
+                let count = 13;
                 let extra_ime = if ime_top_dp.is_some() { 180.0 } else { 0.0 };
                 let max_scroll =
                     (count as f32 * step_y + extra_ime - (list_bottom - list_top)).max(0.0);
@@ -4139,7 +4260,33 @@ impl Launcher {
                 };
                 let game_anim_off = c.disable_game_animations || touch_cfg.disable_game_animations;
 
-                let rows: [(&str, &str, SettingControl<'_>); 12] = [
+                // "Check for updates" row: its subtitle reports the last
+                // check so the player can see the result at a glance.
+                let update_sub = match crate::app_update::own_build_number() {
+                    None => "Update checks run on CI builds only".to_owned(),
+                    Some(own) => match self.app_update.state() {
+                        crate::app_update::State::Checking => {
+                            "Checking for updates…".to_owned()
+                        }
+                        crate::app_update::State::Available
+                        | crate::app_update::State::Downloading
+                        | crate::app_update::State::Ready => self
+                            .app_update
+                            .release()
+                            .map_or("An update is available".to_owned(), |r| {
+                                format!("Build {} is available", r.build)
+                            }),
+                        crate::app_update::State::Failed => {
+                            "Update check failed — tap Check to retry".to_owned()
+                        }
+                        _ => match self.app_update.manual_outcome() {
+                            Some(false) => format!("You're up to date (build {own})"),
+                            _ => format!("You have build {own} — tap Check for the latest"),
+                        },
+                    },
+                };
+
+                let rows: [(&str, &str, SettingControl<'_>); 13] = [
                     (
                         "APPEARANCE, DPI SCALING & MOTION",
                         "Material 3 Expressive theme studio, adaptive phone DPI scaling & animation toggles",
@@ -4212,6 +4359,11 @@ impl Launcher {
                         "Open game & world folders",
                         "Manage saves, resource packs and mods in Android Files",
                         SettingControl::Button("Open Files", Action::GameFiles, false),
+                    ),
+                    (
+                        "Check for updates",
+                        &update_sub,
+                        SettingControl::Button("Check", Action::AppUpdateCheck, false),
                     ),
                 ];
 
@@ -4915,7 +5067,7 @@ impl Launcher {
                     ),
                     (
                         "Export Active Control Preset",
-                        "Export current layout JSON to Horizon Reports & controls folder",
+                        "Export current layout JSON to Kestrel Reports & controls folder",
                         SettingControl::Button("Export JSON", Action::ExportControlProfile, false),
                     ),
                     (
@@ -5426,6 +5578,9 @@ impl Launcher {
                         | Action::CancelCatalogDownload
                         | Action::Page(_)
                         | Action::Account
+                        | Action::AppUpdateDownload
+                        | Action::AppUpdateInstall
+                        | Action::AppUpdateDismiss
                 )
             )
         {
@@ -5495,7 +5650,7 @@ impl Launcher {
                         slug: (*id).to_owned(),
                         title: (*title).to_owned(),
                         summary: (*desc).to_owned(),
-                        author: "Horizon Built-in".into(),
+                        author: "Kestrel Built-in".into(),
                         downloads: 0,
                         icon: None,
                         page: String::new(),
@@ -5526,6 +5681,42 @@ impl Launcher {
                         self.catalog.install(&self.home, idx);
                     }
                 }
+            }
+            Some(Action::AppUpdateDownload) => {
+                if let Some(cache) = crate::platform::cache_dir() {
+                    self.app_update.start_download(&cache);
+                }
+            }
+            Some(Action::AppUpdateCheck) => {
+                self.app_update.recheck();
+            }
+            Some(Action::AppUpdateInstall) => {
+                if !crate::platform::can_install_packages() {
+                    // No "Install unknown apps" grant: firing the install
+                    // intent would silently do nothing, so send the player
+                    // to the system screen for Kestrel instead and keep
+                    // the prompt, so they can tap Install again after
+                    // allowing it.
+                    if crate::platform::open_install_permission_settings() {
+                        self.catalog.status = "Allow Kestrel to install apps in Settings, then tap Install again.".into();
+                    } else {
+                        self.catalog.status =
+                            "Could not open the install-permission screen.".into();
+                    }
+                } else if let Some(path) = self.app_update.downloaded().cloned()
+                    && crate::platform::install_apk(&path)
+                {
+                    self.app_update.dismiss();
+                    self.catalog.config.dismissed_update_build =
+                        self.app_update.dismissed_build();
+                    self.catalog.config.save(&self.home)?;
+                }
+            }
+            Some(Action::AppUpdateDismiss) => {
+                self.app_update.dismiss();
+                self.catalog.config.dismissed_update_build =
+                    self.app_update.dismissed_build();
+                self.catalog.config.save(&self.home)?;
             }
             Some(Action::UiScale) => self.open_chooser(chooser::Kind::UiScale),
             Some(Action::ChooseUiScale(pct)) => {
@@ -5947,24 +6138,16 @@ impl Launcher {
             Some(Action::ToggleBundled(id)) => {
                 self.toggle_bundled_mod(id)?;
             }
-            Some(Action::StarlingDownload) => {
-                if !crate::platform::open_url(
-                    "https://github.com/JuanLuci/starling/releases/latest",
-                ) {
-                    self.catalog.status =
-                        "Open github.com/JuanLuci/starling/releases to download Starling.".into();
-                }
-            }
             Some(Action::GameFiles) => {
                 self.catalog.status = if crate::platform::open_documents(crate::document_store::ROOT) {
                     "Game files opened. Worlds, mods, packs, shaders and reports are available here."
-                } else { "Open system Files > Horizon Android." }.into();
+                } else { "Open system Files > Kestrel." }.into();
             }
             Some(Action::WorldFiles) => {
                 let id = crate::document_store::folder_id(self.catalog.config.profile, "worlds");
                 self.catalog.status = if crate::platform::open_documents(&id) {
-                    "In Android Files, select a complete world folder, then Copy to a folder you choose. Keep Horizon Android installed until you verify your worlds in Starling."
-                } else { "Open system Files > Horizon Android > Worlds. Copy complete world folders while the game is closed." }.into();
+                    "In Android Files, select a complete world folder, then Copy to a folder you choose. Keep Kestrel installed until you verify your worlds."
+                } else { "Open system Files > Kestrel > Worlds. Copy complete world folders while the game is closed." }.into();
             }
             Some(Action::WorkerLimit) => self.open_chooser(chooser::Kind::WorkerLimit),
             Some(Action::ChooseWorkerLimit(limit)) => {
@@ -6017,7 +6200,7 @@ impl Launcher {
                 self.catalog.status = if crate::platform::open_documents(&id) {
                     "Opened in Files. Return here after copying files.".into()
                 } else {
-                    "Open the system Files app and choose Horizon Android.".into()
+                    "Open the system Files app and choose Kestrel.".into()
                 };
             }
             Some(Action::Import(kind)) => {
@@ -6353,7 +6536,7 @@ impl Launcher {
                 self.catalog.status = if crate::platform::open_documents("reports") {
                     "Opened Reports folder in system Files.".into()
                 } else {
-                    "Reports are saved under Horizon Android > Reports.".into()
+                    "Reports are saved under Kestrel > Reports.".into()
                 };
             }
             Some(Action::ToggleLauncherAnimations) => {

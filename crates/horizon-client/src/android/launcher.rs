@@ -70,6 +70,7 @@ pub(super) struct Launcher {
     pub(super) launching: bool,
     pub(super) launch_pending_tick: bool,
     pub(super) diagnostics_modal_open: bool,
+    app_update: crate::app_update::AppUpdate,
     focus: Option<usize>,
     diagnostic_export: Option<mpsc::Receiver<std::result::Result<String, String>>>,
 }
@@ -212,7 +213,7 @@ impl Launcher {
         // the account pill must have the real face instantly, not after a page visit.
         let mut wardrobe = wardrobe::Wardrobe::new(&home);
         wardrobe.open(&catalog.config.name, &catalog.config.microsoft_client_id);
-        Self {
+        let mut launcher = Self {
             wardrobe,
             home,
             controller_edges: Default::default(),
@@ -248,9 +249,18 @@ impl Launcher {
             launching: false,
             launch_pending_tick: false,
             diagnostics_modal_open: false,
+            app_update: crate::app_update::AppUpdate::new(),
             focus: None,
             diagnostic_export: None,
-        }
+        };
+        // Kestrel's own update check: a background thread asks GitHub for a
+        // newer release; nothing downloads until the player taps Download.
+        // A build dismissed with Later is not offered again on launch.
+        launcher
+            .app_update
+            .set_dismissed_build(launcher.catalog.config.dismissed_update_build);
+        launcher.app_update.start_check();
+        launcher
     }
 
     fn restore_launcher(&mut self, events: &ActiveEventLoop) {
@@ -333,9 +343,8 @@ impl Launcher {
             renderer.resize(size.width, size.height);
             return Ok(());
         }
-        let window = Arc::new(
-            events.create_window(Window::default_attributes().with_title("Horizon Android"))?,
-        );
+        let window =
+            Arc::new(events.create_window(Window::default_attributes().with_title("Kestrel"))?);
         crate::display::prepare(&window)?;
         let vanilla_dir = self
             .home
@@ -882,6 +891,7 @@ impl ApplicationHandler for Launcher {
             audio.tick(false, &Default::default());
         }
         self.catalog.poll(&self.home);
+        self.app_update.poll();
         self.wardrobe.poll();
         if let Some(notice) = crate::documents::poll() {
             self.wardrobe.reload();

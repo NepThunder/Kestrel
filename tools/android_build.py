@@ -224,17 +224,25 @@ def main():
         gradle = candidates[0]
     environment['ANDROID_HOME'] = str(args.sdk)
     variant = 'release' if args.release_candidate else 'debug'
-    dev_properties = (['-PappId=dev.horizon.android.dev', '-PdevBuild=' + args.dev_build,
+    dev_properties = (['-PappId=com.kestrel.android.dev', '-PdevBuild=' + args.dev_build,
                        '-PdevVersionCode=' + str(args.dev_version_code)] if args.dev_build else [])
     run([gradle, '--no-daemon', '-p', ROOT / 'packaging/android', '-Pabi=' + args.abi, '-PminSdk=' + str(min_sdk), *dev_properties, 'assemble' + variant.title()], cwd=ROOT, env=environment)
-    apk = output / ('horizon-android-public.apk' if args.public else 'horizon-android-release.apk' if args.release_candidate else 'horizon-android.apk')
-    shutil.copyfile(ROOT / f'.local/android/gradle-build/outputs/apk/{variant}/HorizonAndroid-{variant}.apk', apk)
+    apk = output / ('kestrel-public.apk' if args.public else 'kestrel-release.apk' if args.release_candidate else 'kestrel.apk')
+    # Gradle names the output APK after rootProject.name in settings.gradle
+    # (rebranded to 'Kestrel', was 'HorizonAndroid'); read it, don't hardcode it.
+    settings = (ROOT / 'packaging/android/settings.gradle').read_text()
+    project_name = 'HorizonAndroid'
+    for line in settings.splitlines():
+        line = line.strip()
+        if line.startswith('rootProject.name'):
+            project_name = line.split('=', 1)[1].strip().strip("'\"")
+    shutil.copyfile(ROOT / f'.local/android/gradle-build/outputs/apk/{variant}/{project_name}-{variant}.apk', apk)
     # Invoke the signing JAR directly so Windows does not need a batch-file shell.
     signer = [args.java_home / 'bin' / ('java' + suffix), '-jar', tools / 'lib/apksigner.jar']
     run([*signer, 'verify', '--verbose', apk])
     if args.release_candidate:
         import sys
-        run([sys.executable, ROOT / 'tools/check_android_release.py', apk, '--aapt2', tools / ('aapt2' + suffix), *(['--public'] if args.public else []), *(['--app-id', 'dev.horizon.android.dev'] if args.dev_build else [])], cwd=ROOT)
+        run([sys.executable, ROOT / 'tools/check_android_release.py', apk, '--aapt2', tools / ('aapt2' + suffix), *(['--public'] if args.public else []), *(['--app-id', 'com.kestrel.android.dev'] if args.dev_build else [])], cwd=ROOT)
     print(f'APK: {apk}', flush=True)
 
 

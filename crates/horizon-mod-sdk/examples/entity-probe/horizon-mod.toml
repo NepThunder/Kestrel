@@ -1,0 +1,9 @@
+id = "entity_probe"
+name = "Entity Probe"
+version = "0.1.0"
+description = "Prototype for client entity reads: shows the living mobs around you, nearest first, and the mob under your crosshair."
+authors = ["Horizon"]
+api = "0.1"
+side = "client"
+capabilities = ["entity", "game-read", "hud", "chat"]
+experimental = ["entity"]

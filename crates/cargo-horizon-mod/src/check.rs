@@ -120,7 +120,7 @@ impl Report {
 /// The kind a file's extension says.
 pub fn kind_of(path: &Path) -> Option<Kind> {
     match path.extension()?.to_str()? {
-        "hmod" => Some(Kind::Mod),
+        "kmod" => Some(Kind::Mod),
         "hnmod" => Some(Kind::NativeMod),
         "hpack" => Some(Kind::Modpack),
         "zip" => Some(Kind::ResourcePack),
@@ -186,7 +186,7 @@ fn trial_run(path: &Path, report: &mut Report) -> Result<(), String> {
     let dir = std::env::temp_dir().join(format!("horizon-mod-check-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let copy = dir.join("mod.hmod");
+    let copy = dir.join("mod.kmod");
     let result = std::fs::copy(path, &copy)
         .map_err(|e| e.to_string())
         .and_then(|_| play(&copy, report));
@@ -307,6 +307,12 @@ mod tests {
     }
 
     #[test]
+    fn kind_of_refuses_hmod() {
+        assert_eq!(kind_of(Path::new("coords_hud.hmod")), None);
+        assert_eq!(kind_of(Path::new("coords_hud.kmod")), Some(Kind::Mod));
+    }
+
+    #[test]
     fn checks_each_kind_its_own_way() {
         let pack = fixture("cozy-1.0.0.hpack");
         let report = check(&pack, kind_of(&pack).unwrap(), None, None).unwrap();
@@ -317,9 +323,9 @@ mod tests {
                 .contains("cozy 1.0.0 (modpack, format 1, for 26.3)")
         );
         // The fixture mod's code is a stand-in: its manifest reads, its run fails.
-        let hmod = fixture("coords_hud-0.1.0.hmod");
+        let hmod = fixture("coords_hud-0.1.0.kmod");
         let key = std::fs::read_to_string(fixture("test.pub")).unwrap();
-        let sig = std::fs::read_to_string(fixture("coords_hud-0.1.0.hmod.minisig")).unwrap();
+        let sig = std::fs::read_to_string(fixture("coords_hud-0.1.0.kmod.minisig")).unwrap();
         let key = key.lines().last().unwrap();
         let e = check(&hmod, Kind::Mod, Some(key), Some(&sig))
             .err()

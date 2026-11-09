@@ -51,7 +51,7 @@
   "horizon.pages.open.horizon_graphics": "Horizon Grafikleri...",
   "horizon.pages.open.controller_binds": "Kontrolcü Tuş Atamaları...",
   "horizon.pages.open.horizon_settings": "Horizon Ayarları...",
-  "horizon.mods.empty": "Henüz mod yok. .hmod dosyalarını horizon-mods klasörüne yerleştirin.",
+  "horizon.mods.empty": "Henüz mod yok. .kmod dosyalarını horizon-mods klasörüne yerleştirin.",
   "horizon.mods.stopped": " (Durduruldu)",
   "horizon.mods.not_built": " (Derlenmedi)",
   "horizon.mods.dev": " (Geliştirici)",

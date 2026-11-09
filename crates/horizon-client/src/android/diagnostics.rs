@@ -429,7 +429,7 @@ mod tests {
     #[test]
     fn redaction_keeps_native_frames_but_removes_credentials_and_addresses() {
         let text = redact(
-            "access_token=sealed-token-value\nconnection 192.0.2.7:25565 leo.spcfy.eu https://example.org/private\n/data/user/0/dev.horizon.android/files/saves/PrivateWorld\nC:\\Users\\Alice\\source\\game.rs\n#00 pc 00004abc libvulkan.so (BuildId: abcdef123456)",
+            "access_token=sealed-token-value\nconnection 192.0.2.7:25565 leo.spcfy.eu https://example.org/private\n/data/user/0/com.kestrel.android/files/saves/PrivateWorld\nC:\\Users\\Alice\\source\\game.rs\n#00 pc 00004abc libvulkan.so (BuildId: abcdef123456)",
         );
         for secret in [
             "sealed-token-value",

@@ -56,7 +56,7 @@ mod documents {
                     let mut output = std::fs::File::create(&stage)?;
                     let copied = content_files::copy_bounded(&mut file, &mut output, |_| true)?;
                     drop(output);
-                    let kind = if name.ends_with(".hmod") {
+                    let kind = if name.ends_with(".kmod") {
                         content_files::Kind::Mods
                     } else if name.ends_with(".hshader") {
                         content_files::Kind::Shaders

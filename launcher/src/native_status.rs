@@ -407,7 +407,7 @@ mod tests {
     fn only_hnmods_in_the_native_folder_are_native() {
         assert!(is_native_file("horizon-native-mods/veinminer.hnmod"));
         assert!(!is_native_file("horizon-native-mods-old/x.hnmod"));
-        assert!(!is_native_file("horizon-mods/zoom.hmod"));
+        assert!(!is_native_file("horizon-mods/zoom.kmod"));
         assert!(!is_native_file("resourcepacks/x.zip"));
     }
 

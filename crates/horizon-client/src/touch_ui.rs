@@ -232,10 +232,41 @@ pub fn output_dismisses(out: &Output) -> bool {
 /// Applies an on-screen or hardware keyboard `Output` event to an active Control Editor
 /// Save Preset dialog or Floating Menu Copy/Edit Preset dialog.
 pub fn apply_editor_or_preset_output(
-    ed: Option<&mut crate::touch::Editor>,
+    mut ed: Option<&mut crate::touch::Editor>,
     preset_dlg: Option<&mut PresetDialogState>,
     out: &Output,
 ) -> bool {
+    // A custom button's Hint Label field is being typed into: keystrokes edit
+    // the editor's scratch name. Committing (Enter / dialog close) is the
+    // caller's job — this function has no access to the button settings.
+    if let Some(ed) = ed.as_deref_mut()
+        && ed.props_open
+        && ed.editing_custom_label
+        && !ed.save_dialog_open
+    {
+        let max_len = crate::touch::CUSTOM_LABEL_MAX_LEN;
+        match out {
+            Output::Text(s) => {
+                for ch in s.chars() {
+                    if !ch.is_control() && ed.custom_label_input.chars().count() < max_len {
+                        ed.custom_label_input.push(ch);
+                    }
+                }
+            }
+            Output::Backspace | Output::Key(KeyCode::Backspace) => {
+                ed.custom_label_input.pop();
+            }
+            Output::Enter | Output::Close | Output::Key(KeyCode::Enter | KeyCode::Escape) => {}
+            Output::Key(code) => {
+                if let Some(ch) = key_code_to_char(*code)
+                    && ed.custom_label_input.chars().count() < max_len
+                {
+                    ed.custom_label_input.push(ch);
+                }
+            }
+        }
+        return true;
+    }
     if let Some(ed) = ed
         && ed.save_dialog_open
     {
@@ -5322,7 +5353,11 @@ pub fn draw_hud_editor(
             } else {
                 crate::touch::Placement::new(0.5, 0.5, 0.12)
             };
-            let cur_hint = if let Some(idx) = ed.selected_custom {
+            // While a name is being typed, the card and the live preview show
+            // the scratch text, not the last committed label.
+            let cur_hint = if ed.editing_custom_label {
+                ed.custom_label_input.clone()
+            } else if let Some(idx) = ed.selected_custom {
                 tc.settings
                     .custom_buttons
                     .get(idx)
@@ -5400,16 +5435,16 @@ pub fn draw_hud_editor(
                         st_text,
                         st_muted,
                     );
-                    draw_m3_selector_cell(
-                        &mut ui,
-                        [wx + 12.0 + (cw3 + 8.0) * 2.0, cards_y, cw3, card_h],
+                    // Hint Label is a typed name, not a fixed-word cycler.
+                    ui.text_field(
+                        wx + 12.0 + (cw3 + 8.0) * 2.0,
+                        cards_y,
+                        cw3,
+                        card_h,
                         "Hint Label",
                         &cur_hint,
-                        st_cyan,
-                        st_cyan_soft,
-                        st_card,
-                        st_text,
-                        st_muted,
+                        "Tap to type a name",
+                        ed.editing_custom_label,
                     );
 
                     // Live Button Preview Box with Cyan Corner Framing Brackets (`⌜ ⌝ ⌞ ⌟`)
@@ -6966,6 +7001,7 @@ pub fn touch_hud_editor(
                 || inside([dx + dw - 74.0, dy + 9.0, 62.0, 26.0])
                 || !inside([dx, dy, dw, dh])
             {
+                ed.commit_custom_label(&mut tc.settings);
                 ed.props_open = false;
                 let _ = tc.settings.save();
                 tc.clicked = true;
@@ -6997,6 +7033,9 @@ pub fn touch_hud_editor(
             for ti in 0..3 {
                 let tx = wx + 2.0 + ti as f32 * (tab_w + 2.0);
                 if inside([tx, tab_y - 2.0, tab_w, 28.0]) {
+                    if ed.commit_custom_label(&mut tc.settings) {
+                        let _ = tc.settings.save();
+                    }
                     ed.props_tab = ti;
                     tc.clicked = true;
                     return false;
@@ -7288,20 +7327,30 @@ pub fn touch_hud_editor(
                                     });
                                 }
                                 _ => {
-                                    if let Some(idx) = ed.selected_custom {
-                                        let hints = [
-                                            "PRI", "SEC", "JUMP", "SNEAK", "SPRINT", "INV", "SWAP",
-                                            "DROP", "CHAT", "DEBUG", "3RD", "MOUSE", "MACRO",
-                                            "CLICK",
-                                        ];
-                                        if let Some(btn) = tc.settings.custom_buttons.get_mut(idx) {
-                                            let pos = hints
-                                                .iter()
-                                                .position(|h| *h == btn.custom_label)
-                                                .map(|idx_h| (idx_h + 1) % hints.len())
-                                                .unwrap_or(0);
-                                            btn.custom_label = hints[pos].to_owned();
-                                        }
+                                    // Hint Label: tap to type a custom name instead of
+                                    // cycling fixed words. Tapping again while typing
+                                    // keeps focus; Enter / Done commits the name.
+                                    if let Some(idx) = ed.selected_custom
+                                        && !ed.editing_custom_label
+                                    {
+                                        push_undo_snapshot(&mut ed, &tc.settings);
+                                        let current = tc
+                                            .settings
+                                            .custom_buttons
+                                            .get(idx)
+                                            .map(|b| b.custom_label.clone())
+                                            .unwrap_or_default();
+                                        // A fresh button is pre-named "BTN n": start
+                                        // from an empty field so the user types the
+                                        // name instead of deleting the placeholder.
+                                        ed.custom_label_input =
+                                            if current == format!("BTN {}", idx + 1) {
+                                                String::new()
+                                            } else {
+                                                current
+                                            };
+                                        ed.editing_custom_label = true;
+                                        ed.keyboard_request = true;
                                     }
                                 }
                             }
@@ -7533,6 +7582,7 @@ pub fn touch_hud_editor(
                                 2 => mutate_placement(tc, &ed, &|pl| pl.swipeable = !pl.swipeable),
                                 _ => {
                                     if let Some(idx) = ed.selected_custom {
+                                        ed.cancel_custom_label();
                                         if idx < tc.settings.custom_buttons.len() {
                                             tc.settings.custom_buttons.remove(idx);
                                         }
@@ -7760,6 +7810,7 @@ pub fn touch_hud_editor(
                         }
                         _ => {
                             // Open Save Dialog (Option A: Replace / Option B: Create New Preset)
+                            ed.commit_custom_label(&mut tc.settings);
                             ed.save_dialog_open = true;
                             ed.menu_open = false;
                             ed.props_open = false;
@@ -8146,5 +8197,65 @@ mod tests {
     #[test]
     fn a_release_without_ownership_stays_with_the_game() {
         assert_eq!(aux_mouse_phase(false, false, true), None);
+    }
+
+    #[test]
+    fn custom_label_field_types_into_scratch_up_to_max_len() {
+        let mut tc = crate::touch::TouchControls::default();
+        tc.open_editor();
+        tc.settings
+            .custom_buttons
+            .push(crate::touch::CustomButton::new("key.keyboard.v".into(), 0));
+        // The pushed button is last: default settings already hold buttons.
+        let idx = tc.settings.custom_buttons.len() - 1;
+        let ed = tc.editor.as_mut().unwrap();
+        ed.props_open = true;
+        ed.selected_custom = Some(idx);
+        ed.editing_custom_label = true;
+        ed.custom_label_input = "Zoom".into();
+
+        assert!(apply_editor_or_preset_output(
+            tc.editor.as_mut(),
+            None,
+            &Output::Text("!".into())
+        ));
+        assert_eq!(tc.editor.as_ref().unwrap().custom_label_input, "Zoom!");
+        assert!(apply_editor_or_preset_output(
+            tc.editor.as_mut(),
+            None,
+            &Output::Key(KeyCode::KeyX)
+        ));
+        assert_eq!(tc.editor.as_ref().unwrap().custom_label_input, "Zoom!x");
+        assert!(apply_editor_or_preset_output(
+            tc.editor.as_mut(),
+            None,
+            &Output::Key(KeyCode::Backspace)
+        ));
+        assert_eq!(tc.editor.as_ref().unwrap().custom_label_input, "Zoom!");
+        // Typing past the cap adds nothing.
+        let ed = tc.editor.as_mut().unwrap();
+        ed.custom_label_input = "123456789012".into();
+        assert!(apply_editor_or_preset_output(
+            tc.editor.as_mut(),
+            None,
+            &Output::Text("3".into())
+        ));
+        assert_eq!(
+            tc.editor.as_ref().unwrap().custom_label_input,
+            "123456789012"
+        );
+        // Enter is consumed but leaves the scratch alone: committing is the
+        // caller's job (keyboard dismiss / dialog close).
+        assert!(apply_editor_or_preset_output(
+            tc.editor.as_mut(),
+            None,
+            &Output::Key(KeyCode::Enter)
+        ));
+        assert_eq!(
+            tc.editor.as_ref().unwrap().custom_label_input,
+            "123456789012"
+        );
+        // The button itself is untouched until the commit happens.
+        assert_eq!(tc.settings.custom_buttons.last().unwrap().custom_label, "");
     }
 }

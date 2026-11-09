@@ -1,0 +1,88 @@
+# Mod camera: at rest the pose is the player's own eye; set-camera wraps
+# yaw, clamps pitch and roll, drops a non-finite position, caps a far
+# position at the 64-block sphere; project centres a point ahead, hides
+# one behind; releasing (or reloading) the mod restores the player's own
+# camera.
+
+[[step]]
+ticks = 1
+expect.commands = ["cam", "cam-free", "cam-back", "cam-orbit", "cam-roll", "cam-far", "cam-nan", "cam-off", "cam-project"]
+
+# At rest: the player's eye, roll 0.
+[[step]]
+command = "cam"
+expect.feedback = "[Camera Probe] pose x=0.5 y=65.6 z=0.5 yaw=0.0 pitch=0.0 roll=0.0"
+
+# Yaw 270 wraps to -90, pitch 120 clamps to 90, roll 200 clamps to 180.
+[[step]]
+command = "cam-free 270 120 200"
+expect.feedback = "[Camera Probe] pose x=0.5 y=65.6 z=0.5 yaw=-90.0 pitch=90.0 roll=180.0"
+
+[[step]]
+command = "cam"
+expect.feedback = "[Camera Probe] pose x=0.5 y=65.6 z=0.5 yaw=-90.0 pitch=90.0 roll=180.0"
+
+# A non-finite position drops the call: the pose is unchanged.
+[[step]]
+command = "cam-nan"
+expect.feedback = "[Camera Probe] pose x=0.5 y=65.6 z=0.5 yaw=-90.0 pitch=90.0 roll=180.0"
+
+# Roll back to 0, keeping the look.
+[[step]]
+command = "cam-roll 0"
+expect.feedback = "[Camera Probe] pose x=0.5 y=65.6 z=0.5 yaw=-90.0 pitch=90.0 roll=0.0"
+
+# Freecam 8 blocks behind the player, looking the way they face.
+[[step]]
+command = "cam-back"
+expect.feedback = "[Camera Probe] pose x=0.5 y=65.6 z=-7.5 yaw=0.0 pitch=0.0 roll=0.0"
+
+# The anchor 10 blocks ahead of where the player stood projects to the
+# screen centre, 18 blocks deep from the freecam.
+[[step]]
+command = "cam-project"
+expect.feedback = "anchor x=213.5 y=120.0 visible=true depth=18.0"
+
+# Turned round, the anchor is behind the camera: not visible, depth -10.
+[[step]]
+command = "cam-free 180 0 0"
+expect.feedback = "[Camera Probe] pose x=0.5 y=65.6 z=0.5 yaw=-180.0 pitch=0.0 roll=0.0"
+
+[[step]]
+command = "cam-project"
+expect.feedback = "anchor x=213.5 y=120.0 visible=false depth=-10.0"
+
+# 200 blocks out stops at the 64-block sphere around the player's feet.
+[[step]]
+command = "cam-far"
+expect.feedback = "[Camera Probe] pose x=64.5 y=64.0 z=0.5 yaw=-180.0 pitch=0.0 roll=0.0"
+
+# The scripted pattern: two ticks of orbit, 6 degrees a tick.
+[[step]]
+command = "cam-orbit"
+expect.feedback = "cam orbit on"
+
+[[step]]
+ticks = 2
+
+[[step]]
+command = "cam"
+expect.feedback = "[Camera Probe] pose x=2.2 y=65.6 z=-7.3 yaw=12.0 pitch=0.0 roll=0.0"
+
+# Releasing the camera restores the player's own, within a frame.
+[[step]]
+command = "cam-orbit"
+expect.feedback = "cam orbit off"
+
+[[step]]
+command = "cam"
+expect.feedback = "[Camera Probe] pose x=0.5 y=65.6 z=0.5 yaw=0.0 pitch=0.0 roll=0.0"
+
+# Reloading the mod unloads it, so its camera leaves the aggregate too.
+[[step]]
+reload = true
+ticks = 1
+
+[[step]]
+command = "cam"
+expect.feedback = "[Camera Probe] pose x=0.5 y=65.6 z=0.5 yaw=0.0 pitch=0.0 roll=0.0"

@@ -1,7 +1,7 @@
 //! Native mods (docs/native-mods.md): mixin bundles that
 //! levzzz5154's horizon-mixins (MIT, <https://github.com/horizon-rust/horizon-mixins>) applies to
 //! Horizon's source, which the launcher then compiles into a game of its own with its portable Rust
-//! ([`rust_toolchain`]). Unlike `.hmod` mods they are not sandboxed: their code runs with the
+//! ([`rust_toolchain`]). Unlike `.kmod` mods they are not sandboxed: their code runs with the
 //! player's rights.
 //!
 //! A native mod pins the Horizon revision it was made for (a Nightly's or a release's commit).

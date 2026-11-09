@@ -27,14 +27,14 @@ class ReleaseAuditTests(unittest.TestCase):
             apk.write_bytes(b'test')
             payload = {'findings': []}
             with patch.object(audit, 'inspect_payload', return_value=payload), patch.object(
-                    audit.subprocess, 'check_output', return_value="package: name='dev.horizon.android.dev'\n"):
+                    audit.subprocess, 'check_output', return_value="package: name='com.kestrel.android.dev'\n"):
                 with self.assertRaises(ValueError):
                     audit.audit(apk, 'aapt2')
-                report = audit.audit(apk, 'aapt2', app_id='dev.horizon.android.dev')
+                report = audit.audit(apk, 'aapt2', app_id='com.kestrel.android.dev')
                 self.assertTrue(report['passed'])
             with patch.object(audit, 'inspect_payload', return_value={'findings': []}), patch.object(
-                    audit.subprocess, 'check_output', return_value="package: name='dev.horizon.android.dev'\napplication-debuggable\n"):
-                self.assertFalse(audit.audit(apk, 'aapt2', app_id='dev.horizon.android.dev')['passed'])
+                    audit.subprocess, 'check_output', return_value="package: name='com.kestrel.android.dev'\napplication-debuggable\n"):
+                self.assertFalse(audit.audit(apk, 'aapt2', app_id='com.kestrel.android.dev')['passed'])
 
     def test_public_apk_accepts_generated_tables_and_rejects_original_assets(self):
         build_spec = importlib.util.spec_from_file_location('android_build', Path(__file__).resolve().parents[1] / 'tools/android_build.py')

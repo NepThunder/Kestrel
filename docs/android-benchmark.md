@@ -22,7 +22,7 @@ builds; `--cases` selects workload IDs listed by `--help`, including distance an
 LOD distance. A failed launch stops the device queue for inspection.
 
 The current device driver targets the isolated package
-`dev.horizon.android.regression076`. Its disposable profiles contain copies of
+`com.kestrel.android.regression076`. Its disposable profiles contain copies of
 prepared test worlds. APKs, Minecraft resources, raw device reports and worlds
 belong in the ignored fixture directory. Production player profiles are not
 benchmark inputs.

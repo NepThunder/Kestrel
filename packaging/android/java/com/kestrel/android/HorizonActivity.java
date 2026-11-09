@@ -1,4 +1,4 @@
-package dev.horizon.android;
+package com.kestrel.android;
 
 /** SAF result callback only. The native activity, UI and file operations stay Rust. */
 public final class HorizonActivity extends android.app.NativeActivity {

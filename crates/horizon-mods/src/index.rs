@@ -18,7 +18,7 @@ use std::{io::Read, path::Path};
 /// The index format this build reads and writes. A reader refuses a newer
 /// one rather than misread it.
 pub const SCHEMA: u32 = 1;
-/// The biggest file the registry takes (a `.hmod` with content, a `.hpack`).
+/// The biggest file the registry takes (a `.kmod` with content, a `.hpack`).
 pub const MAX_FILE: u64 = 64 << 20;
 /// Where files may be downloaded from: the registry's release assets.
 pub const FILE_HOST: &str = "https://github.com/horizon-rust/horizon-mods/releases/download/";
@@ -41,7 +41,7 @@ pub struct Index {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
 pub enum Kind {
-    /// A `.hmod`.
+    /// A `.kmod`.
     Mod,
     /// A source-only native mixin bundle, compiled into an isolated game build.
     NativeMod,
@@ -70,7 +70,7 @@ impl Kind {
     /// The extension of its files; None for a kind this build doesn't know.
     pub fn extension(&self) -> Option<&'static str> {
         match self {
-            Kind::Mod => Some("hmod"),
+            Kind::Mod => Some("kmod"),
             Kind::NativeMod => Some("hnmod"),
             Kind::Modpack => Some("hpack"),
             Kind::ResourcePack => Some("zip"),

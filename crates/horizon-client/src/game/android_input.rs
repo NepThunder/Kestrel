@@ -294,15 +294,31 @@ impl Game<'_> {
             }
             return;
         }
-        if name == "mouse.scroll.up" || name == "mouse.scroll.down" {
+        if let Some(steps) = horizon_client::mouse::scroll_wheel_steps(name) {
             if down {
-                let delta = if name == "mouse.scroll.up" { 8.0 } else { 1.0 };
-                let next = horizon_client::mouse::ScrollWheelHandler::next_selection(
-                    delta,
-                    self.selected as i32,
-                    9,
-                );
-                self.selected = next as usize;
+                // One tap is one wheel step: the same sign and size a mouse
+                // wheel notch sends while playing (scroll up is positive,
+                // and the zoom mod multiplies by 1.1 per positive step), so
+                // Scroll Up zooms in and Scroll Down zooms out. While
+                // playing with no screen over the game, a mod holding the
+                // wheel hears the steps and the hotbar stays put — the same
+                // gate the real mouse wheel uses. Anywhere else, or with no
+                // claim, the tap still switches hotbar slots exactly as
+                // before.
+                let playing = self.screen == Screen::Playing
+                    && !self.screen_over_playing()
+                    && self.sleeping.is_none()
+                    && self.player.is_some()
+                    && !self.pause;
+                if !playing || !self.mod_wheel(steps) {
+                    let delta = if steps > 0.0 { 8.0 } else { 1.0 };
+                    let next = horizon_client::mouse::ScrollWheelHandler::next_selection(
+                        delta,
+                        self.selected as i32,
+                        9,
+                    );
+                    self.selected = next as usize;
+                }
             }
             return;
         }
@@ -1205,6 +1221,16 @@ impl Game<'_> {
             crate::platform::show(&initial);
         }
     }
+    /// Commit a typed custom-button name (if one is being edited) into the
+    /// touch settings and persist it. No-op when no rename is in progress.
+    pub(super) fn android_commit_custom_label(&mut self) {
+        if let Some(ed) = self.pad.touch.editor.as_mut()
+            && ed.commit_custom_label(&mut self.pad.touch.settings)
+        {
+            let _ = self.pad.touch.settings.save();
+        }
+    }
+
     /// Text from the Android keyboard while a preset naming field has focus.
     /// Both naming dialogs (the editor's save-as and the hub's copy) type here
     /// instead of showing a keyboard inside the dialog.
@@ -1215,6 +1241,9 @@ impl Game<'_> {
             out,
         );
         if handled && horizon_client::touch_ui::output_dismisses(out) {
+            // Dismissing the keyboard (Enter / Escape / Close) also commits
+            // a typed custom-button name.
+            self.android_commit_custom_label();
             crate::platform::hide();
         }
         handled
@@ -1226,7 +1255,9 @@ impl Game<'_> {
         if let Some(ed) = self.pad.touch.editor.as_mut()
             && std::mem::take(&mut ed.keyboard_request)
         {
-            let text = if ed.editing_save_desc {
+            let text = if ed.editing_custom_label {
+                ed.custom_label_input.clone()
+            } else if ed.editing_save_desc {
                 ed.save_desc_input.clone()
             } else {
                 ed.save_name_input.clone()

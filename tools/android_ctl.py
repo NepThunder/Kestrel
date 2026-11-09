@@ -12,7 +12,7 @@ import subprocess
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--package', default='dev.horizon.android.dev', help='Isolated development package')
+    parser.add_argument('--package', default='com.kestrel.android.dev', help='Isolated development package')
     parser.add_argument('--adb', default='adb', help='ADB executable')
     parser.add_argument('--serial', required=True, help='Explicit test device serial')
     parser.add_argument('command', nargs=argparse.REMAINDER)

@@ -183,10 +183,16 @@ mod mob_blocks;
 mod mob_gear;
 mod mob_looting;
 mod mob_sounds;
+#[cfg(feature = "mods")]
+mod mod_entities;
 mod mod_input;
+#[cfg(feature = "mods")]
+mod mod_inventory;
 #[cfg(feature = "mods")]
 mod mod_panel;
 mod mod_render;
+#[cfg(feature = "mods")]
+mod mod_world_shapes;
 mod mods;
 mod mount_menu;
 mod mounts;
@@ -631,7 +637,7 @@ impl Options {
             match arg.as_str() {
                 "--help" | "-h" => {
                     println!(
-                        "Horizon — Minecraft Java Edition {} in Rust\n\n  --resources PATH        Prepared resources (horizon-prepare)\n  --render-distance N     Chunks, 2..128 (default 12)\n  --world NAME            World folder under saves/ (default \"New World\")\n  --seed N                World seed for new worlds (default 0)\n  --width N, --height N   Window size (default 1280 x 720)\n  --creative              Creative mode (default survival)\n  --test-terrain          Simple test terrain instead of vanilla generation\n  --frames N              Exit after N frames (testing)\n  --world-frames N        Exit after N frames drawn in the world (testing)\n  --smoke-report PATH     Write a JSON report on exit\n  --benchmark SCENARIO    Run a benchmark (standard, village, forest, ocean, mountain), write its report to benchmarks/ and quit\n  --control               Accept horizon-ctl commands on a local socket\n  --control-socket PATH   Control socket path (default $XDG_RUNTIME_DIR/horizon-control.sock)\n  --server HOST[:PORT]    Join a multiplayer server (offline mode) at start\n  --quickPlaySingleplayer WORLD  Open this world of saves/ at start, only if it exists (vanilla's)\n  --quickPlayMultiplayer HOST[:PORT]  The same as --server (vanilla's name)\n  --name NAME             Player name for multiplayer (default: generated once, kept in horizon-player.txt)\n  --session-file PATH     Signed-in account from the launcher (read once, then deleted)\n  --session-stdin         The same account as JSON on standard input\n  --game-dir DIR          Game folder: saves, options.txt, packs, mods (default: the working directory)\n  --home DIR              Logs and crash reports (default $HORIZON_HOME, else the platform data folder)\n  --fullscreen            Open the window fullscreen\n  --launch-api            Print the Launch API version and options as JSON (docs/api/launch.md)\n  --dev-mod PATH          A content mod (.hmod or folder) to develop: always on\n  --in-frame              DEPRECATED, do not use: unsupported, will be removed soon (also --no-server-thread)\n  --pregen                Add Horizon's /pregen command (docs/pregeneration.md)\n\nControls: mouse look, WASD move, Space jump, Left Shift sneak, Left Ctrl sprint,\nleft click break, right click place/use, 1-9/scroll hotbar, E inventory,\nQ drop, F3 debug, Esc pause.",
+                        "Horizon — Minecraft Java Edition {} in Rust\n\n  --resources PATH        Prepared resources (horizon-prepare)\n  --render-distance N     Chunks, 2..128 (default 12)\n  --world NAME            World folder under saves/ (default \"New World\")\n  --seed N                World seed for new worlds (default 0)\n  --width N, --height N   Window size (default 1280 x 720)\n  --creative              Creative mode (default survival)\n  --test-terrain          Simple test terrain instead of vanilla generation\n  --frames N              Exit after N frames (testing)\n  --world-frames N        Exit after N frames drawn in the world (testing)\n  --smoke-report PATH     Write a JSON report on exit\n  --benchmark SCENARIO    Run a benchmark (standard, village, forest, ocean, mountain), write its report to benchmarks/ and quit\n  --control               Accept horizon-ctl commands on a local socket\n  --control-socket PATH   Control socket path (default $XDG_RUNTIME_DIR/horizon-control.sock)\n  --server HOST[:PORT]    Join a multiplayer server (offline mode) at start\n  --quickPlaySingleplayer WORLD  Open this world of saves/ at start, only if it exists (vanilla's)\n  --quickPlayMultiplayer HOST[:PORT]  The same as --server (vanilla's name)\n  --name NAME             Player name for multiplayer (default: generated once, kept in horizon-player.txt)\n  --session-file PATH     Signed-in account from the launcher (read once, then deleted)\n  --session-stdin         The same account as JSON on standard input\n  --game-dir DIR          Game folder: saves, options.txt, packs, mods (default: the working directory)\n  --home DIR              Logs and crash reports (default $HORIZON_HOME, else the platform data folder)\n  --fullscreen            Open the window fullscreen\n  --launch-api            Print the Launch API version and options as JSON (docs/api/launch.md)\n  --dev-mod PATH          A content mod (.kmod or folder) to develop: always on\n  --in-frame              DEPRECATED, do not use: unsupported, will be removed soon (also --no-server-thread)\n  --pregen                Add Horizon's /pregen command (docs/pregeneration.md)\n\nControls: mouse look, WASD move, Space jump, Left Shift sneak, Left Ctrl sprint,\nleft click break, right click place/use, 1-9/scroll hotbar, E inventory,\nQ drop, F3 debug, Esc pause.",
                         horizon_core::VANILLA_VERSION
                     );
                     return Ok(None);
@@ -2558,6 +2564,14 @@ struct Game<'a> {
     waypoints: horizon_client::locator_bar::ClientWaypoints,
     /// The camera the last frame drew from (position, yaw, pitch, fov), for the locator bar.
     locator_camera: Option<([f64; 3], f32, f32, f32)>,
+    /// A mod camera override's per-frame state: the mouse-driven look,
+    /// the `set-camera` call it came from, the previous camera position
+    /// for the wall-clip ray, and the player's feet and dimension then
+    /// (a teleport resets the ray). None while no override is active.
+    mod_camera_state: Option<mod_input::ModCameraState>,
+    /// The panorama's camera on the title screen (position, yaw, pitch),
+    /// for `get-camera` there; the last frame's render fills it in.
+    title_camera: Option<([f64; 3], f32, f32)>,
     /// `LocalPlayer.postEffects`: the chains the server has the screen run
     /// (`ClientboundPostEffectsPacket`), in order.
     post_effects: Vec<String>,
@@ -7432,6 +7446,11 @@ impl Game<'_> {
     /// key. A mapping rebound away from its modifier is left alone too: the
     /// modifier says nothing about it.
     ///
+    /// The reverse also holds: a touch or pad latch still on whose mapping a
+    /// screen, focus loss or suspend cleared is re-asserted in the toggle
+    /// loop below, so a latched Sprint button keeps sprinting after any menu
+    /// instead of staying pink and dead.
+    ///
     /// Only `physical_keys` is cleared directly here; the logical `self.keys`
     /// entries for sneak and sprint are left to the toggle loop below, because
     /// they stand for the mapping and not the physical Shift or Control.
@@ -7488,7 +7507,26 @@ impl Game<'_> {
             // OS modifier bits describe physical keys, not an independently
             // held controller/touch action. Its release is delivered by pad_action.
             let held = held || self.pad.holds_action(&self.settings.controller, mapping);
-            if !held {
+            if held {
+                // The other direction: a touch button (or pad toggle) still
+                // latched on whose mapping a screen, focus loss or suspend
+                // released — the button still shows on, but the game-side
+                // toggle is off, so sneak/sprint is dead until the button is
+                // tapped off and on again. Re-assert it. `set_down(true, …)`
+                // from not-down lands on down either way (a plain set when
+                // the option is off, a flip when it is on), and the guard
+                // keeps a keyboard toggle's own press/release semantics
+                // untouched: an already-down toggle is never flipped off.
+                // Only while playing: behind a screen or dialog the keys
+                // stay dropped, as `drop_held_behind_dialog` intends, and
+                // the latch is re-asserted on the first frame back in
+                // gameplay (`track_toggle_screens` runs just above this
+                // call, so `was_playing` is fresh).
+                if self.was_playing && !self.toggles.is_down(slot) {
+                    self.toggles.0[slot].set_down(true, needs_toggle);
+                    self.sync_toggle(slot);
+                }
+            } else {
                 self.toggles.0[slot].set_down(false, needs_toggle);
                 self.sync_toggle(slot);
             }
@@ -13332,6 +13370,7 @@ impl Game<'_> {
             || self.ui.hide_gui
             || self.sleeping.is_some()
             || !self.camera_type.first_person()
+            || self.mod_camera_detached()
             || self
                 .player
                 .as_ref()
@@ -14697,6 +14736,13 @@ impl Game<'_> {
         if self.renderer.as_mut().is_some_and(|r| r.display_changed()) {
             self.apply_ui_settings();
         }
+        // A mod's gamma override is re-applied every frame: the settings
+        // path writes the stored value, so a one-shot write would be lost
+        // on the next options change or world load.
+        let gamma = self.effective_gamma();
+        if let Some(r) = self.renderer.as_mut() {
+            r.gamma = gamma;
+        }
         // Minecraft.doWorldLoad: the LevelLoadingScreen while single player's
         // server starts, with the server's chunk map and progress.
         if let Some(starting) = &self.integrated_starting {
@@ -14969,6 +15015,9 @@ impl Game<'_> {
         let mut lines = self.fishing_line(alpha, size);
         let g = self.debug_gizmos(alpha as f32, camera.to_array());
         lines.extend(g.lines);
+        // Capability `render`'s world shapes (`render.set-world`): the
+        // mods' lines and boxes, depth-tested, hidden with the HUD.
+        self.mod_world_lines(&mut lines);
         let on_top = g.on_top;
         let colored_lights = if self.title.is_none() {
             self.native_frame_visuals(camera, &mut lines)
@@ -15203,6 +15252,10 @@ impl Game<'_> {
         } else {
             (view_yaw, view_pitch)
         };
+        // The panorama's camera, for `get-camera` on the title screen.
+        if title {
+            self.title_camera = Some((camera.to_array(), yaw, pitch));
+        }
         let fov_degrees = if title {
             85.0
         } else {
@@ -15220,6 +15273,14 @@ impl Game<'_> {
         } else {
             self.spinning_matrix(camera_alpha as f32)
         };
+        // A mod camera's roll rides the frame's pose, next to the bob and
+        // the spin — never the view matrix, whose roll is zero. The hand's
+        // pose does not take it.
+        let roll = if title {
+            glam::Mat4::IDENTITY
+        } else {
+            self.mod_camera_roll()
+        };
         let requested_post_effects = self.requested_post_effects();
         let terrain_distance = self.terrain_distance();
         let distance = (terrain_distance * 16) as f32;
@@ -15228,7 +15289,7 @@ impl Game<'_> {
         self.view_frustum = self
             .renderer
             .as_ref()
-            .map(|r| r.camera_frustum(fov_degrees, yaw, pitch, bob * spin, depth_far));
+            .map(|r| r.camera_frustum(fov_degrees, yaw, pitch, bob * spin * roll, depth_far));
         // Keep the buffer local while builders need mutable access to the game.
         let mut entities = std::mem::take(&mut self.entity_vertices);
         entities.clear();
@@ -15331,6 +15392,7 @@ impl Game<'_> {
             first_person: eye.is_none() || title || !self.view.detached,
             bob,
             spin,
+            roll,
             sky,
             shadow_scene_revision: (self.world.revision, self.world.chunks.membership_revision()),
             shadow_cache: self.settings.horizon.shadow_cache,
@@ -15373,7 +15435,13 @@ impl Game<'_> {
             environment_fog: (self.dim == Dim::Nether).then_some((sky.fog_start, sky.fog_end)),
             cave_culling,
             water_fog,
-            fog: Some(self.frame_fog(camera, &sky, biome, water_fog)),
+            fog: Some(self.frame_fog(
+                camera,
+                view_vector(view_yaw, view_pitch),
+                &sky,
+                biome,
+                water_fog,
+            )),
             dark_disc: self.dark_disc(camera),
             outline,
             outline_after_terrain,
@@ -16004,6 +16072,15 @@ impl Game<'_> {
                 (p.position.z.floor() as i32) >> 4,
             );
         }
+        // A mod camera's column, so the columns around a detached camera
+        // load and mesh while it is active. In multiplayer a server sends
+        // a client only the player's own columns, so a far-flown camera
+        // there still looks at unmeshed ground past the player's render
+        // distance; in singleplayer the columns are generated as usual.
+        self.streaming.camera = self
+            .mod_camera()
+            .and_then(|(c, _)| c.position)
+            .map(|p| ((p[0].floor() as i32) >> 4, (p[2].floor() as i32) >> 4));
         // The loading screen's chunk map fills ring by ring, as vanilla's.
         self.streaming.loading =
             self.options.execution_role.is_client() && self.loading_reason().is_some();
@@ -16563,7 +16640,7 @@ impl Game<'_> {
                 .touch
                 .editor
                 .as_ref()
-                .is_some_and(|e| e.save_dialog_open)
+                .is_some_and(|e| e.save_dialog_open || (e.props_open && e.editing_custom_label))
                 || self.pad.touch_ui.preset_dialog.is_some())
         {
             if let PhysicalKey::Code(code) = event.physical_key {
@@ -16575,6 +16652,7 @@ impl Game<'_> {
                         &out,
                     );
                     if horizon_client::touch_ui::output_dismisses(&out) {
+                        self.android_commit_custom_label();
                         crate::platform::hide();
                     }
                     return;
@@ -18716,6 +18794,8 @@ impl<'a> Game<'a> {
             waypoint_styles: prepared.waypoint_styles,
             waypoints: Default::default(),
             locator_camera: None,
+            mod_camera_state: None,
+            title_camera: None,
             post_effects: Vec::new(),
             spectated_post_effect: None,
             experience_display: Default::default(),
@@ -20107,6 +20187,7 @@ pub(crate) fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         first_person: true,
         bob: glam::Mat4::IDENTITY,
         spin: glam::Mat4::IDENTITY,
+        roll: glam::Mat4::IDENTITY,
         sky: horizon_client::environment::Sky::default(),
         shadow_scene_revision: (0, 0),
         shadow_cache: false,

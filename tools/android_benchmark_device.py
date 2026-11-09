@@ -11,7 +11,7 @@ import subprocess
 import time
 import uuid
 
-PKG = "dev.horizon.android.regression076"
+PKG = "com.kestrel.android.regression076"
 ADB = "C:/Users/vasia/AppData/Local/Android/Sdk/platform-tools/adb.exe"
 DEVICES = {
     "tablet": ("192.168.88.234:5555", "751097", "GPUSeed4240118709374351666", (380, 1430), (1280, 740), (1050, 370), (770, 1350), (1280, 1086)),

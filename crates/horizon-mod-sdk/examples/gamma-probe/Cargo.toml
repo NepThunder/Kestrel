@@ -1,0 +1,16 @@
+[package]
+name = "gamma-probe"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Prototype probe for mod gamma and fog: shows the effective gamma and distance-fog flag each tick, and proves set-gamma clamps and a non-finite gamma reads back as 1.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+horizon-mod-sdk = { path = "../.." }
+
+[lints]
+workspace = true

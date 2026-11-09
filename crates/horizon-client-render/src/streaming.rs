@@ -416,7 +416,7 @@ pub struct Streaming {
     /// Dirty sections of loaded columns past the render distance, meshed once
     /// the player comes closer, and the area they were set aside for.
     waiting: FxHashSet<(i32, i32, i32)>,
-    waiting_area: ((i32, i32), i32, usize),
+    waiting_area: ((i32, i32), i32, usize, Option<(i32, i32)>),
     /// Proto chunks decoration wrote to since they were generated or saved.
     written: FxHashSet<(i32, i32)>,
     saves: Arc<dyn Saves>,
@@ -463,6 +463,12 @@ pub struct Streaming {
     /// chunks finish out to `radius + 1` (Chebyshev) and generation reaches
     /// past that as around the player. They are generated and kept but not meshed.
     pub extra: Vec<((i32, i32), i32)>,
+    /// A mod camera's column while one is active (`render.set-camera`):
+    /// the columns around it load and mesh like the player's own, so a
+    /// detached camera looks at terrain instead of holes. A 2-chunk
+    /// radius around the column, not the full render distance — a second
+    /// full area would double the meshing work while a freecam is active.
+    pub camera: Option<(i32, i32)>,
     /// `extra`'s squares as a grid, made again when `extra` changes.
     cover: Option<ExtraCover>,
     /// Mesh the sections for drawing (false on a server thread).
@@ -600,6 +606,7 @@ impl GenerationScan {
                     forced: input.ranges.forced,
                     cover: input.ranges.cover,
                     band: input.ranges.band,
+                    camera: input.ranges.camera,
                 };
                 self.remember(ranges, input.world);
             } else {
@@ -866,7 +873,7 @@ impl Streaming {
             lit: Default::default(),
             meshed: Default::default(),
             waiting: Default::default(),
-            waiting_area: ((0, 0), 0, 0),
+            waiting_area: ((0, 0), 0, 0, None),
             written: Default::default(),
             saves,
             deferred: Vec::new(),
@@ -892,6 +899,7 @@ impl Streaming {
             meshed_total: 0,
             remote: false,
             extra: Vec::new(),
+            camera: None,
             cover: None,
             mesh: true,
             band: None,
@@ -1504,6 +1512,7 @@ impl Streaming {
                 forced: &self.forced,
                 cover: ExtraCover::matching(&self.cover, &self.extra),
                 band: self.band.as_ref(),
+                camera: self.camera,
             };
             let (protos, generating) = (&self.protos, &self.generating);
             self.decoration_order.retain(|x, z| {
@@ -1657,7 +1666,7 @@ impl Streaming {
         // vanilla draws). Sections set aside past it come back
         // when the player moves: a column that loads with its light gets no
         // other request (#228).
-        let area = (self.center, self.radius, self.forced.len());
+        let area = (self.center, self.radius, self.forced.len(), self.camera);
         if self.waiting_area != area {
             self.waiting_area = area;
             let ranges = Ranges {
@@ -1667,6 +1676,7 @@ impl Streaming {
                 forced: &self.forced,
                 cover: ExtraCover::matching(&self.cover, &self.extra),
                 band: self.band.as_ref(),
+                camera: self.camera,
             };
             self.waiting.retain(|&(x, sy, z)| {
                 let back = ranges.in_view(x, z);
@@ -1760,6 +1770,7 @@ impl Streaming {
                 forced: &self.forced,
                 cover: ExtraCover::matching(&self.cover, &self.extra),
                 band: self.band.as_ref(),
+                camera: self.camera,
             },
             world,
             generating: &self.generating,
@@ -1865,6 +1876,7 @@ impl Streaming {
             radius: self.radius,
             extra: &self.extra,
             forced: &self.forced,
+            camera: self.camera,
             cover: ExtraCover::matching(&self.cover, &self.extra),
             band: self.band.as_ref(),
         }
@@ -2052,12 +2064,19 @@ pub fn in_view_distance(center: (i32, i32), radius: i32, x: i32, z: i32) -> bool
 const FORCED_FULL_RING: i32 = 2;
 const FORCED_FEATURES_RING: i32 = 3;
 const FORCED_TERRAIN_RING: i32 = 4;
+/// A mod camera's loaded and meshed radius, in chunks around its column:
+/// the column itself and a ring, so a detached camera's foreground has
+/// meshes without a second full render-distance area.
+const CAMERA_RADIUS: i32 = 2;
 /// The areas kept loaded: circles around the player and `extra`, and forced chunks.
 struct Ranges<'a> {
     center: (i32, i32),
     radius: i32,
     extra: &'a [((i32, i32), i32)],
     forced: &'a HashSet<(i32, i32)>,
+    /// A mod camera's column, when one is active: the columns around it
+    /// load and mesh, within [`CAMERA_RADIUS`].
+    camera: Option<(i32, i32)>,
     /// `extra` as a grid, when one was made for it: `in_extra` without a
     /// scan of every area.
     cover: Option<&'a ExtraCover>,
@@ -2274,11 +2293,19 @@ impl Ranges<'_> {
         (self.radius >= 0 && dx * dx + dz * dz <= r * r)
             || self.in_extra(x, z, 1 + reach)
             || self.in_band(x, z, 1 + reach)
+            || self.in_camera(x, z, 1 + reach)
     }
     fn in_range(&self, x: i32, z: i32, margin: i32) -> bool {
         self.in_main_range(x, z, margin)
             || self.in_extra(x, z, margin)
             || self.in_band(x, z, margin)
+            || self.in_camera(x, z, margin)
+    }
+    /// Within `margin` of a mod camera's column (Chebyshev), so the
+    /// columns around a detached camera load as well as mesh.
+    fn in_camera(&self, x: i32, z: i32, margin: i32) -> bool {
+        self.camera
+            .is_some_and(|(cx, cz)| (x - cx).abs().max((z - cz).abs()) <= CAMERA_RADIUS + margin)
     }
     /// Within `margin` of the pregeneration band.
     fn in_band(&self, x: i32, z: i32, margin: i32) -> bool {
@@ -2297,9 +2324,14 @@ impl Ranges<'_> {
             .any(|&(c, radius)| (x - c.0).abs().max((z - c.1).abs()) <= radius + margin)
     }
     /// The columns meshed for drawing: those vanilla draws around the
-    /// player (`in_view_distance`), and forced ones.
+    /// player (`in_view_distance`), forced ones, and the columns around
+    /// a mod camera's column.
     fn in_view(&self, x: i32, z: i32) -> bool {
-        in_view_distance(self.center, self.radius, x, z) || self.forced.contains(&(x, z))
+        in_view_distance(self.center, self.radius, x, z)
+            || self.forced.contains(&(x, z))
+            || self
+                .camera
+                .is_some_and(|c| in_view_distance(c, CAMERA_RADIUS, x, z))
     }
     fn in_main_range(&self, x: i32, z: i32, margin: i32) -> bool {
         let r = i64::from(self.radius + margin);
@@ -2504,6 +2536,7 @@ mod tests {
             forced: &forced,
             cover: None,
             band: None,
+            camera: None,
         };
         let generate = |x, z, priority, order| Queued {
             priority,
@@ -2682,6 +2715,7 @@ mod tests {
                     forced: &self.forced,
                     cover: None,
                     band: None,
+                    camera: None,
                 },
                 world: &self.world,
                 generating: &self.generating,
@@ -3001,6 +3035,7 @@ mod tests {
                     forced: &forced,
                     cover: None,
                     band: None,
+                    camera: None,
                 };
                 let square = |x: i32, z: i32, n: i32| {
                     (-n..=n).flat_map(move |dz| (-n..=n).map(move |dx| (x + dx, z + dz)))
@@ -3057,6 +3092,7 @@ mod tests {
             forced: &forced,
             cover: None,
             band: None,
+            camera: None,
         };
         let at = |dx: i32, dz: i32| (2 + dx, -1 + dz);
         let key = |(x, z): (i32, i32), loading| r.priority(x, z, loading);
@@ -3084,6 +3120,7 @@ mod tests {
                     forced: &forced,
                     cover: None,
                     band: None,
+                    camera: None,
                 };
                 let span = radius * 3 + 20;
                 for x in -span..=span {
@@ -3120,6 +3157,7 @@ mod tests {
             forced: &forced,
             cover: None,
             band: None,
+            camera: None,
         };
         for x in -5i32..=15 {
             for z in -13i32..=7 {
@@ -3153,6 +3191,7 @@ mod tests {
                 forced: &forced,
                 cover: None,
                 band: None,
+                camera: None,
             };
             let level = |x: i32, z: i32| 31 + ((x - 40).abs().max((z + 9).abs()) - view).max(0);
             for x in 40 - view - 8..=40 + view + 8 {
@@ -3207,6 +3246,7 @@ mod tests {
             forced: &forced,
             cover: None,
             band: None,
+            camera: None,
         };
         let level = |x: i32, z: i32| 31 + (x - 40).abs().max((z + 40).abs());
         for x in 40 - 6..=40 + 6 {
@@ -3278,6 +3318,7 @@ mod cover_tests {
                 forced: &forced,
                 cover,
                 band: None,
+                camera: None,
             };
             let (scan, grid) = (ranges(None), ranges(Some(&cover)));
             let span = [4, 30, 120][case % 3] + 40;
@@ -3337,6 +3378,7 @@ mod cover_tests {
                 forced: &forced,
                 cover,
                 band: None,
+                camera: None,
             };
             // The columns streaming asks about: everything kept, and the
             // generation scan's ring past it.

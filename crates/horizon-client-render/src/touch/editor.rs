@@ -44,6 +44,10 @@ pub enum PickerStep {
     },
 }
 
+/// Max characters for a typed custom-button name. Button labels are short
+/// and render truncated on small buttons; 12 covers names like "Zoom In".
+pub const CUSTOM_LABEL_MAX_LEN: usize = 12;
+
 pub struct Editor {
     pub selected: Option<Control>,
     pub option: Option<usize>,
@@ -88,6 +92,12 @@ pub struct Editor {
     pub editing_save_name: bool,
     /// Whether the custom profile description field is actively focused.
     pub editing_save_desc: bool,
+    /// Whether the Hint Label field of the Component Property Inspector is
+    /// being typed into (a custom button's name, not a preset name).
+    pub editing_custom_label: bool,
+    /// Scratch text for the custom button's name while typing; committed to
+    /// the selected button's `custom_label` on Enter / dialog close.
+    pub custom_label_input: String,
     /// True when the Editor Save Dialog (Option A: Replace existing preset, Option B: Create new preset as...) is open.
     pub save_dialog_open: bool,
     /// A naming field was tapped: the game opens the system keyboard.
@@ -96,6 +106,46 @@ pub struct Editor {
     pub save_create_new_mode: bool,
     /// True when the Back confirmation dialog (`[ Save ]` / `[ Back ]`) is open.
     pub back_confirm_open: bool,
+}
+
+impl Editor {
+    /// Commit the in-progress custom-button rename into `settings`.
+    /// Trims the typed name and caps it at [`CUSTOM_LABEL_MAX_LEN`]; an
+    /// empty name clears `custom_label`, so the button falls back to its
+    /// derived label (the bound key's name, or "Button"). Returns true when
+    /// a button's label actually changed.
+    pub fn commit_custom_label(&mut self, settings: &mut Settings) -> bool {
+        if !self.editing_custom_label {
+            return false;
+        }
+        self.editing_custom_label = false;
+        let name: String = self
+            .custom_label_input
+            .trim()
+            .chars()
+            .take(CUSTOM_LABEL_MAX_LEN)
+            .collect();
+        // Truncation can leave a trailing space behind; trim again.
+        let name = name.trim().to_owned();
+        self.custom_label_input.clear();
+        let Some(idx) = self.selected_custom else {
+            return false;
+        };
+        let Some(btn) = settings.custom_buttons.get_mut(idx) else {
+            return false;
+        };
+        if btn.custom_label == name {
+            return false;
+        }
+        btn.custom_label = name;
+        true
+    }
+
+    /// Drop an in-progress custom-button rename without applying it.
+    pub fn cancel_custom_label(&mut self) {
+        self.editing_custom_label = false;
+        self.custom_label_input.clear();
+    }
 }
 
 enum Drag {
@@ -143,6 +193,8 @@ impl TouchControls {
             },
             editing_save_name: false,
             editing_save_desc: false,
+            editing_custom_label: false,
+            custom_label_input: String::new(),
             save_dialog_open: false,
             keyboard_request: false,
             save_create_new_mode: is_default,
@@ -179,6 +231,9 @@ impl TouchControls {
             return false;
         }
         if e.props_open {
+            if e.commit_custom_label(&mut self.settings) {
+                let _ = self.settings.save();
+            }
             e.props_open = false;
             return false;
         }
@@ -957,6 +1012,87 @@ impl TouchControls {
 }
 fn key_rect(i: usize) -> [f32; 4] {
     [0.15, 0.25 + i as f32 * 0.072, 0.7, 0.06]
+}
+
+#[cfg(test)]
+mod custom_label_tests {
+    use super::*;
+
+    fn editor_with_button() -> TouchControls {
+        let mut tc = TouchControls::default();
+        tc.open_editor();
+        tc.settings
+            .custom_buttons
+            .push(CustomButton::new("key.keyboard.v".into(), 0));
+        // The pushed button is last: default settings already hold buttons.
+        let idx = tc.settings.custom_buttons.len() - 1;
+        tc.editor.as_mut().unwrap().selected_custom = Some(idx);
+        tc
+    }
+
+    #[test]
+    fn typed_name_commits_and_empty_name_falls_back_to_derived_label() {
+        let mut tc = editor_with_button();
+        let ed = tc.editor.as_mut().unwrap();
+        ed.editing_custom_label = true;
+        ed.custom_label_input = "Zoom In".into();
+        assert!(ed.commit_custom_label(&mut tc.settings));
+        assert_eq!(
+            tc.settings.custom_buttons.last().unwrap().custom_label,
+            "Zoom In"
+        );
+        assert_eq!(
+            tc.settings.custom_buttons.last().unwrap().label(),
+            "Zoom In"
+        );
+        assert!(!tc.editor.as_ref().unwrap().editing_custom_label);
+        assert!(tc.editor.as_ref().unwrap().custom_label_input.is_empty());
+
+        // Clearing the name falls back to the derived label (the bound key).
+        let ed = tc.editor.as_mut().unwrap();
+        ed.editing_custom_label = true;
+        ed.custom_label_input = "   ".into();
+        assert!(ed.commit_custom_label(&mut tc.settings));
+        assert_eq!(tc.settings.custom_buttons.last().unwrap().custom_label, "");
+        assert_eq!(tc.settings.custom_buttons.last().unwrap().label(), "V");
+    }
+
+    #[test]
+    fn commit_is_a_noop_without_an_edit_and_truncates_long_names() {
+        let mut tc = editor_with_button();
+        let ed = tc.editor.as_mut().unwrap();
+        assert!(!ed.commit_custom_label(&mut tc.settings));
+
+        let ed = tc.editor.as_mut().unwrap();
+        ed.editing_custom_label = true;
+        ed.custom_label_input = "A very long button name".into();
+        assert!(ed.commit_custom_label(&mut tc.settings));
+        assert_eq!(
+            tc.settings.custom_buttons.last().unwrap().custom_label,
+            "A very long"
+        );
+        assert!(
+            tc.settings
+                .custom_buttons
+                .last()
+                .unwrap()
+                .custom_label
+                .chars()
+                .count()
+                <= CUSTOM_LABEL_MAX_LEN
+        );
+    }
+
+    #[test]
+    fn cancel_drops_the_scratch_without_touching_the_button() {
+        let mut tc = editor_with_button();
+        let ed = tc.editor.as_mut().unwrap();
+        ed.editing_custom_label = true;
+        ed.custom_label_input = "Zoom In".into();
+        ed.cancel_custom_label();
+        assert!(!tc.editor.as_ref().unwrap().editing_custom_label);
+        assert_eq!(tc.settings.custom_buttons.last().unwrap().custom_label, "");
+    }
 }
 
 #[cfg(test)]

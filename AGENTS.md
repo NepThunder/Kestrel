@@ -18,11 +18,6 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
   is the GitHub account the PR is opened from (`gh api user --jq .login`). Issues say "Filed by", reviews
   "Review by". Every comment starts with `🤖 Agent:`. Write only as the person you work for: the lines on
   this page that name Ludovic are for his own agents (account `ludovic111`), never for anyone else's.
-- **Attribution.** Commits end with a `Co-Authored-By:` line for the agent that wrote them, and PR bodies
-  with that agent's own "Generated with" line. Example, Ludovic's agents (Claude Code on `ludovic111`):
-  first line `> 🤖 Opened by Ludovic's AI agent (Claude), not by Ludovic himself.`, commits
-  `Co-Authored-By: Claude <model> <noreply@anthropic.com>`, last line
-  `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 - Everything players run is Rust. Python/Java only for dev tools and harness drivers in `tools/`.
 - Horizon-only features follow [docs/design-system.md](docs/design-system.md) and are off by default where
   they would change the vanilla look.

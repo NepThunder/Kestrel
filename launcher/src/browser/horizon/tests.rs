@@ -51,16 +51,16 @@ fn native_registry_entries_are_mods_that_say_they_run_native_code() {
         mod_id(&entry("horizon-native-mods/veinminer.hnmod")),
         Some("veinminer")
     );
-    assert_eq!(mod_id(&entry("horizon-mods/zoom.hmod")), Some("zoom"));
+    assert_eq!(mod_id(&entry("horizon-mods/zoom.kmod")), Some("zoom"));
 }
 
 #[test]
-fn only_horizons_own_projects_go_without_the_not_endorsed_line() {
+fn only_kestrels_own_projects_go_without_the_not_endorsed_line() {
     let mut p = sample().projects[0].clone();
-    p.authors = vec!["Horizon".into()];
-    p.source = "https://github.com/horizon-rust/horizon-mod-zoom".into();
+    p.authors = vec!["NepThunder".into()];
+    p.source = "https://github.com/NepThunder/Kestrel-mods".into();
     assert!(official(&p));
-    p.source = "https://github.com/someone/horizon-mod-zoom".into();
+    p.source = "https://github.com/someone/Kestrel-mods".into();
     assert!(!official(&p), "the name alone doesn't make it official");
     p.authors = vec!["levzzz5154".into()];
     assert!(!official(&p));
@@ -96,7 +96,21 @@ fn searches_by_kind_and_words() {
     assert_eq!(order, [("zoom", 12_345), ("coords_hud", 80)]);
     let p = hud(&index);
     assert_eq!(p.support(), super::super::Support::Works);
-    assert_eq!(p.page, "https://playhorizon.dev/mods/coords_hud");
+    assert_eq!(
+        p.page,
+        "https://github.com/NepThunder/Kestrel-mods/releases/tag/coords_hud-0.1.0"
+    );
+    // A release tag that isn't `<id>-<version>` (Kestrel's releases are named
+    // for the mod, e.g. `coordinates-hud-0.1.0`): the page follows the tag.
+    let mut tagged = index.clone();
+    tagged.projects[0].versions[0].file.url =
+        "https://github.com/NepThunder/Kestrel-mods/releases/download/coordinates-hud-0.1.0/coords_hud-0.1.0.kmod".into();
+    assert_eq!(
+        project_of(tagged.project("coords_hud").unwrap())
+            .unwrap()
+            .page,
+        "https://github.com/NepThunder/Kestrel-mods/releases/tag/coordinates-hud-0.1.0"
+    );
 }
 
 #[test]
@@ -105,10 +119,10 @@ fn installs_checked_turns_on_and_removes() {
     let home = scratch("install");
     let p = hud(&index);
     let done = install_from(&index, true, None, &p, &home, &|_, _| {}).unwrap();
-    assert_eq!(done[0].file, "horizon-mods/coords_hud.hmod");
+    assert_eq!(done[0].file, "horizon-mods/coords_hud.kmod");
     assert_eq!(done[0].verdict.as_deref(), Some("Verified"));
     assert!(done[0].checksum.starts_with("SHA-256:e1135345"));
-    assert!(home.join("horizon-mods/coords_hud.hmod").is_file());
+    assert!(home.join("horizon-mods/coords_hud.kmod").is_file());
     let list = fs::read_to_string(home.join("horizon-mods.txt")).unwrap();
     assert_eq!(list, "mod.coords_hud:true\n");
     assert_eq!(
@@ -136,15 +150,15 @@ fn installs_checked_turns_on_and_removes() {
     );
 
     installed::remove(&home, "coords_hud").unwrap();
-    assert!(!home.join("horizon-mods/coords_hud.hmod").exists());
+    assert!(!home.join("horizon-mods/coords_hud.kmod").exists());
     assert!(installed::Installed::load(&home).entries.is_empty());
     fs::remove_dir_all(&home).unwrap();
 }
 
 #[test]
-fn a_mod_that_turned_native_keeps_its_hmod_until_removed() {
-    assert!(stays(true, "horizon-mods/coords_hud.hmod"));
-    assert!(!stays(false, "horizon-mods/coords_hud.hmod"));
+fn a_mod_that_turned_native_keeps_its_kmod_until_removed() {
+    assert!(stays(true, "horizon-mods/coords_hud.kmod"));
+    assert!(!stays(false, "horizon-mods/coords_hud.kmod"));
     assert!(!stays(true, "horizon-native-mods/coords_hud.hnmod"));
     let index = sample();
     let home = scratch("turned-native");
@@ -157,7 +171,7 @@ fn a_mod_that_turned_native_keeps_its_hmod_until_removed() {
     fs::write(home.join("horizon-native-mods/coords_hud.hnmod"), "").unwrap();
     installed::remove(&home, "coords_hud").unwrap();
     assert!(!home.join("horizon-native-mods/coords_hud.hnmod").exists());
-    assert!(!home.join("horizon-mods/coords_hud.hmod").exists());
+    assert!(!home.join("horizon-mods/coords_hud.kmod").exists());
     fs::remove_dir_all(&home).unwrap();
 }
 
@@ -266,14 +280,14 @@ fn owner_links_only_take_github_logins() {
 
 /// A version that calls mod API functions the game doesn't have is marked and skipped.
 #[test]
-fn versions_for_a_newer_horizon_are_not_installed() {
+fn versions_for_a_newer_kestrel_are_not_installed() {
     let mut index = sample();
     index.projects[0].versions[0].api_level = Some(1);
     let p = index.project("coords_hud").unwrap();
     let e = newest(&index, p, Some(0)).unwrap_err();
     assert_eq!(
         e,
-        "Coordinates HUD needs a newer Horizon than the game you play: update it first."
+        "Coordinates HUD needs a newer Kestrel than the game you play: update it first."
     );
     assert!(newest(&index, p, Some(1)).is_ok());
     assert!(newest(&index, p, None).is_ok());

@@ -1,6 +1,6 @@
 //! A mod run with no game: `cargo horizon-mod test` (docs/mods.md, "Testing a mod").
 //!
-//! [`TestGame`] loads one `.hmod` from a scratch copy (its `storage` lives and
+//! [`TestGame`] loads one `.kmod` from a scratch copy (its `storage` lives and
 //! dies with the run) into the same sandbox the game uses, and plays the game's
 //! part: the snapshot, ticks, frames, chat lines and commands, and for a
 //! server mod the players joining, leaving, chatting and breaking or placing
@@ -8,7 +8,8 @@
 //! test written in TOML, `tests/<name>.toml` in the mod's folder: steps, each
 //! saying what happens and what the mod must have shown by then.
 use crate::{
-    BlockPos, Clock, Corner, GameMode, Mods, Output, Panel, Player, ServerPlayer, Snapshot, Status,
+    BlockPos, Clock, Container, Corner, Entity, GameMode, InvStack, Mods, Output, Panel, Player,
+    PlayerInventory, ServerPlayer, Snapshot, Status, Target, WorldDrawLine,
 };
 use serde::Deserialize;
 use std::{
@@ -20,7 +21,7 @@ use std::{
 pub struct TestGame {
     mods: Mods,
     dir: PathBuf,
-    hmod: PathBuf,
+    kmod: PathBuf,
     /// What the mod reads with `game-read`; ticks move the clock as the game does.
     pub player: Option<Player>,
     pub clock: Option<Clock>,
@@ -29,19 +30,47 @@ pub struct TestGame {
     /// Every name that joined, for their id.
     names: Vec<String>,
     tick: u64,
+    /// What the mod reads with capability `inventory`: the player's own
+    /// inventory fixture, and the open container's, if one is open. A
+    /// script sets them with its `inventory` / `container` steps.
+    pub inventory: PlayerInventory,
+    pub open_container: Option<Container>,
+    /// What the mod reads with capability `entity`: the living mobs
+    /// around the player, as the game's snapshot builder lists them
+    /// (other players excepted, multiplayer excepted — see
+    /// [`TestGame::snapshot`]), and the mob under the crosshair, if
+    /// any. A script sets the mobs with its `entities` steps; the
+    /// target is worked out from them, the player's aim and the
+    /// script's blocks.
+    pub entities: Vec<Entity>,
+    /// Multiplayer from a script's `multiplayer` step on: `entities()`
+    /// reads empty and health reads None, while the crosshair target
+    /// still answers.
+    pub multiplayer: bool,
+    /// The player is dead: the game reads no open container while the
+    /// death screen is up, so neither does the sandbox.
+    pub dead: bool,
     /// Capability `world`'s Overworld: the blocks a script set or the mod
     /// changed; every other block, and the other dimensions, are air. Every
     /// biome is the dimension's plainest: plains, nether wastes, the end.
     pub world: std::collections::BTreeMap<(i32, i32, i32), String>,
+    /// Capability `world`'s Overworld light: the `(block, sky)` a script
+    /// set, each 0 to 15; every other position reads `None` — unloaded,
+    /// unlit, or outside the build range — as the game reads it.
+    pub lights: std::collections::BTreeMap<(i32, i32, i32), (u8, u8)>,
 }
 
-/// The world a script's mod reads: [`TestGame::world`], copied for a step.
-struct ScriptWorld(std::collections::BTreeMap<(i32, i32, i32), String>);
+/// The world a script's mod reads: [`TestGame::world`] and
+/// [`TestGame::lights`], copied for a step.
+struct ScriptWorld {
+    blocks: std::collections::BTreeMap<(i32, i32, i32), String>,
+    lights: std::collections::BTreeMap<(i32, i32, i32), (u8, u8)>,
+}
 
 impl crate::WorldView for ScriptWorld {
     fn block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String> {
         let here = (dimension == "minecraft:overworld")
-            .then(|| self.0.get(&(x, y, z)).cloned())
+            .then(|| self.blocks.get(&(x, y, z)).cloned())
             .flatten();
         Some(here.unwrap_or_else(|| "minecraft:air".into()))
     }
@@ -53,6 +82,15 @@ impl crate::WorldView for ScriptWorld {
             _ => return None,
         };
         Some(biome.into())
+    }
+    fn light(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<(u8, u8)> {
+        // Only the lent Overworld answers, and only inside its build
+        // range (-64..320); a position with no fixture light is
+        // unloaded or unlit, and reads None like the game's.
+        if dimension != "minecraft:overworld" || !(-64..320).contains(&y) {
+            return None;
+        }
+        self.lights.get(&(x, y, z)).copied()
     }
     fn has_dimension(&self, dimension: &str) -> bool {
         matches!(
@@ -95,9 +133,9 @@ pub fn default_player() -> Player {
 }
 
 impl TestGame {
-    /// Starts the mod at `hmod`, as the game would with it turned on. Errs
+    /// Starts the mod at `kmod`, as the game would with it turned on. Errs
     /// when it doesn't start, with the game's reason.
-    pub fn load(hmod: &Path) -> Result<TestGame, String> {
+    pub fn load(kmod: &Path) -> Result<TestGame, String> {
         static RUN: AtomicUsize = AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "horizon-mod-test-{}-{}",
@@ -106,10 +144,10 @@ impl TestGame {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        let copy = dir.join(hmod.file_name().unwrap_or("mod.hmod".as_ref()));
+        let copy = dir.join(kmod.file_name().unwrap_or("mod.kmod".as_ref()));
         let mut game = TestGame {
             mods: Mods::default(),
-            hmod: copy.clone(),
+            kmod: copy.clone(),
             dir,
             player: Some(default_player()),
             clock: Some(Clock {
@@ -119,15 +157,26 @@ impl TestGame {
             players: Vec::new(),
             names: Vec::new(),
             tick: 0,
+            inventory: PlayerInventory {
+                selected: 0,
+                saturation: 5.0,
+                slots: Vec::new(),
+                carried: None,
+            },
+            open_container: None,
+            entities: Vec::new(),
+            multiplayer: false,
+            dead: false,
             world: Default::default(),
+            lights: Default::default(),
         };
-        copy_mod(hmod, &copy)?;
+        copy_mod(kmod, &copy)?;
         game.start()?;
         Ok(game)
     }
 
     fn start(&mut self) -> Result<(), String> {
-        self.mods = Mods::load(std::slice::from_ref(&self.hmod), |_| true, |_| false);
+        self.mods = Mods::load(std::slice::from_ref(&self.kmod), |_| true, |_| false);
         match &self.mods.entries()[0].status {
             Status::Failed(reason) => Err(format!("the mod didn't start: {reason}")),
             _ if !self.mods.is_running() => Err("the mod has no code to run".into()),
@@ -143,14 +192,114 @@ impl TestGame {
     }
 
     fn snapshot(&mut self) {
+        // The list as the game's snapshot builder makes it: other
+        // players are not listed, in multiplayer it is empty, and on
+        // the title screen there is no player to stand near — and it is
+        // nearest first, at most 256.
+        let entities: Vec<Entity> = match (&self.player, self.multiplayer) {
+            (None, _) | (_, true) => Vec::new(),
+            (Some(p), false) => {
+                let mut list: Vec<Entity> = self
+                    .entities
+                    .iter()
+                    .filter(|e| e.kind != "minecraft:player")
+                    .filter(|e| {
+                        (e.x - p.x).powi(2) + (e.y - p.y).powi(2) + (e.z - p.z).powi(2)
+                            <= 128.0 * 128.0
+                    })
+                    .cloned()
+                    .collect();
+                list.sort_by(|a, b| {
+                    let d = |e: &Entity| {
+                        (e.x - p.x).powi(2) + (e.y - p.y).powi(2) + (e.z - p.z).powi(2)
+                    };
+                    d(a).partial_cmp(&d(b)).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                list.truncate(256);
+                list
+            }
+        };
         self.mods.set_snapshot(Snapshot {
             player: self.player.clone(),
             clock: self.clock,
             players: self.players.clone(),
             // The GUI of a 1280 x 720 window at scale 3, as the trial run's.
             gui_size: (427.0, 240.0),
+            inventory: Some(self.inventory.clone()),
+            // Dead: no open container, as the game's snapshot builder
+            // reads while the death screen is up. A script that revives
+            // the player must close the container itself, as respawn does.
+            open_container: (!self.dead).then(|| self.open_container.clone()).flatten(),
+            entities,
+            targeted: self.compute_targeted(),
             ..Snapshot::default()
         });
+    }
+
+    /// The mob under the crosshair, as the game's snapshot builder finds
+    /// it: the nearest fixture mob along the player's view within 128
+    /// blocks, before any block of the script's world. Player mobs may
+    /// be named, with no health; in multiplayer health reads None.
+    fn compute_targeted(&self) -> Option<Target> {
+        let player = self.player.as_ref()?;
+        let eye = [player.x, player.y + 1.62, player.z];
+        // The game's view vector: from the head's yaw and pitch.
+        let (yaw, pitch) = (
+            f64::from(player.yaw).to_radians(),
+            f64::from(player.pitch).to_radians(),
+        );
+        let dir = [
+            -yaw.sin() * pitch.cos(),
+            -pitch.sin(),
+            yaw.cos() * pitch.cos(),
+        ];
+        let reach = 128.0;
+        // The first non-air block along the view, if any within reach:
+        // a mob past it is hidden from the crosshair.
+        let mut block_at = f64::INFINITY;
+        let mut t = 0.0;
+        while t <= reach {
+            let at = [
+                eye[0] + dir[0] * t,
+                eye[1] + dir[1] * t,
+                eye[2] + dir[2] * t,
+            ];
+            let block = [
+                at[0].floor() as i32,
+                at[1].floor() as i32,
+                at[2].floor() as i32,
+            ];
+            if self
+                .world
+                .get(&(block[0], block[1], block[2]))
+                .is_some_and(|s| s != "minecraft:air")
+            {
+                block_at = t;
+                break;
+            }
+            t += 0.02;
+        }
+        let mut best: Option<(usize, f64)> = None;
+        for (i, e) in self.entities.iter().enumerate() {
+            let half = f64::from(e.width) / 2.0;
+            let min = [e.x - half, e.y, e.z - half];
+            let max = [e.x + half, e.y + f64::from(e.height), e.z + half];
+            let Some(hit) = ray_box(eye, dir, reach, min, max) else {
+                continue;
+            };
+            if hit < block_at && best.is_none_or(|b| hit < b.1) {
+                best = Some((i, hit));
+            }
+        }
+        let (i, distance) = best?;
+        let mut entity = self.entities[i].clone();
+        if self.multiplayer || entity.kind == "minecraft:player" {
+            entity.health = None;
+        }
+        Some(Target {
+            entity,
+            distance: distance as f32,
+        })
     }
     /// Whether the mod is a server mod.
     pub fn server(&self) -> bool {
@@ -248,8 +397,8 @@ impl TestGame {
     }
 
     /// The scratch copy the mod runs from; its `storage` is beside it.
-    pub fn hmod(&self) -> &Path {
-        &self.hmod
+    pub fn kmod(&self) -> &Path {
+        &self.kmod
     }
     /// The commands the mod registered.
     pub fn commands(&self) -> Vec<String> {
@@ -262,6 +411,11 @@ impl TestGame {
     }
     pub fn panel(&self) -> Option<&Panel> {
         self.mods.panels().next()
+    }
+    /// The running mod's world shapes as depth-tested lines (capability
+    /// `render`): what the game would draw this frame.
+    pub fn world_lines(&self) -> Vec<WorldDrawLine> {
+        self.mods.world_lines()
     }
     pub fn status(&self) -> &Status {
         &self.mods.entries()[0].status
@@ -278,7 +432,7 @@ impl Drop for TestGame {
     }
 }
 
-/// A `.hmod` file, or a mod folder (`horizon-mod.toml` + `mod.wasm`).
+/// A `.kmod` file, or a mod folder (`horizon-mod.toml` + `mod.wasm`).
 fn copy_mod(from: &Path, to: &Path) -> Result<(), String> {
     let err = |e: std::io::Error| format!("{}: {e}", from.display());
     if !from.is_dir() {
@@ -353,6 +507,17 @@ pub struct BlockSet {
     state: String,
 }
 
+/// One position's light, as a step sets it (capability `world`).
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct LightSet {
+    x: i32,
+    y: i32,
+    z: i32,
+    block: u8,
+    sky: u8,
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct ClockSet {
@@ -360,13 +525,168 @@ pub struct ClockSet {
     day_time: Option<u64>,
 }
 
+/// One stack of a script's inventory fixture, in the client's internal
+/// slot numbering (0-8 hotbar, 9-35 main, 100-108 crafting grid, 200
+/// crafting result, 300+ open container, 500-503 armour, 504 offhand).
+/// A stack without `count` is one item.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct StackSet {
+    slot: u32,
+    id: String,
+    #[serde(default = "one_stack")]
+    count: u32,
+    #[serde(default)]
+    damage: u32,
+    #[serde(default)]
+    max_damage: u32,
+    #[serde(default)]
+    components: String,
+}
+
+fn one_stack() -> u32 {
+    1
+}
+
+impl StackSet {
+    fn to_stack(&self) -> InvStack {
+        InvStack {
+            slot: self.slot,
+            id: self.id.clone(),
+            count: self.count,
+            damage: self.damage,
+            max_damage: self.max_damage,
+            components: self.components.clone(),
+        }
+    }
+}
+
+/// The player's own inventory for a step (capability `inventory`):
+/// replaces the fixture wholesale; a step without it keeps the last one.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct InventorySet {
+    #[serde(default)]
+    selected: u32,
+    /// Full hunger is 5.0; a step without it keeps 5.0.
+    #[serde(default = "full_saturation")]
+    saturation: f32,
+    #[serde(default)]
+    slots: Vec<StackSet>,
+    carried: Option<StackSet>,
+}
+
+fn full_saturation() -> f32 {
+    5.0
+}
+
+impl InventorySet {
+    fn to_inventory(&self) -> PlayerInventory {
+        PlayerInventory {
+            selected: self.selected,
+            saturation: self.saturation,
+            slots: self.slots.iter().map(StackSet::to_stack).collect(),
+            carried: self.carried.as_ref().map(StackSet::to_stack),
+        }
+    }
+}
+
+/// The open container for a step (capability `inventory`): replaces the
+/// fixture; `close-container` clears it instead.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct ContainerSet {
+    kind: String,
+    #[serde(default)]
+    slots: Vec<StackSet>,
+    #[serde(default)]
+    data: Vec<i32>,
+}
+
+impl ContainerSet {
+    fn to_container(&self) -> Container {
+        Container {
+            kind: self.kind.clone(),
+            slots: self.slots.iter().map(StackSet::to_stack).collect(),
+            data: self.data.clone(),
+        }
+    }
+}
+
+/// One mob of a script's entity fixture (capability `entity`), in the
+/// WIT record's shape: the snapshot lists it (players excepted,
+/// multiplayer excepted) and the crosshair may target it. A mob without
+/// `health` reads full health; `name` defaults to the kind.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct EntitySet {
+    id: u32,
+    kind: String,
+    #[serde(default)]
+    name: String,
+    x: f64,
+    y: f64,
+    z: f64,
+    #[serde(default)]
+    vx: f64,
+    #[serde(default)]
+    vy: f64,
+    #[serde(default)]
+    vz: f64,
+    #[serde(default)]
+    yaw: f32,
+    #[serde(default)]
+    health: Option<f32>,
+    max_health: f32,
+    width: f32,
+    height: f32,
+    #[serde(default = "on_ground_default")]
+    on_ground: bool,
+    #[serde(default)]
+    custom_name: Option<String>,
+    #[serde(default)]
+    baby: bool,
+}
+
+fn on_ground_default() -> bool {
+    true
+}
+
+impl EntitySet {
+    fn to_entity(&self) -> Entity {
+        Entity {
+            id: self.id,
+            kind: self.kind.clone(),
+            name: if self.name.is_empty() {
+                self.kind.clone()
+            } else {
+                self.name.clone()
+            },
+            x: self.x,
+            y: self.y,
+            z: self.z,
+            vx: self.vx,
+            vy: self.vy,
+            vz: self.vz,
+            yaw: self.yaw,
+            health: self.health.or(Some(self.max_health)),
+            max_health: self.max_health,
+            width: self.width,
+            height: self.height,
+            on_ground: self.on_ground,
+            custom_name: self.custom_name.clone(),
+            baby: self.baby,
+        }
+    }
+}
+
 /// One step. Its parts happen in this order: `reload`, `title-screen`,
-/// `blocks`, `join`, `player`, `clock`, `ticks`, `frames`, `chat`, `command`,
-/// `break`, `place`, `leave`; then the blocks the mod set are made, and
-/// `expect` is checked against what the mod showed and changed during the
-/// step. For a server mod, `player`, `chat`, `command`, `break`
-/// and `place` are the doing of the player named by `as`, or of the first
-/// player on.
+/// `blocks`, `lights`, `join`, `player`, `clock`, `inventory`, `container`,
+/// `close-container`, `dead`, `entities`, `multiplayer`, `ticks`,
+/// `frames`, `chat`, `command`, `break`, `place`, `leave`; then the blocks the mod set are made, and `expect`
+/// is checked against what the mod showed and changed during the step.
+/// For a server mod, `player`, `chat`, `command`, `break` and `place` are
+/// the doing of the player named by `as`, or of the first player on.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Step {
@@ -377,6 +697,26 @@ pub struct Step {
     title_screen: bool,
     player: Option<PlayerSet>,
     clock: Option<ClockSet>,
+    /// The player's own inventory (capability `inventory`).
+    inventory: Option<InventorySet>,
+    /// The open container (capability `inventory`).
+    container: Option<ContainerSet>,
+    /// Close the open container (capability `inventory`).
+    #[serde(default)]
+    close_container: bool,
+    /// The player dies (capability `inventory`): the open container
+    /// reads as closed from this step on.
+    #[serde(default)]
+    dead: bool,
+    /// The living mobs around the player (capability `entity`):
+    /// replaces the fixture wholesale; a step without it keeps the
+    /// last one.
+    entities: Option<Vec<EntitySet>>,
+    /// Multiplayer from this step on (capability `entity`): the list
+    /// reads empty and health reads None, while the crosshair target
+    /// still answers.
+    #[serde(default)]
+    multiplayer: bool,
     #[serde(default)]
     ticks: u64,
     #[serde(default)]
@@ -395,6 +735,10 @@ pub struct Step {
     /// `world`); every other block is air.
     #[serde(default)]
     blocks: Vec<BlockSet>,
+    /// Light of the Overworld before the rest of the step (capability
+    /// `world`); every other position reads `None`.
+    #[serde(default)]
+    lights: Vec<LightSet>,
     #[serde(default)]
     expect: Expect,
 }
@@ -417,6 +761,10 @@ pub struct Expect {
     /// The panel's lines (`[]`: no panel) and its corner.
     panel: Option<Vec<String>>,
     corner: Option<String>,
+    /// The mod's world shapes as depth-tested lines (`render.set-world`),
+    /// each as (start x, y, z, end x, y, z, colour, width): a box is its
+    /// twelve edges, in `CuboidGizmo.emit`'s order.
+    world_lines: Option<Vec<(f64, f64, f64, f64, f64, f64, u32, f32)>>,
     /// Blocks of the Overworld after the step, the mod's changes made
     /// (capability `world`).
     blocks: Option<Vec<BlockSet>>,
@@ -487,6 +835,24 @@ impl Step {
             parts.push("reload".to_string());
         }
         let count = |n: u64, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
+        if self.inventory.is_some() {
+            parts.push("inventory".to_string());
+        }
+        if self.container.is_some() {
+            parts.push("container".to_string());
+        }
+        if self.close_container {
+            parts.push("close container".to_string());
+        }
+        if self.dead {
+            parts.push("dies".to_string());
+        }
+        if self.entities.is_some() {
+            parts.push("entities".to_string());
+        }
+        if self.multiplayer {
+            parts.push("multiplayer".to_string());
+        }
         if self.ticks > 0 {
             parts.push(count(self.ticks, "tick"));
         }
@@ -527,8 +893,13 @@ impl Step {
         for b in &self.blocks {
             game.world.insert((b.x, b.y, b.z), b.state.clone());
         }
-        game.mods
-            .lend_world(Box::new(ScriptWorld(game.world.clone())));
+        for l in &self.lights {
+            game.lights.insert((l.x, l.y, l.z), (l.block, l.sky));
+        }
+        game.mods.lend_world(Box::new(ScriptWorld {
+            blocks: game.world.clone(),
+            lights: game.lights.clone(),
+        }));
         if let Some(name) = &self.join {
             game.join(name);
         }
@@ -564,6 +935,23 @@ impl Step {
                 game_time: 0,
                 day_time: 0,
             }));
+        }
+        if let Some(set) = &self.inventory {
+            game.inventory = set.to_inventory();
+        }
+        if self.close_container {
+            game.open_container = None;
+        } else if let Some(set) = &self.container {
+            game.open_container = Some(set.to_container());
+        }
+        if self.dead {
+            game.dead = true;
+        }
+        if let Some(set) = &self.entities {
+            game.entities = set.iter().map(EntitySet::to_entity).collect();
+        }
+        if self.multiplayer {
+            game.multiplayer = true;
         }
         game.tick(self.ticks);
         game.frames(self.frames);
@@ -689,6 +1077,14 @@ impl Step {
                 .unwrap_or_default();
             same("panel", want, &got)?;
         }
+        if let Some(want) = &e.world_lines {
+            let got: Vec<(f64, f64, f64, f64, f64, f64, u32, f32)> = game
+                .world_lines()
+                .into_iter()
+                .map(|(s, e, c, w)| (s[0], s[1], s[2], e[0], e[1], e[2], c, w))
+                .collect();
+            same("world-lines", want, &got)?;
+        }
         if let Some(want) = &e.blocks {
             for b in want {
                 let got = game.world.get(&(b.x, b.y, b.z));
@@ -716,6 +1112,31 @@ fn corner_name(c: Corner) -> &'static str {
         Corner::BottomLeft => "bottom-left",
         Corner::BottomRight => "bottom-right",
     }
+}
+
+/// The distance along `dir` from `eye` to the box, if the ray hits it
+/// within `reach` — the slab test the game's crosshair raycast uses.
+fn ray_box(eye: [f64; 3], dir: [f64; 3], reach: f64, min: [f64; 3], max: [f64; 3]) -> Option<f64> {
+    let mut t0: f64 = 0.0;
+    let mut t1: f64 = reach;
+    for a in 0..3 {
+        if dir[a].abs() < f64::EPSILON {
+            if eye[a] < min[a] || eye[a] > max[a] {
+                return None;
+            }
+        } else {
+            let (mut near, mut far) = ((min[a] - eye[a]) / dir[a], (max[a] - eye[a]) / dir[a]);
+            if near > far {
+                std::mem::swap(&mut near, &mut far);
+            }
+            t0 = t0.max(near);
+            t1 = t1.min(far);
+            if t0 > t1 {
+                return None;
+            }
+        }
+    }
+    Some(t0.max(0.0))
 }
 
 fn same<T: PartialEq + std::fmt::Debug>(what: &str, want: &T, got: &T) -> Result<(), String> {

@@ -771,6 +771,70 @@ mod tests {
         assert_eq!(m.fire_ticks, 0);
     }
 
+    /// The server synchs a mob's health as LivingEntity DATA_HEALTH_ID
+    /// (index 9), and the client applies it: a zombie the client spawns
+    /// starts at its type's max health; the server's value then moves the
+    /// client's copy after server-side-only damage, to 0 on a lethal hit,
+    /// and back up on a server-side heal. This is what the `%entity`
+    /// capability's singleplayer health rests on.
+    #[test]
+    fn a_zombies_health_follows_the_servers_synched_data() {
+        let kind = std::sync::Arc::new(horizon_client::mobs::MobType {
+            id: "minecraft:zombie".into(),
+            species: Species::Zombie,
+            width: 0.6,
+            height: 1.95,
+            eye_height: 1.62,
+            category: "monster".into(),
+            max_health: 20.0,
+            speed: 0.23,
+            flying_speed: 0.0,
+            attack_damage: 3.0,
+            attack_knockback: 0.0,
+            follow_range: 35.0,
+            step_height: 0.6,
+            armor: 2.0,
+            armor_toughness: 0.0,
+            knockback_resistance: 0.0,
+            jump_strength: 0.0,
+            attributes: std::sync::Arc::new(std::collections::HashMap::new()),
+            gravity: 0.08,
+            safe_fall_distance: 3.0,
+            fall_damage_multiplier: 1.0,
+            water_efficiency: 0.0,
+            water_slowdown: 0.0,
+            air_speed: 0.02,
+            baby_scale: 0.5,
+            head_rot_speed: 10.0,
+            max_head_x_rot: 30.0,
+            max_head_y_rot: 75.0,
+            ambient_interval: 0,
+            flags: Default::default(),
+            model: std::sync::Arc::new(horizon_client::mobs::Part {
+                name: "root".into(),
+                pose: [0.0; 9],
+                polygons: Vec::new(),
+                children: Vec::new(),
+            }),
+            layers: std::collections::HashMap::new(),
+            texture: String::new(),
+            brain: horizon_client::mobs::Brain::Zombie,
+            anim: horizon_client::mobs::Anim::Zombie,
+            sounds: ["", "", ""],
+            step_sound: None,
+            food: std::sync::Arc::new([]),
+            tempt: std::sync::Arc::new([]),
+        });
+        let mut m = Mob::new(7, kind, horizon_core::geometry::Vec3::ZERO, 0.0);
+        assert_eq!(m.health, 20.0, "spawn: full health");
+        apply(&mut m, &[(9, s::FLOAT, Value::Float(14.0))]);
+        assert_eq!(m.health, 14.0, "after server-side damage of 6");
+        apply(&mut m, &[(9, s::FLOAT, Value::Float(0.0))]);
+        assert_eq!(m.health, 0.0, "after lethal server-side damage");
+        apply(&mut m, &[(9, s::FLOAT, Value::Float(20.0))]);
+        assert_eq!(m.health, 20.0, "after server-side healing");
+    }
+
     #[test]
     fn mob_flags_turn_aggression_on_and_off() {
         let Some(mut m) = mob("minecraft:vindicator") else {

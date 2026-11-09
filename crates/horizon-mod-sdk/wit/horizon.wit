@@ -366,6 +366,43 @@ interface render {
     set-corner: func(corner: corner, width: f32, height: f32, shapes: list<shape>);
     /// Removes the mod's corner panel.
     clear-corner: func();
+    /// A point in the world, in blocks.
+    record world-point {
+        x: f64,
+        y: f64,
+        z: f64,
+    }
+    /// One world-space line: the two ends, a 0xAARRGGBB colour, and
+    /// a width in pixels (0.5 to 8, as the game's gizmos use 1 to 4).
+    record world-line {
+        start: world-point,
+        end: world-point,
+        /// 0xAARRGGBB.
+        color: u32,
+        /// Pixels wide, 0.5 to 8.
+        width: f32,
+    }
+    /// One world-space box: the two opposite corners, a 0xAARRGGBB
+    /// colour, and a width in pixels. Drawn as its twelve edges, in
+    /// `CuboidGizmo.emit`'s order.
+    record world-box {
+        min: world-point,
+        max: world-point,
+        /// 0xAARRGGBB.
+        color: u32,
+        /// Pixels wide, 0.5 to 8.
+        width: f32,
+    }
+    variant world-shape {
+        line(world-line),
+        box(world-box),
+    }
+    /// Replaces the mod's world shapes: up to 1024 lines (a box
+    /// counts as 12), drawn every frame in order over the world,
+    /// depth-tested so walls hide them, hidden with the HUD (F1).
+    /// An empty list removes them. Nothing here is ever drawn on
+    /// top of everything.
+    set-world: func(shapes: list<world-shape>);
     /// The width of one line of text in GUI pixels, in the HUD's font: exact
     /// for Latin letters (U+0000 to U+024F), 6 per other character.
     text-width: func(text: string) -> f32;
@@ -432,6 +469,99 @@ interface render {
     /// Distance setting, when on, wins. One far terrain shows at a time: the
     /// first loaded mod's.
     set-far-terrain: func(far-terrain: option<far-terrain>);
+    /// The brightness the renderer is applying right now, as a gamma value:
+    /// the strongest gamma any running mod set, or the player's own
+    /// Brightness setting when no mod sets one. 0.5 is the vanilla default,
+    /// 1.0 the brightest the options screen allows. Values above 1.0 come
+    /// only from a mod.
+    get-gamma: func() -> f32;
+    /// Sets this mod's gamma until the next call: 0.0 is the darkest the
+    /// lightmap goes, 1.0 is the brightest the options screen allows, and
+    /// values above 1.0 brighten further with diminishing returns — the
+    /// lightmap saturates toward white, so colours wash out as the value
+    /// grows. 10.0 is the 1000% Fullbright mods use. Values are clamped to
+    /// 0.0..=10.0; a non-finite value reads as 1.0. The strongest gamma any
+    /// running mod sets wins; when no running mod sets one, the player's own
+    /// Brightness setting applies again. The player's stored setting is never
+    /// changed. Only while playing: at the title screen there is no renderer
+    /// to brighten, and the value is the stored setting.
+    set-gamma: func(value: f32);
+    /// Whether distance fog is drawn right now: false while any running mod
+    /// turned it off, otherwise the player's own Fog setting. Distance fog is
+    /// the atmospheric and render-distance fog, including the Nether's; the
+    /// fog of water, lava and powder snow, blindness, darkness and a boss's
+    /// world fog are never removed by this.
+    get-fog: func() -> bool;
+    /// Sets this mod's distance-fog flag until the next call: false removes
+    /// distance fog (the same removal the Fog setting in the graphics options
+    /// does), true leaves the player's setting alone. Any running mod turning
+    /// fog off turns it off; when no running mod turns it off, the player's
+    /// own Fog setting applies again. The player's stored setting is never
+    /// changed. Only while playing.
+    set-fog: func(enabled: bool);
+    /// The camera this frame renders from.
+    record camera-pose {
+        /// World position, in blocks.
+        x: f64,
+        y: f64,
+        z: f64,
+        /// Degrees, as F3 shows them.
+        yaw: f32,
+        /// Degrees: -90 looks straight up, 90 straight down.
+        pitch: f32,
+        /// Degrees of roll about the view direction: 0 is level,
+        /// positive rolls clockwise as the player sees it.
+        roll: f32,
+    }
+    /// What a mod asks the camera to do. `position` decides the
+    /// mode: none keeps the camera at the player's eye and only
+    /// the look changes (freelook); some detaches the camera to
+    /// that position (freecam).
+    record camera-override {
+        /// None: freelook; some: freecam at this position.
+        position: option<world-point>,
+        /// The look direction the camera starts from. The mouse
+        /// then turns it until the next call: a call replaces the
+        /// look, it does not add to it.
+        yaw: f32,
+        pitch: f32,
+        /// Degrees of roll about the view direction, -180 to 180.
+        roll: f32,
+    }
+    /// The camera this frame renders from: the mod override when
+    /// one is active, else the player's own camera (the first-person
+    /// eye, or the third-person back-off). Only while playing.
+    get-camera: func() -> camera-pose;
+    /// Detaches the camera until the next call (none releases it):
+    /// freelook while `position` is none, freecam while it is some.
+    /// Only one mod drives the camera: the first loaded mod that
+    /// sets one wins; the others' calls are stored but ignored
+    /// until it releases. While a camera is active the mouse turns
+    /// the camera, not the player — the player's yaw and pitch do
+    /// not move, so the player keeps walking, aiming and mining in
+    /// the direction they faced. The player's stored settings are
+    /// never changed. Only while playing: at the title screen there
+    /// is no camera to move, and the value is the panorama's.
+    set-camera: func(override: option<camera-override>);
+    /// A point on the screen, in GUI pixels from the top left.
+    record screen-point {
+        x: f32,
+        y: f32,
+        /// False when the point is behind the camera.
+        visible: bool,
+        /// Blocks from the camera along the view direction;
+        /// negative behind it.
+        depth: f64,
+    }
+    /// Projects a world position onto the screen through the
+    /// camera this frame renders from (a mod camera when one is
+    /// active, else the player's own), with the effective field
+    /// of view, including a mod zoom. `visible` is false behind
+    /// the camera; `x` and `y` are still given, so a mod can draw
+    /// an off-screen arrow itself. No occlusion test: a point
+    /// behind a wall still projects, as the HUD distances do.
+    /// Only while playing.
+    project: func(point: world-point) -> screen-point;
 }
 
 /// What the game calls. Only the hooks `init` asks for are ever called.
@@ -667,9 +797,12 @@ interface players {
     broadcast: func(text: string);
 }
 
-/// Capability `world`, server mods only (manifest `api = "0.3"`,
-/// experimental): the blocks of the server's loaded chunks, and changes to
-/// them through the server's own block updates.
+/// Capability `world` (manifest `api = "0.3"`, experimental, for server
+/// mods; read-only for client mods): the blocks of the loaded chunks, and
+/// changes to them through the server's own block updates. A client mod
+/// reads only the dimension the player is in, and only chunks the game has
+/// loaded; in v1 only in singleplayer, where the world is the player's own.
+/// `set-blocks` from a client mod is refused.
 interface %world {
     record block-change {
         x: s32,
@@ -679,6 +812,18 @@ interface %world {
         /// defaults, `minecraft:stone` alone is the default state.
         state: string,
     }
+    record block-pos {
+        x: s32,
+        y: s32,
+        z: s32,
+    }
+    record block-result {
+        x: s32,
+        y: s32,
+        z: s32,
+        /// None where no chunk is loaded there.
+        state: option<string>,
+    }
     /// The block state at a position in a dimension (`minecraft:overworld`,
     /// ...), as `minecraft:oak_log[axis=y]`, as of this call: none where the
     /// server has no chunk loaded there.
@@ -686,12 +831,171 @@ interface %world {
     /// The biome at a position (`minecraft:plains`, ...), as the server
     /// stores it (one per 4 x 4 x 4 cell): none where no chunk is loaded.
     get-biome: func(dimension: string, x: s32, y: s32, z: s32) -> option<string>;
+    /// The block states at `positions`, in the same order, as of this call.
+    /// At most 4096 positions per call; a call over the cap returns no
+    /// results. None per position where no chunk is loaded there. This is
+    /// the only bulk read: do not loop get-block.
+    get-blocks: func(dimension: string, positions: list<block-pos>) -> list<block-result>;
+    record light-value {
+        /// Light from blocks (torches, lava, glowstone, ...), 0 to 15.
+        block: u8,
+        /// Light from the sky, as stored, 0 to 15; 0 in dimensions
+        /// without skylight (the Nether).
+        sky: u8,
+    }
+    record light-result {
+        x: s32,
+        y: s32,
+        z: s32,
+        /// None where no chunk is loaded there, where the chunk's
+        /// light has not been computed yet, or outside the column's
+        /// build range. Never a guessed value: an unlit chunk would
+        /// read as full sky light, so it reads as None instead.
+        light: option<light-value>,
+    }
+    /// The light at `positions`, in the same order, as of the last
+    /// completed light job. At most 4096 positions per call; a call
+    /// over the cap returns no results. None per position where no
+    /// chunk is loaded there or its light is not computed yet. This
+    /// is the only bulk light read: do not loop a single read.
+    /// Tick-only, like `get-blocks`: a frame, chat or command hook
+    /// reads None.
+    get-lights: func(dimension: string, positions: list<block-pos>) -> list<light-result>;
     /// Sets blocks as `/setblock` does: the old block entity removed,
     /// neighbours and shapes updated, light, and every player told. Every
     /// state is checked now (an error queues nothing); the changes are made
     /// in order after this call returns, before that dimension's next tick;
     /// one in a chunk not loaded then is skipped. At most 4096 per call.
     set-blocks: func(dimension: string, blocks: list<block-change>) -> result<_, string>;
+}
+
+/// Capability `inventory` (manifest `api = "0.1"`, experimental): the
+/// player's own inventory and the contents of a container the player
+/// currently has open. Read-only: there is no function here that moves a
+/// stack, clicks a slot or gives an item. Nothing here can see a container
+/// that is not open, another player's inventory, or a block entity in the
+/// world. The snapshot is copied once per tick, so a mod reads the
+/// inventory as of the last tick, not as of its call.
+interface %inventory {
+    /// One slot's stack, as the game holds it.
+    record inv-stack {
+        /// The slot, in the client's internal numbering: 0-8 hotbar,
+        /// 9-35 main inventory, 100-108 crafting grid, 200 crafting
+        /// result, 300+ open container, 500-503 armour (head, chest,
+        /// legs, feet), 504 offhand.
+        slot: u32,
+        /// `minecraft:diamond_sword`, ...
+        id: string,
+        count: u32,
+        /// Durability damage taken; 0 for undamageable items.
+        damage: u32,
+        /// The item's maximum damage (0: undamageable). Remaining
+        /// durability is `max-damage - damage`.
+        max-damage: u32,
+        /// Components beyond id/count/damage, in vanilla item syntax
+        /// (`[enchantments={...}]`), or "" when default. Same syntax
+        /// as `recipes.stack.components`.
+        components: string,
+    }
+    /// The player's own inventory, armour, offhand, crafting grid and
+    /// carried stack, as of this tick. Empty slots are omitted.
+    /// `selected` is the hotbar slot, 0-8.
+    record player-inventory {
+        selected: u32,
+        /// The player's saturation, 0 to 20, as the hunger bar's hidden
+        /// half: it lives here, not on `game.player`, so mods built
+        /// against that record keep their shape. Exhaustion is not on
+        /// the client at all and cannot be exposed.
+        saturation: f32,
+        slots: list<inv-stack>,
+        /// The cursor stack, if the player is carrying one. The cursor
+        /// has no slot; its `slot` is 0 and means nothing.
+        carried: option<inv-stack>,
+    }
+    /// A container the player has open, if any.
+    record container {
+        /// `minecraft:chest`, `minecraft:furnace`, `minecraft:crafting`,
+        /// `inventory`, ... — the menu type the server opened.
+        kind: string,
+        /// The container's slots, in menu order. Slots are numbered as
+        /// `inv-stack.slot`: the container's own slots (300+ for a
+        /// chest-like menu, the workstation's input/result slots), never
+        /// the player's inventory slots, which `inventory()` already
+        /// covers.
+        slots: list<inv-stack>,
+        /// The container's numeric data slots, if it has any, in the
+        /// order the screen shows them (furnace burn/cook progress,
+        /// enchanting costs, seed and clue levels, beacon levels and
+        /// powers, loom/stonecutter selection, anvil cost, lectern
+        /// page). Empty for plain chests. See `docs/mods.md` for the
+        /// layout of each kind.
+        data: list<s32>,
+    }
+    /// The player's own inventory, as of this tick.
+    inventory: func() -> player-inventory;
+    /// The open container, if a container screen is open; none otherwise.
+    /// The slots are cleared the tick the menu closes: a mod can never
+    /// read a container after closing it.
+    open-container: func() -> option<container>;
+}
+
+/// Capability `entity` (manifest `api = "0.1"`, experimental): the living
+/// mobs around the player and the entity under the crosshair. Read-only:
+/// nothing here can damage, move, spawn, ride or interact with an entity,
+/// and it cannot see another player's inventory or health. The snapshot is
+/// copied once per tick, so a mod reads the entities as of the last tick,
+/// not as of its call.
+interface %entity {
+    /// One living mob, as the game holds it this tick.
+    record entity {
+        /// The entity id the server tracks it by.
+        id: u32,
+        /// `minecraft:zombie`, `minecraft:cow`, `minecraft:player`, ...
+        kind: string,
+        /// The name as the game shows it: the custom name when set, else
+        /// the type's translated display name (a player's profile name
+        /// for `minecraft:player`).
+        name: string,
+        /// Feet position, in blocks.
+        x: f64,
+        y: f64,
+        z: f64,
+        /// Blocks per second.
+        vx: f64,
+        vy: f64,
+        vz: f64,
+        /// Degrees, movement facing.
+        yaw: f32,
+        /// Hit points as vanilla counts them, or none where the client
+        /// cannot vouch for it (multiplayer in v1). `max-health` is the
+        /// type's maximum.
+        health: option<f32>,
+        max-health: f32,
+        /// Hitbox size, in blocks (from the type).
+        width: f32,
+        height: f32,
+        /// The mob stands on a block.
+        on-ground: bool,
+        /// The plain-text custom name, if the mob has one.
+        custom-name: option<string>,
+        /// A baby variant (animals, zombies, piglins...).
+        baby: bool,
+    }
+    /// The entity under the crosshair, if any.
+    record target {
+        entity: entity,
+        /// Blocks from the eye to the hit point.
+        distance: f32,
+    }
+    /// The living mobs within 128 blocks, nearest first, at most 256.
+    /// Other players are not listed. Empty on the title screen and, in
+    /// v1, in multiplayer.
+    entities: func() -> list<entity>;
+    /// The nearest pickable living mob along the player's view within
+    /// `distance` blocks (at most 128), before any block: a wall between
+    /// the two hides the mob. None when nothing is hit, and on the title
+    /// screen. Works in singleplayer and multiplayer.
+    targeted: func(distance: f32) -> option<target>;
 }
 
 /// What the server calls in a server mod (manifest `api = "0.3"`,
@@ -794,6 +1098,15 @@ world horizon-mod {
     import hud;
     import storage;
     import command;
+    /// Read-only: `get-block`, `get-biome` and `get-blocks` only, in
+    /// singleplayer in v1; `set-blocks` is refused.
+    import %world;
+    /// Read-only: the player's own inventory and the open container's
+    /// contents, as of this tick; nothing here writes.
+    import %inventory;
+    /// Read-only: the living mobs around the player and the entity under
+    /// the crosshair, as of this tick; nothing here writes.
+    import %entity;
     export events;
 }
 

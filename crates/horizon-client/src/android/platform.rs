@@ -213,6 +213,10 @@ pub(crate) fn with_context<R>(
         match result {
             Ok(value) => Some(value),
             Err(error) => {
+                // Print the real Java exception (class, message, stack)
+                // to logcat before clearing it; the jni error alone only
+                // says that an exception occurred, never which one.
+                let _ = env.exception_describe();
                 let _ = env.exception_clear();
                 log::warn!("Android platform: {error}");
                 None
@@ -295,6 +299,86 @@ pub fn cache_dir() -> Option<std::path::PathBuf> {
 pub fn open_repository() -> bool {
     open_url("https://github.com/Vasysik/horizon-android")
 }
+
+/// Display-cap probe (Kestrel, temporary): dump the raw Android Display
+/// modes via JNI — `Display.getSupportedModes()` plus the current
+/// `Display.getMode()` — so the refresh-rate cap source can be settled.
+/// The winit modes list does not move with the OnePlus Standard/High
+/// setting (build-15 probe), so the same question is asked of the raw
+/// Display object. `getDefaultDisplay()` is deprecated since API 30 but
+/// still functional, and it works back to the app's minimum API, unlike
+/// `Activity.getDisplay()` (API 30+). Returns the full log line, or an
+/// `unavailable` line if the JNI call fails — never panics, never breaks
+/// startup. Remove once the cap source is settled.
+pub(crate) fn display_modes_probe_line() -> String {
+    match with_context(|env, activity| {
+        let window_manager = env
+            .call_method(
+                activity,
+                "getWindowManager",
+                "()Landroid/view/WindowManager;",
+                &[],
+            )?
+            .l()?;
+        let display = env
+            .call_method(
+                &window_manager,
+                "getDefaultDisplay",
+                "()Landroid/view/Display;",
+                &[],
+            )?
+            .l()?;
+        let modes = env
+            .call_method(
+                &display,
+                "getSupportedModes",
+                "()[Landroid/view/Display$Mode;",
+                &[],
+            )?
+            .l()?;
+        let modes = jni::objects::JObjectArray::from(modes);
+        let count = env.get_array_length(&modes)?;
+        let mut list = Vec::new();
+        for i in 0..count {
+            let mode = env.get_object_array_element(&modes, i)?;
+            let width = env
+                .call_method(&mode, "getPhysicalWidth", "()I", &[])?
+                .i()?;
+            let height = env
+                .call_method(&mode, "getPhysicalHeight", "()I", &[])?
+                .i()?;
+            let rate = env.call_method(&mode, "getRefreshRate", "()F", &[])?.f()?;
+            list.push(format!("{}x{}@{}Hz", width, height, rate.round() as i32));
+            env.delete_local_ref(mode)?;
+        }
+        let current = env
+            .call_method(&display, "getMode", "()Landroid/view/Display$Mode;", &[])?
+            .l()?;
+        let current = if current.is_null() {
+            "unknown".to_string()
+        } else {
+            let width = env
+                .call_method(&current, "getPhysicalWidth", "()I", &[])?
+                .i()?;
+            let height = env
+                .call_method(&current, "getPhysicalHeight", "()I", &[])?
+                .i()?;
+            let rate = env
+                .call_method(&current, "getRefreshRate", "()F", &[])?
+                .f()?;
+            format!("{}x{}@{}Hz", width, height, rate.round() as i32)
+        };
+        Ok(format!(
+            "display-cap-probe-jni: supported=[{}] current={}",
+            list.join(", "),
+            current
+        ))
+    }) {
+        Some(line) => line,
+        // with_context already logged the JNI error as a warning, if any.
+        None => "display-cap-probe-jni: unavailable: JNI call failed".to_string(),
+    }
+}
 /// Browse our SAF directory through the system file manager, never a private path.
 pub fn open_documents(id: &str) -> bool {
     with_context(|env, activity| {
@@ -371,6 +455,169 @@ pub fn open_url(url: &str) -> bool {
     })
     .is_some()
 }
+
+/// The app's own package name (e.g. `com.kestrel.android`, or
+/// `com.kestrel.android.dev` for a dev build).
+pub fn package_name() -> Option<String> {
+    with_context(|env, activity| {
+        let name = env
+            .call_method(activity, "getPackageName", "()Ljava/lang/String;", &[])?
+            .l()?;
+        let name: String = env.get_string((&name).into())?.into();
+        Ok(name)
+    })
+}
+
+/// Hand an APK file to the Android system installer: an ACTION_VIEW intent
+/// for the APK, served by the app's own provider. Android always asks the
+/// player to confirm the install; this never installs silently. Only the
+/// update APK from the app's cache dir is ever handed over. Returns false
+/// when the installer could not be opened.
+pub fn install_apk(path: &std::path::Path) -> bool {
+    let Some(package) = package_name() else {
+        return false;
+    };
+    let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if file != crate::app_update::APK_FILE {
+        return false;
+    }
+    let uri_text = format!("content://{package}.apk/{file}");
+    with_context(|env, activity| {
+        let address = JObject::from(env.new_string(uri_text)?);
+        let uri = env
+            .call_static_method(
+                "android/net/Uri",
+                "parse",
+                "(Ljava/lang/String;)Landroid/net/Uri;",
+                &[JValue::Object(&address)],
+            )?
+            .l()?;
+        let action = JObject::from(env.new_string("android.intent.action.VIEW")?);
+        let intent = env.new_object(
+            "android/content/Intent",
+            "(Ljava/lang/String;Landroid/net/Uri;)V",
+            &[JValue::Object(&action), JValue::Object(&uri)],
+        )?;
+        let mime = JObject::from(env.new_string("application/vnd.android.package-archive")?);
+        env.call_method(
+            &intent,
+            "setDataAndType",
+            "(Landroid/net/Uri;Ljava/lang/String;)Landroid/content/Intent;",
+            &[JValue::Object(&uri), JValue::Object(&mime)],
+        )?;
+        // FLAG_GRANT_READ_URI_PERMISSION | FLAG_ACTIVITY_NEW_TASK: the
+        // installer reads the APK through the provider, from a new task.
+        // (addFlags returns the Intent, so its JNI signature is
+        // `(I)Landroid/content/Intent;` — the `(I)V` form looks the method up
+        // with the wrong return type and throws, so the installer never
+        // opens.)
+        env.call_method(
+            &intent,
+            "addFlags",
+            "(I)Landroid/content/Intent;",
+            &[JValue::Int(0x0000_0001 | 0x1000_0000)],
+        )?;
+        env.call_method(
+            activity,
+            "startActivity",
+            "(Landroid/content/Intent;)V",
+            &[JValue::Object(&intent)],
+        )?;
+        Ok(())
+    })
+    .is_some()
+}
+
+/// Whether Android lets this app trigger an APK install: the per-app
+/// "Install unknown apps" grant (`PackageManager.canRequestPackageInstalls`).
+/// Firing the install intent without it silently does nothing on Android 8+,
+/// so check this before `install_apk`. Unknown (JNI failure) reads as false.
+pub fn can_install_packages() -> bool {
+    with_context(|env, activity| {
+        let pm = env
+            .call_method(
+                activity,
+                "getPackageManager",
+                "()Landroid/content/pm/PackageManager;",
+                &[],
+            )?
+            .l()?;
+        let allowed = env
+            .call_method(&pm, "canRequestPackageInstalls", "()Z", &[])?
+            .z()?;
+        Ok(allowed)
+    })
+    .unwrap_or(false)
+}
+
+/// Open the system "Install unknown apps" screen for this app, so the
+/// player can allow Kestrel to install APKs. Returns false when the
+/// settings screen could not be opened. Some OEM Settings apps do not
+/// resolve the per-app screen, so fall back to the all-apps list, then to
+/// this app's info page, which every ROM provides.
+pub fn open_install_permission_settings() -> bool {
+    let Some(package) = package_name() else {
+        return false;
+    };
+    open_settings_screen(
+        "android.settings.action.MANAGE_UNKNOWN_APP_SOURCES",
+        Some(&package),
+    ) || open_settings_screen(
+        "android.settings.action.MANAGE_UNKNOWN_APP_SOURCES",
+        None,
+    ) || open_settings_screen(
+        "android.settings.APPLICATION_DETAILS_SETTINGS",
+        Some(&package),
+    )
+}
+
+/// Open one system settings screen, optionally scoped to a package.
+/// Each call is its own `with_context`, so a Java exception thrown by one
+/// attempt is cleared there and cannot poison the next.
+fn open_settings_screen(action: &str, package: Option<&str>) -> bool {
+    with_context(|env, activity| {
+        let action = JObject::from(env.new_string(action)?);
+        let intent = env.new_object(
+            "android/content/Intent",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&action)],
+        )?;
+        if let Some(package) = package {
+            let uri_text = format!("package:{package}");
+            let address = JObject::from(env.new_string(uri_text)?);
+            let uri = env
+                .call_static_method(
+                    "android/net/Uri",
+                    "parse",
+                    "(Ljava/lang/String;)Landroid/net/Uri;",
+                    &[JValue::Object(&address)],
+                )?
+                .l()?;
+            env.call_method(
+                &intent,
+                "setData",
+                "(Landroid/net/Uri;)Landroid/content/Intent;",
+                &[JValue::Object(&uri)],
+            )?;
+        }
+        // FLAG_ACTIVITY_NEW_TASK: the settings open from a new task.
+        env.call_method(
+            &intent,
+            "addFlags",
+            "(I)Landroid/content/Intent;",
+            &[JValue::Int(0x1000_0000)],
+        )?;
+        env.call_method(
+            activity,
+            "startActivity",
+            "(Landroid/content/Intent;)V",
+            &[JValue::Object(&intent)],
+        )?;
+        Ok(())
+    })
+    .is_some()
+}
+
 /// Public Android power/thermal status; no device identifiers or sysfs access.
 pub fn performance_power() -> serde_json::Value {
     with_context(|env, activity| {
@@ -418,7 +665,7 @@ fn clipboard_write(text: &str, sensitive: bool) -> bool {
                 &[JValue::Object(&name)],
             )?
             .l()?;
-        let label = JObject::from(env.new_string("Horizon")?);
+        let label = JObject::from(env.new_string("Kestrel")?);
         let value = JObject::from(env.new_string(text)?);
         let clip = env
             .call_static_method(

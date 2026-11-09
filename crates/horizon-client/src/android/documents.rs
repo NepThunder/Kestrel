@@ -203,7 +203,7 @@ pub fn export_file(
     if file_name.to_ascii_lowercase().ends_with(".png") {
         let _ = crate::gallery::save(file_path);
         return Ok(format!(
-            "Exporting '{file_name}' to Pictures/HorizonAndroid..."
+            "Exporting '{file_name}' to Pictures/Kestrel..."
         ));
     }
     let rel_str = file_path
@@ -230,14 +230,14 @@ pub fn export_file(
         ))
     } else {
         Ok(format!(
-            "Ready to export '{file_name}' via system Files > Horizon Android."
+            "Ready to export '{file_name}' via system Files > Kestrel."
         ))
     }
 }
 /// Called by the approved Activity result bridge, never from a game tick.
 /// Keep a conventional JNI export as well as explicit registration: Android
 /// may restore a picker result before the IME bridge has been initialized.
-#[unsafe(export_name = "Java_dev_horizon_android_HorizonActivity_nativeDocumentResult")]
+#[unsafe(export_name = "Java_com_kestrel_android_HorizonActivity_nativeDocumentResult")]
 pub extern "system" fn document_result(
     mut env: JNIEnv<'_>,
     activity: JObject<'_>,
@@ -282,7 +282,7 @@ pub extern "system" fn document_result(
             let result = (|| -> Result<()> {
                 let mut env = vm.attach_current_thread()?;
                 let fallback = if pending.kind == Kind::Mods {
-                    "import.hmod"
+                    "import.kmod"
                 } else {
                     "import.zip"
                 };
@@ -378,6 +378,9 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
         );
         return Ok(());
     }
+    if request.kind == Kind::Mods && name.to_ascii_lowercase().ends_with(".hmod") {
+        return Err("Kestrel uses .kmod mods now: .hmod files are no longer supported. Rename the file to .kmod and try again.".into());
+    }
     if !content_files::plain_name(&name) || !request.kind.accepts(&name) {
         return Err("Selected file has the wrong extension for this folder".into());
     }
@@ -420,7 +423,7 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
             CANCEL.load(Ordering::Relaxed)
         })?;
         let name = if request.kind == Kind::Mods {
-            format!("{}.hmod", horizon_mods::Package::read(&staged)?.manifest.id)
+            format!("{}.kmod", horizon_mods::Package::read(&staged)?.manifest.id)
         } else if native_shader || name.to_ascii_lowercase().ends_with(".hshader") {
             let pack = horizon_shader_api::Pack::read(&staged)?;
             horizon_shader_api::check(&pack).map_err(|e| format!("Invalid shader pack: {e:?}"))?;

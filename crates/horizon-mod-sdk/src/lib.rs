@@ -21,8 +21,13 @@
 //! ```
 //!
 //! Every interface but `log` is a capability: list the ones the mod uses in
-//! `horizon-mod.toml` (`game-read`, `chat`, `hud`, `storage`, `command`, `ui`;
-//! a server mod `storage` and `players`). Server mods: [`server`].
+//! `horizon-mod.toml` (`game-read`, `chat`, `hud`, `storage`, `command`, `ui`,
+//! `world` — read-only for a client mod, singleplayer in v1; `inventory` —
+//! read-only, the player's own inventory and the open container; `entity` —
+//! read-only, the living mobs around the player and the entity under the
+//! crosshair; `render` — its HUD shapes and world lines and boxes
+//! (depth-tested, API level 11); a server mod `storage` and `players`).
+//! Server mods: [`server`].
 //!
 //! Widgets (capability `ui`): a mod shows a screen it owns with
 //! [`ui::open_screen`] and a page in Options > Mods with
@@ -40,7 +45,8 @@ wit_bindgen::generate!({
 pub use exports::horizon::mods::events::{Guest as __Guest, Registration};
 pub use exports::horizon::mods::ui_events::Guest as __UiEventsGuest;
 pub use horizon::mods::{
-    browser, chat, command, game, hud, input, log, recipes, render, storage, ui,
+    browser, chat, command, entity, game, hud, input, inventory, log, recipes, render, storage, ui,
+    world,
 };
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for

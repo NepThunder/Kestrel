@@ -1,4 +1,4 @@
-//! `horizon-mod.toml`, a mod's manifest, and the `.hmod` file around it.
+//! `horizon-mod.toml`, a mod's manifest, and the `.kmod` file around it.
 use serde::{Deserialize, Serialize};
 use std::{
     fmt,
@@ -8,13 +8,13 @@ use std::{
 
 /// The manifest's file name, beside `mod.wasm`.
 pub const MANIFEST: &str = "horizon-mod.toml";
-/// The component's file name in a `.hmod` or a mod folder.
+/// The component's file name in a `.kmod` or a mod folder.
 pub const WASM: &str = "mod.wasm";
 /// The API (WIT package `horizon:mods`) versions this build runs: a mod
 /// built for any 0.1.x SDK.
 pub const API: &str = "0.1";
 /// The manifest `api` lines this build loads. 0.2 is 0.1 plus content:
-/// `assets/` and `data/` in the `.hmod`, with blocks, items and mob effects declared in
+/// `assets/` and `data/` in the `.kmod`, with blocks, items and mob effects declared in
 /// `data/<id>/horizon/` (docs/modpacks.md). Code still links API 0.1.
 /// 0.3 is a server mod (experimental): the `horizon-server-mod` world.
 pub const APIS: [&str; 3] = [API, "0.2", SERVER_API];
@@ -89,23 +89,31 @@ pub enum Capability {
     /// A screen the mod owns and a settings page in Options > Mods, drawn
     /// with the menus' own widgets (interface `ui`, calls `ui-events`).
     Ui,
-    /// Shapes on the HUD and the camera's shake, drawn by the game's own
-    /// renderer (interface `render`).
+    /// Shapes on the HUD, lines and boxes in the world, and the camera's
+    /// shake, drawn by the game's own renderer (interface `render`); it
+    /// also brightens the screen (`render.set-gamma`) and turns off
+    /// distance fog (`render.set-fog`).
     Render,
     /// The use button on items the mod claims, and its own keys
     /// (interface `input`).
     Input,
     /// The players on the server and messages to them (server mods).
     Players,
-    /// Blocks in the server's loaded chunks, and changes to them (server
-    /// mods; client mods later, where the game runs the world).
+    /// Blocks in the loaded chunks, and changes to them (server mods;
+    /// client mods read only, singleplayer in v1).
     World,
     /// The recipes and items the game knows, for recipe viewers
     /// (interface `recipes`).
     Recipes,
+    /// The player's own inventory and the open container's contents,
+    /// read-only (interface `inventory`).
+    Inventory,
+    /// The living mobs around the player and the entity under the
+    /// crosshair, read-only (interface `entity`).
+    Entity,
 }
 impl Capability {
-    pub const ALL: [Capability; 12] = [
+    pub const ALL: [Capability; 14] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -118,6 +126,8 @@ impl Capability {
         Capability::Players,
         Capability::World,
         Capability::Recipes,
+        Capability::Inventory,
+        Capability::Entity,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -141,6 +151,8 @@ impl Capability {
             Capability::Players => "players",
             Capability::World => "world",
             Capability::Recipes => "recipes",
+            Capability::Inventory => "inventory",
+            Capability::Entity => "entity",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -148,7 +160,12 @@ impl Capability {
     pub fn is_experimental(self) -> bool {
         matches!(
             self,
-            Capability::Ui | Capability::Render | Capability::Input | Capability::Recipes
+            Capability::Ui
+                | Capability::Render
+                | Capability::Input
+                | Capability::Recipes
+                | Capability::Inventory
+                | Capability::Entity
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -163,15 +180,21 @@ impl Capability {
                 "add blocks, items, mob effects and entity types to your worlds"
             }
             Capability::Ui => "show its own screens and a settings page",
-            Capability::Render => "draw on your screen, shake and zoom the camera",
+            Capability::Render => {
+                "draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it and turn off distance fog"
+            }
             Capability::Input => {
                 "see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys"
             }
             Capability::Players => "see who is on the server and message them",
-            Capability::World => "read and change the world's blocks",
+            Capability::World => {
+                "read the world's blocks, and change them where the game runs the world"
+            }
             Capability::Recipes => {
                 "read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items"
             }
+            Capability::Inventory => "see your inventory and open containers",
+            Capability::Entity => "see the mobs around you and the entity you look at",
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -213,6 +236,8 @@ impl fmt::Display for Capability {
             Capability::Players => "players",
             Capability::World => "world",
             Capability::Recipes => "recipes",
+            Capability::Inventory => "inventory",
+            Capability::Entity => "entity",
         };
         f.write_str(name)
     }
@@ -249,11 +274,11 @@ impl Manifest {
                 "{MANIFEST}: a server mod is side = \"server\" with api = \"{SERVER_API}\", and only it"
             ));
         }
-        if let Some(c) = m
-            .capabilities
-            .iter()
-            .find(|c| c.on_server() != server && **c != Capability::Storage)
-        {
+        // `world` is both: server mods read and change blocks, client mods
+        // read them (singleplayer in v1); `storage` is shared the same way.
+        if let Some(c) = m.capabilities.iter().find(|c| {
+            c.on_server() != server && **c != Capability::Storage && **c != Capability::World
+        }) {
             let side = if server { "client" } else { "server" };
             return Err(format!("{MANIFEST}: capability {c} is for {side} mods"));
         }
@@ -321,7 +346,7 @@ pub struct Package {
     pub wasm: Option<Vec<u8>>,
 }
 impl Package {
-    /// A `.hmod` (a zip holding `horizon-mod.toml`, `mod.wasm` and, for
+    /// A `.kmod` (a zip holding `horizon-mod.toml`, `mod.wasm` and, for
     /// content, `assets/` and `data/`) or a folder holding the same.
     pub fn read(path: &Path) -> Result<Self, String> {
         let (toml, wasm) = if path.is_dir() {
@@ -362,11 +387,31 @@ impl Package {
         }
         Ok(Package { manifest, wasm })
     }
-    /// The `.hmod` bytes for `manifest_text` and a component.
+    /// Only the manifest of a `.kmod` (or a folder holding one), without
+    /// reading the (up to 32 MiB) wasm: for listing an installed mod's
+    /// version without loading it.
+    pub fn read_manifest(path: &Path) -> Result<Manifest, String> {
+        use std::io::Read;
+        let toml = if path.is_dir() {
+            std::fs::read_to_string(path.join(MANIFEST)).map_err(|e| format!("{MANIFEST}: {e}"))?
+        } else {
+            let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+            let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+            let mut entry = zip.by_name(MANIFEST).map_err(|e| match e {
+                zip::result::ZipError::FileNotFound => format!("{MANIFEST}: missing"),
+                e => format!("{MANIFEST}: {e}"),
+            })?;
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+            String::from_utf8(bytes).map_err(|_| format!("{MANIFEST}: not UTF-8"))?
+        };
+        Manifest::parse(&toml)
+    }
+    /// The `.kmod` bytes for `manifest_text` and a component.
     pub fn write(manifest_text: &str, wasm: &[u8]) -> Result<Vec<u8>, String> {
         Self::write_files(manifest_text, Some(wasm), &[])
     }
-    /// The `.hmod` bytes for `manifest_text`, a component if the mod has
+    /// The `.kmod` bytes for `manifest_text`, a component if the mod has
     /// code, and content `files` (`assets/...`, `data/...`) by path.
     pub fn write_files(
         manifest_text: &str,
@@ -394,7 +439,7 @@ impl Package {
     }
 }
 
-/// The `.hmod` files and mod folders in `dir`, by name.
+/// The `.kmod` files and mod folders in `dir`, by name.
 pub fn find(dir: &Path) -> Vec<PathBuf> {
     let Ok(read) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -402,7 +447,7 @@ pub fn find(dir: &Path) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = read
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "hmod") || p.join(MANIFEST).is_file())
+        .filter(|p| p.extension().is_some_and(|e| e == "kmod") || p.join(MANIFEST).is_file())
         .collect();
     found.sort();
     found
@@ -533,10 +578,10 @@ capabilities = ["game-read", "hud"]
     }
 
     #[test]
-    fn hmod_round_trips() {
+    fn kmod_round_trips() {
         let dir = std::env::temp_dir().join(format!("horizon-mods-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("coords_hud.hmod");
+        let path = dir.join("coords_hud.kmod");
         std::fs::write(&path, Package::write(EXAMPLE, b"\0asm").unwrap()).unwrap();
         let p = Package::read(&path).unwrap();
         assert_eq!(p.manifest.id, "coords_hud");
@@ -559,5 +604,25 @@ capabilities = ["game-read", "hud"]
             "{base}capabilities = [\"hud\"]\nexperimental = [\"hud\"]\n"
         ))
         .unwrap();
+    }
+
+    #[test]
+    fn read_manifest_reads_only_the_manifest() {
+        let dir = std::env::temp_dir().join("kestrel-read-manifest-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A folder holding the manifest.
+        std::fs::write(dir.join(MANIFEST), EXAMPLE).unwrap();
+        let m = Package::read_manifest(&dir).unwrap();
+        assert_eq!(m.id, "coords_hud");
+        assert_eq!(m.version, "0.1.0");
+        // The same manifest inside a `.kmod` zip, without a wasm to load.
+        let bytes = Package::write(EXAMPLE, &[]).unwrap();
+        let path = dir.join("coords_hud.kmod");
+        std::fs::write(&path, &bytes).unwrap();
+        let m = Package::read_manifest(&path).unwrap();
+        assert_eq!(m.id, "coords_hud");
+        assert_eq!(m.version, "0.1.0");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

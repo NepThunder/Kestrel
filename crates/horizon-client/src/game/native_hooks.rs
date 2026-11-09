@@ -3480,7 +3480,7 @@ impl Game<'_> {
         self.panel.show_recipes(mod_id, page);
     }
     /// The recipes of type `kind` (`mymod:crusher`), a type outside `minecraft`,
-    /// from `data/<namespace>/recipe/*.json` of the content mods (`.hmod`) and
+    /// from `data/<namespace>/recipe/*.json` of the content mods (`.kmod`) and
     /// the world's data packs, in file order: each one's id and its file as
     /// JSON, for the mod to read as it likes. A data pack changes them on
     /// `/reload`, so look them up again when you need them. Empty for a type

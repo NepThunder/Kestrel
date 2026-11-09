@@ -4,7 +4,7 @@ Two kinds of mod run in Horizon:
 
 | Kind | File | What it is | Where it runs |
 |---|---|---|---|
-| **Content mod** | `.hmod` | Data and assets: blocks, items, recipes, loot, tags, models, textures, structures. No code. | Read when the game starts |
+| **Content mod** | `.kmod` | Data and assets: blocks, items, recipes, loot, tags, models, textures, structures. No code. | Read when the game starts |
 | **Native mod** | `.hnmod` | A [horizon-mixins](https://github.com/horizon-rust/horizon-mixins) bundle: Rust that changes the game's own source before it is compiled. | In a game the launcher builds for the player ([native-mods.md](native-mods.md)) |
 
 Fabric and NeoForge jars do **not** run as they are: their code calls and patches Minecraft's Java classes, and
@@ -15,7 +15,7 @@ Mods are **off by default**. A fresh install has no `horizon-mods` folder and pl
 ## Playing with mods
 
 1. Install a mod from the launcher's Mods page ([mod-browser.md](mod-browser.md)), or put its files by hand in the
-   game folder (the one holding `options.txt`): a content mod's `.hmod` (or a folder holding `horizon-mod.toml`) in
+   game folder (the one holding `options.txt`): a content mod's `.kmod` (or a folder holding `horizon-mod.toml`) in
    `horizon-mods/`. Native mods go in `horizon-native-mods/`, and the launcher builds them
    ([native-mods.md](native-mods.md)).
 2. Options > **Mods** lists them with what each may do ("May add blocks, items, mob effects and entity types to your
@@ -29,26 +29,146 @@ the reason in the log.
 
 Benchmarks (`--benchmark`) never load mods.
 
+A code mod with capability `world` reads the blocks around the player
+(`world.get-block`, `get-biome`, `get-blocks`, API level 8) and the light
+at them (`world.get-lights`, API level 12: block and sky light, each 0 to
+15, `None` where no chunk is loaded, its light is not computed yet, or the
+position is outside the column's build range). In v1 it is
+read-only — `set-blocks` is refused — and singleplayer only: on a
+multiplayer server, and before a world loads, every read is empty. Bulk
+reads go through `get-blocks` (at most 4096 positions per call); the mod
+reads only the dimension the player is in and only chunks the game has
+loaded, and only on its tick hook. `crates/horizon-mod-sdk/examples/world-probe`
+is a probe mod that shows the blocks at the player's feet, and
+`crates/horizon-mod-sdk/examples/light-probe` one that shows the light
+there. The light is as of the last completed light job, so it lags a block
+edit by a few ticks after the block read already shows it; the sky value
+is the stored sky light, not darkened by the time of day — at night the
+sky above open ground still reads 15, and a mod that wants the
+spawn-relevant value computes `max(block, sky - 11)` for the night case.
+
+A code mod with capability `inventory` (experimental) reads the player's own
+inventory and the open container (`inventory.inventory`,
+`inventory.open-container`, API level 9). It is read-only — there is no
+function that moves a stack — and it works in singleplayer and on a
+multiplayer server alike, because the client learns both from server packets;
+before a world loads the inventory is empty and no container is open. A mod
+reads the inventory as of the last tick. The open container's slots are the
+container's own (a chest's 300+, a workstation's input/result slots), never
+the player's inventory slots, which `inventory()` already covers; the
+container reads as closed the tick the menu closes, when the player dies, or
+when the server closes it. Its data slots, in the screen's order, are: a
+furnace's burn left, burn total, cook progress and cook total; a brewing
+stand's brew time, fuel, total brew time and total fuel; a crafter's nine
+disabled flags then whether it triggered; an enchanting table's three costs,
+the seed and the three clue levels; a beacon's levels and its two powers
+(-1: none); a loom's or stonecutter's selected index (-1: none); an anvil's
+cost; a lectern's page. Plain chests and merchants have none, and merchant
+offers are not exposed. `crates/horizon-mod-sdk/examples/inventory-probe`
+is a probe mod that shows the held item's damage, the armour worn and the
+open container.
+
+A code mod with capability `entity` (experimental) reads the living mobs
+around the player and the mob under the crosshair (`entity.entities`,
+`entity.targeted`, API level 10). It is read-only — there is no function
+that damages, moves, spawns or interacts with an entity — and a mod reads
+the entities as of the last tick. `entities()` lists the living mobs
+within 128 blocks, nearest first, at most 256; other players are never
+listed, and in multiplayer in v1 the list is empty. `targeted(distance)`
+names the nearest pickable mob along the player's view within that many
+blocks (at most 128), before any block: a wall between the two hides the
+mob. It works in singleplayer and multiplayer alike, and may name a
+player under the crosshair. Health is the server's truth in singleplayer
+and reads there; in multiplayer it is missing, and for another player it
+is always missing — a mod must not present a missing health as a number.
+Before a world loads the list is empty and there is no target.
+`crates/horizon-mod-sdk/examples/entity-probe` is a probe mod that shows
+the mobs around the player, nearest first, and the crosshair target.
+
+A code mod with capability `render` (experimental) draws lines and boxes
+in the world (`render.set-world`, API level 11). It is draw-only — a box
+does not select, protect or change a block or an entity — and a mod
+submits on its tick hook: the shapes draw every frame until replaced, an
+empty list clearing them. At most 1024 lines per mod, a box counting as
+its twelve edges; widths are 0.5 to 8 pixels. The lines are depth-tested,
+so a wall hides them like the game's own hitbox boxes, and they hide
+with the HUD (F1). Nothing here is ever drawn on top of everything, and
+there are no filled boxes, no world text and no custom shaders in v1.
+What a mod draws comes from what it may read: boxes from `entity.entities`
+draw in singleplayer, while in multiplayer only the crosshair target (or
+a `game.raycast` hit) is there to draw round. Before a world loads the
+shapes store but nothing draws them.
+`crates/horizon-mod-sdk/examples/draw-probe` is a probe mod that draws a
+box round the nearest mob and a line from the player to the mob under the
+crosshair.
+
+The same capability brightens the screen and turns off distance fog
+(`render.get-gamma`, `set-gamma`, `get-fog`, `set-fog`, API level 13).
+`set-gamma` takes this mod's gamma, 0.0 the darkest the lightmap goes and
+10.0 the 1000% Fullbright value (clamped host-side; a non-finite value
+reads as 1.0), and the strongest gamma any running mod sets wins; `get-gamma`
+reads the effective value, or the player's own Brightness setting when no
+mod sets one. `set-fog(false)` removes distance fog — the atmospheric and
+render-distance fog, including the Nether's — while any running mod holds
+it off; water, lava and powder-snow fog, blindness, darkness and a boss's
+world fog stay. Both work in multiplayer, as the Extras fullbright and the
+Fog graphics option already do, and neither ever writes the player's
+stored settings: unloading or disabling the mod restores them within a
+frame. The Brightness slider goes dead while a mod holds gamma — the
+setting still writes, but the screen does not change until the mod releases.
+`crates/horizon-mod-sdk/examples/gamma-probe` is a probe mod that shows the
+effective gamma and fog flag each tick.
+
+The same capability moves the camera (`render.get-camera`, `set-camera`,
+`render.project`, API level 14). `set-camera` takes this mod's override:
+with `position` none it is a freelook — the camera stays at the player's
+eye and only the look changes — with `position` some it is a freecam, the
+camera detached to that position. Either way the player's yaw and pitch do
+not move, so the player keeps walking, aiming and mining in the direction
+they faced, and the server keeps seeing the player face that way; the
+crosshair, the hand and the raycast stay the player's too. While a camera
+is active the mouse turns the camera, not the player — so a mod that wants
+mouse look calls `set-camera` only when its position, roll or mode changes
+and reads the current look back through `get-camera`, while a mod that
+calls it every tick with fixed angles drives a scripted camera the mouse
+cannot move. Yaw wraps, pitch clamps to -90..=90, roll clamps to -180..=180
+and rides the frame's pose (positive rolls clockwise as the player sees
+it); a non-finite look reads as 0.0 for that field, and a non-finite
+position drops the whole call. A freecam stops at the 64-block sphere
+around the player's feet and at the first visual-shape hit, so v1 never
+sees through walls. Only one mod drives the camera: the first loaded mod
+that sets one wins, and unloading or disabling it restores the player's own
+camera within a frame — the player's stored settings are never changed. A
+spectator's camera wins over any override. `project` maps a world position
+onto the screen in GUI pixels through the camera this frame renders from,
+with the effective field of view including a mod zoom: `visible` is false
+behind the camera, `x` and `y` are still given, and there is no occlusion
+test — a point behind a wall still projects, as the HUD distances do. All
+three work in multiplayer, as third person and shake already do.
+`crates/horizon-mod-sdk/examples/camera-probe` is a probe mod that shows
+the effective pose and a projected world point each tick, and proves
+freelook, freecam, a scripted orbit, roll, the cap and the non-finite drop.
+
 ## Making a content mod
 
 ```sh
 cargo install --git https://github.com/horizon-rust/horizon cargo-horizon-mod
 cargo horizon-mod new my-mod        # a content mod: manifest, one block with its model, loot and recipe
 cd my-mod
-cargo horizon-mod run               # build my-mod.hmod, then start the game with it turned on
-cargo horizon-mod build             # only build: target/horizon-mod/my_mod.hmod
-cargo horizon-mod check target/horizon-mod/my_mod.hmod   # the registry's checks; --json for JSON
+cargo horizon-mod run               # build my-mod.kmod, then start the game with it turned on
+cargo horizon-mod build             # only build: target/horizon-mod/my_mod.kmod
+cargo horizon-mod check target/horizon-mod/my_mod.kmod   # the registry's checks; --json for JSON
 ```
 
 - `new <path> [--name "Name"]` writes the template. It makes content mods only: any other `--template` is refused.
-- `build` packs `horizon-mod.toml`, `assets/` and `data/` into `target/horizon-mod/<id>.hmod`, with the same checks
+- `build` packs `horizon-mod.toml`, `assets/` and `data/` into `target/horizon-mod/<id>.kmod`, with the same checks
   the game makes when it reads the content. It refuses a folder with a `Cargo.toml` (code is native now) and a
   manifest without capability `registries`.
 - `run` builds, then starts `horizon-client` (on `PATH`, or `--game PATH`, or `HORIZON_CLIENT`) with
-  `--dev-mod target/horizon-mod/<id>.hmod`, always on. Arguments after `--` go to the game. The game reads content once
+  `--dev-mod target/horizon-mod/<id>.kmod`, always on. Arguments after `--` go to the game. The game reads content once
   at start, so rebuild and run again after an edit.
 - `check <file>` runs what the registry runs: the file's size and SHA-256, its manifest and content, and a signature
-  with `--key <public key> --signature <file>.minisig`. It reads `.hmod`, `.hnmod`, `.hpack`, resource pack `.zip`
+  with `--key <public key> --signature <file>.minisig`. It reads `.kmod`, `.hnmod`, `.hpack`, resource pack `.zip`
   and `.hshader` files.
 - `registry build|review|check|list|release|page` is the registry repository's CI ([api/mod-index.md](api/mod-index.md)).
 
@@ -70,7 +190,7 @@ Unknown keys are refused, so a typo is an error, not a silently ignored permissi
 
 ### Content mods (API 0.2)
 
-A content mod has capability `registries` and carries `assets/` and `data/` in the `.hmod`. It adds blocks and items
+A content mod has capability `registries` and carries `assets/` and `data/` in the `.kmod`. It adds blocks and items
 by declaring them in `data/<id>/horizon/block/*.json` and `data/<id>/horizon/item/*.json`, each copying a vanilla
 template ([modpacks.md](modpacks.md#registries-02-data-driven-blocks-items-and-mob-effects)), and mob effects (below):
 
@@ -348,7 +468,7 @@ which checks every file before it installs it.
 1. Run `cargo horizon-mod check` on the file (above): the registry runs the same checks.
 2. Put the source in a public GitHub repository, under a licence that lets players run it. A native mod's `.hnmod` is
    its source.
-3. Publish a **GitHub release** in it with the file as an asset (`.hmod`, `.hnmod`, `.hpack`, `.hshader`, or a resource
+3. Publish a **GitHub release** in it with the file as an asset (`.kmod`, `.hnmod`, `.hpack`, `.hshader`, or a resource
    pack's `.zip`), and its `.minisig` beside it if you sign. The release notes are the changelog.
 4. List the project once: open [playhorizon.dev/mods/submit](https://playhorizon.dev/mods/submit), sign in with GitHub
    and give the repository and the page (name, summary, licence, optionally a minisign public key). It opens a pull

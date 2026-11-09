@@ -1,0 +1,8 @@
+id = "world_probe"
+name = "World Probe"
+version = "0.1.0"
+description = "Prototype for client world reads: shows the blocks at the player's feet each tick, and proves set-blocks is refused for client mods."
+authors = ["Horizon"]
+api = "0.1"
+side = "client"
+capabilities = ["game-read", "world", "chat"]

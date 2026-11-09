@@ -1,0 +1,48 @@
+# Client entity reads in multiplayer: the list reads empty and health
+# reads None, while the crosshair target still answers.
+[[step]]
+multiplayer = true
+ticks = 1
+[[step.entities]]
+id = 1
+kind = "minecraft:zombie"
+name = "Zombie"
+x = 0.5
+y = 64.0
+z = 5.5
+health = 14.0
+max-health = 20.0
+width = 0.6
+height = 1.95
+[[step.entities]]
+id = 2
+kind = "minecraft:cow"
+name = "Cow"
+x = 3.5
+y = 64.0
+z = 8.5
+health = 10.0
+max-health = 10.0
+width = 0.9
+height = 1.4
+[step.expect]
+chat = ["target: Zombie (minecraft:zombie) 4.7 blocks ?/20.0"]
+panel = ["no mobs"]
+
+# A player under the crosshair is named in multiplayer too, with no health.
+[[step]]
+ticks = 1
+[[step.entities]]
+id = 5
+kind = "minecraft:player"
+name = "Steve"
+x = 0.5
+y = 64.0
+z = 3.5
+health = 20.0
+max-health = 20.0
+width = 0.6
+height = 1.8
+[step.expect]
+chat = ["target: Steve (minecraft:player) 2.7 blocks ?/20.0"]
+panel = ["no mobs"]

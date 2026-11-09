@@ -1,4 +1,4 @@
-//! Horizon modpacks from the registry (`.hpack`, docs/api/mod-index.md), each played as its own
+//! Kestrel modpacks from the registry (`.hpack`, docs/api/mod-index.md), each played as its own
 //! profile: `horizon-packs/<id>/` in the game's home holds the pack's file, `pack.json` (what
 //! was installed) and `home/`, the profile's game folder: its saves, its options, and the pack's
 //! mods in `home/horizon-mods/`, each downloaded and checked against the index like any
@@ -81,7 +81,7 @@ fn install_in(
 ) -> Result<Installed, String> {
     let p = index
         .project(id)
-        .ok_or_else(|| format!("{id} isn't in Horizon's registry."))?;
+        .ok_or_else(|| format!("{id} isn't in Kestrel's registry."))?;
     if p.kind != idx::Kind::Modpack {
         return Err(format!("{} is a {}, not a modpack.", p.name, p.kind.name()));
     }
@@ -191,8 +191,8 @@ mod tests {
     /// A local registry: the mod and a pack of it, as `file://` files.
     fn registry(dir: &Path, on: bool, extra: &str) -> Index {
         let hmod_src = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../crates/horizon-mods/tests/index/coords_hud-0.1.0.hmod");
-        let hmod = dir.join("coords_hud-0.1.0.hmod");
+            .join("../crates/horizon-mods/tests/index/coords_hud-0.1.0.kmod");
+        let hmod = dir.join("coords_hud-0.1.0.kmod");
         fs::copy(hmod_src, &hmod).unwrap();
         let hmod_sha = idx::sha256_file(&hmod).unwrap();
         let hpack = dir.join("cozy-1.0.0.hpack");
@@ -223,7 +223,7 @@ mod tests {
             r#"{{"schema": 1, "projects": [
               {{"id": "coords_hud", "kind": "mod", "name": "Coordinates HUD", "summary": "", "license": "MIT",
                 "source": "https://x.test", "versions": [{{"version": "0.1.0", "api": "0.1", "side": "client",
-                "capabilities": ["game-read", "hud", "chat"], "game": "26.3", "file": {{"name": "coords_hud-0.1.0.hmod",
+                "capabilities": ["game-read", "hud", "chat"], "game": "26.3", "file": {{"name": "coords_hud-0.1.0.kmod",
                 "url": "file://{}", "size": {}, "sha256": "{hmod_sha}"}}}}]}},
               {{"id": "cozy", "kind": "modpack", "name": "Cozy", "summary": "", "license": "MIT",
                 "source": "https://x.test", "versions": [{{"version": "1.0.0", "api": "1", "game": "26.3",
@@ -257,7 +257,7 @@ mod tests {
         let pack = install_in(&index, true, "cozy", &packs, &|_, _| {}).unwrap();
         assert_eq!(pack.mods, ["coords_hud 0.1.0"]);
         let home = home(&packs.join("cozy"));
-        assert!(home.join("horizon-mods/coords_hud.hmod").is_file());
+        assert!(home.join("horizon-mods/coords_hud.kmod").is_file());
         assert!(
             !java::is_enabled(&home, "coords_hud"),
             "the pack turns it off"

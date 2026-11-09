@@ -1,0 +1,58 @@
+# World-space drawing: a box round the nearest mob and a line from the
+# player's feet to the mob under the crosshair. The player stands at
+# 0.5 64 0.5 facing south (+z). A zombie stands in front of them and a
+# cow further off to the side: the zombie is nearest, and the crosshair
+# meets it first. All coordinates are exact in binary, so the expected
+# lines compare exactly.
+#
+# The zombie's box is (0.25, 64, 5.25) to (0.75, 66, 5.75), green, 2 wide;
+# the line runs (0.5, 64, 0.5) to the zombie's feet (0.5, 64, 5.5), yellow,
+# 1 wide. Colours are 0xAARRGGBB: green 4278255360, yellow 4294967040.
+
+[[step]]
+ticks = 1
+[[step.entities]]
+id = 1
+kind = "minecraft:zombie"
+name = "Zombie"
+x = 0.5
+y = 64.0
+z = 5.5
+health = 20.0
+max-health = 20.0
+width = 0.5
+height = 2.0
+[[step.entities]]
+id = 2
+kind = "minecraft:cow"
+name = "Cow"
+x = 3.5
+y = 64.0
+z = 8.5
+health = 10.0
+max-health = 10.0
+width = 0.9
+height = 1.4
+[step.expect]
+world-lines = [
+  [0.25, 64.0, 5.25, 0.75, 64.0, 5.25, 4278255360, 2.0],
+  [0.25, 64.0, 5.25, 0.25, 66.0, 5.25, 4278255360, 2.0],
+  [0.25, 64.0, 5.25, 0.25, 64.0, 5.75, 4278255360, 2.0],
+  [0.75, 64.0, 5.25, 0.75, 66.0, 5.25, 4278255360, 2.0],
+  [0.75, 66.0, 5.25, 0.25, 66.0, 5.25, 4278255360, 2.0],
+  [0.25, 66.0, 5.25, 0.25, 66.0, 5.75, 4278255360, 2.0],
+  [0.25, 66.0, 5.75, 0.25, 64.0, 5.75, 4278255360, 2.0],
+  [0.25, 64.0, 5.75, 0.75, 64.0, 5.75, 4278255360, 2.0],
+  [0.75, 64.0, 5.75, 0.75, 64.0, 5.25, 4278255360, 2.0],
+  [0.25, 66.0, 5.75, 0.75, 66.0, 5.75, 4278255360, 2.0],
+  [0.75, 64.0, 5.75, 0.75, 66.0, 5.75, 4278255360, 2.0],
+  [0.75, 66.0, 5.25, 0.75, 66.0, 5.75, 4278255360, 2.0],
+  [0.5, 64.0, 0.5, 0.5, 64.0, 5.5, 4294967040, 1.0],
+]
+
+# With no mobs the probe clears its shapes: an empty list removes them.
+[[step]]
+ticks = 1
+entities = []
+[step.expect]
+world-lines = []

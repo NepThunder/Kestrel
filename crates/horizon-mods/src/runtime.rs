@@ -1,5 +1,5 @@
 //! Loading and calling mods with wasmtime's component model.
-use crate::manifest::{Manifest, Package, Side};
+use crate::manifest::{Capability, Manifest, Package, Side};
 use server_bindings::{
     HorizonServerMod,
     exports::horizon::mods::server_events::Registration as ServerRegistration,
@@ -19,6 +19,8 @@ mod bindings {
     wasmtime::component::bindgen!({
         path: "../horizon-mod-sdk/wit",
         world: "horizon-mod",
+        // `Output::SetBlocks` derives `PartialEq` over `world::BlockChange`.
+        additional_derives: [PartialEq],
     });
 }
 /// The server mods' world: `log` and `storage` are the client world's.
@@ -30,6 +32,11 @@ mod server_bindings {
         with: {
             "horizon:mods/log": super::bindings::horizon::mods::log,
             "horizon:mods/storage": super::bindings::horizon::mods::storage,
+            // `world` is the client world's too now (client mods import it
+            // read-only): one generated module, one `Host` impl, and one
+            // `add_to_linker` defining it, or the linker sees `get-block`
+            // twice and no mod starts.
+            "horizon:mods/world": super::bindings::horizon::mods::world,
         },
     });
 }
@@ -43,13 +50,15 @@ mod ui_bindings {
     });
 }
 pub use bindings::horizon::mods::{
+    entity::{Entity, Target},
     game::{Clock, Hit, Player},
     hud::{Corner, Line},
+    inventory::{Container, InvStack, PlayerInventory},
 };
 use bindings::{
     HorizonMod,
     exports::horizon::mods::events::Registration,
-    horizon::mods::{chat, command, game, hud, log as mod_log, storage},
+    horizon::mods::{chat, command, entity, game, hud, inventory, log as mod_log, storage},
 };
 pub use server_bindings::{
     exports::horizon::mods::server_events::{
@@ -78,9 +87,10 @@ use render_bindings::horizon::mods::input;
 pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, ItemUse};
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
-    Corner as RenderCorner, FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape,
-    Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, Shape, SpriteShape,
-    TextShape, Zoom as ModZoom,
+    CameraOverride as ModCameraOverride, CameraPose as ModCameraPose, Corner as RenderCorner,
+    FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape, Minimap as ModMinimap,
+    Point as RenderPoint, QuadShape, Rect as RenderRect, ScreenPoint as ModScreenPoint, Shape,
+    SpriteShape, TextShape, WorldBox, WorldLine, WorldPoint, WorldShape, Zoom as ModZoom,
 };
 use render_bindings::{RenderHost, horizon::mods::render};
 /// Capability `recipes`'s imports (docs/mods.md): the game's recipes and items.
@@ -119,6 +129,11 @@ const CHAT_PER_CALL: usize = 8;
 const QUIET_PER_CALL: usize = 256;
 /// How far `game.raycast` sees, in blocks.
 pub const RAYCAST_MAX: f32 = 1024.0;
+/// How far `entity.targeted` sees, in blocks.
+pub const ENTITY_TARGET_MAX: f32 = 128.0;
+/// How far `entity.entities` lists, in blocks, and how many it lists at most.
+pub const ENTITY_LIST_RANGE: f64 = 128.0;
+pub const ENTITY_LIST_MAX: usize = 256;
 const HUD_LINES: usize = 16;
 const LINE_CHARS: usize = 256;
 /// Total bytes a mod's `storage` may hold on disk, across all its keys.
@@ -134,7 +149,8 @@ const STORAGE_MAX_KEYS: usize = 64;
 const STORAGE_WRITE_BUDGET: u64 = 1 << 20;
 
 /// What mods may read of the game, copied once per tick by the game.
-#[derive(Clone, Debug, Default)]
+/// The default is the vanilla one: brightness 0.5, fog on.
+#[derive(Clone, Debug)]
 pub struct Snapshot {
     pub player: Option<Player>,
     pub clock: Option<Clock>,
@@ -167,6 +183,78 @@ pub struct Snapshot {
     pub placing: bool,
     /// The player is in creative mode (`recipes.give`).
     pub creative: bool,
+    /// The player's own inventory, armour, offhand, crafting grid and
+    /// carried stack (capability `inventory`); the game fills it once
+    /// per tick, and only while a mod reads it
+    /// ([`Mods::wants_inventory`]). None before any inventory mod runs.
+    pub inventory: Option<PlayerInventory>,
+    /// The open container's kind, slots and data slots (capability
+    /// `inventory`); None when no container screen is open, so a mod
+    /// can never read a container after closing it.
+    pub open_container: Option<Container>,
+    /// The living mobs within 128 blocks, nearest first, at most 256
+    /// (capability `entity`); the game fills it once per tick, and only
+    /// while a mod reads it ([`Mods::wants_entities`]). Empty in
+    /// multiplayer in v1, and on the title screen.
+    pub entities: Vec<Entity>,
+    /// The mob under the crosshair, if any, with its distance from the
+    /// eye (capability `entity`); None when nothing is hit, on the title
+    /// screen, or while no mod reads it.
+    pub targeted: Option<Target>,
+    /// The player's stored Brightness setting (`render.get-gamma`'s
+    /// fallback when no running mod sets one).
+    pub gamma: f32,
+    /// The player's stored Fog setting (`render.get-fog`'s fallback).
+    pub fog: bool,
+    /// The camera the last frame rendered from (capability `render`'s
+    /// `get-camera` / `project`): the mod override when one is active,
+    /// else the player's own camera, with the effective field of view.
+    /// None before the first frame renders, and on the title screen
+    /// until the game fills in the panorama's pose.
+    pub camera: Option<SnapshotCamera>,
+}
+
+impl Default for Snapshot {
+    fn default() -> Self {
+        Self {
+            player: None,
+            clock: None,
+            gui_size: (0.0, 0.0),
+            held: None,
+            frame: (0, 0, 0),
+            mappings: Vec::new(),
+            cps: (0, 0),
+            font_widths: Arc::from([]),
+            players: Vec::new(),
+            view_hit: None,
+            recipes: None,
+            known_recipes: Arc::from([]),
+            placing: false,
+            creative: false,
+            inventory: None,
+            open_container: None,
+            entities: Vec::new(),
+            targeted: None,
+            gamma: 0.5,
+            fog: true,
+            camera: None,
+        }
+    }
+}
+
+/// The camera a frame renders from, as the game fills it into the
+/// [`Snapshot`] for `render.get-camera` / `render.project`: the position
+/// and look in blocks and degrees, and the effective field of view
+/// (the zoomed one, as the player sees it).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SnapshotCamera {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub roll: f32,
+    pub fov: f32,
 }
 
 /// Capability `recipes`'s tables: `items` in the registry's order, which
@@ -257,6 +345,12 @@ pub trait WorldView: std::any::Any + Send {
     fn block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String>;
     /// The biome at a position, `minecraft:plains`; `None` as for blocks.
     fn biome(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String>;
+    /// The light at a position, `(block, sky)`, each 0 to 15; `None`
+    /// where no chunk of that dimension is loaded, its light has not
+    /// been computed yet, or the position is outside the column's
+    /// build range. Never a guessed value: an unlit chunk would read
+    /// as full sky light, so it reads as `None` instead.
+    fn light(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<(u8, u8)>;
     /// Whether `dimension` is one the server has.
     fn has_dimension(&self, dimension: &str) -> bool;
     /// `Err` (why) for a state string that names no block state.
@@ -300,10 +394,21 @@ impl Entry {
     /// The running mod has a settings page (capability `ui` set widgets
     /// with `ui.set-settings`, or `input` registered keys the player may
     /// bind there): its row in Options > Mods gains a button.
+    ///
+    /// Declaring the `ui` capability counts from load: a mod only pushes
+    /// its widgets in `ui_settings_opened`, which fires when the page
+    /// opens, so waiting for widgets first would hide the button forever.
+    /// A mod with no `ui` capability, no keys and no widgets still has
+    /// none; opening the page still bails when it stays empty.
     pub fn has_ui_settings(&self) -> bool {
         self.run.as_ref().is_some_and(|r| {
             let d = r.store.data();
-            !d.ui.settings.is_empty() || !d.input.keys.is_empty()
+            !d.ui.settings.is_empty()
+                || !d.input.keys.is_empty()
+                || self
+                    .manifest
+                    .as_ref()
+                    .is_some_and(|m| m.capabilities.contains(&Capability::Ui))
         })
     }
 }
@@ -318,6 +423,12 @@ struct Running {
     raycasts: bool,
     /// It imports capability `recipes`.
     reads_recipes: bool,
+    /// It imports capability `inventory`.
+    reads_inventory: bool,
+    /// It imports capability `entity`.
+    reads_entities: bool,
+    /// It imports `render.set-world`.
+    reads_world_shapes: bool,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -408,6 +519,8 @@ struct State {
     ui: UiState,
     /// Capability `render`'s HUD shapes, drawn until replaced.
     shapes: Vec<Shape>,
+    /// Capability `render`'s world shapes, drawn until replaced.
+    world_shapes: Vec<WorldShape>,
     /// Capability `render`'s corner panel.
     corner: Option<CornerPanel>,
     /// Capability `render`'s zoom, when the mod zooms.
@@ -416,6 +529,34 @@ struct State {
     minimap: Option<ModMinimap>,
     /// Capability `render`'s far terrain, when the mod draws one.
     far_terrain: Option<ModFarTerrain>,
+    /// Capability `render`'s gamma, when the mod sets one.
+    gamma: Option<f32>,
+    /// Capability `render`'s distance-fog flag, when the mod sets one.
+    fog: Option<bool>,
+    /// Capability `render`'s camera override, when the mod sets one.
+    camera: Option<ModCameraOverride>,
+    /// How many times this mod called `set-camera`: the game re-reads
+    /// the look whenever the winning mod's count moves, so a mod
+    /// calling `set-camera` every tick with fixed angles keeps the
+    /// mouse from drifting it, while a mod that calls only on change
+    /// leaves the mouse look alone.
+    camera_seq: u64,
+    /// The strongest gamma / fog-off the other running mods asked for
+    /// when this mod's current call started, so `get-gamma` / `get-fog`
+    /// read the effective value, not just this mod's own (`Mods::call`
+    /// refreshes them before every call).
+    aggregate_gamma: Option<f32>,
+    aggregate_fog_off: bool,
+    /// The camera the first running mod drives when this mod's current
+    /// call started (`Mods::call` refreshes it before every call), so
+    /// `get-camera` / `project` read the effective camera even before
+    /// this mod sets anything of its own.
+    aggregate_camera: Option<ModCameraOverride>,
+    /// Whether `aggregate_camera` is this mod's own override: `set-camera`
+    /// keeps the aggregate live within a call only when this mod is (or
+    /// becomes) the winner, and `Mods::call` refreshes it before every
+    /// call.
+    aggregate_is_mine: bool,
     input: InputState,
     browser: BrowserState,
     /// Capability `storage`'s folder; made on first `set`.
@@ -427,6 +568,9 @@ struct State {
     storage_budget: u64,
     limits: StoreLimits,
     world: WorldSlot,
+    /// Whether this mod runs where the world is simulated: only a server
+    /// mod may change blocks (`world.set-blocks`); a client mod reads only.
+    server: bool,
 }
 
 /// The installed mods and the engine running them. `Mods::default()` is
@@ -540,8 +684,9 @@ impl Mods {
                 .map_err(|e| e.to_string())?;
             players::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
-            mod_world::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
+            // No `mod_world::add_to_linker` here: `horizon-mod` imports
+            // `world` too, so `HorizonMod::add_to_linker` already defined
+            // it; a second definition stops every mod from starting.
             UiHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             RenderHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
@@ -555,7 +700,7 @@ impl Mods {
 
     /// Starts a mod's code; `Ok(None)` for a content-only mod, which has
     /// nothing to run (the game reads its content before the world loads).
-    /// `path` is the mod's own `.hmod` or folder, for capability `storage`'s
+    /// `path` is the mod's own `.kmod` or folder, for capability `storage`'s
     /// per-mod directory.
     fn start(
         &mut self,
@@ -615,10 +760,19 @@ impl Mods {
             panel: None,
             ui: UiState::default(),
             shapes: Vec::new(),
+            world_shapes: Vec::new(),
             corner: None,
             zoom: None,
             minimap: None,
             far_terrain: None,
+            gamma: None,
+            fog: None,
+            camera: None,
+            camera_seq: 0,
+            aggregate_camera: None,
+            aggregate_is_mine: false,
+            aggregate_gamma: None,
+            aggregate_fog_off: false,
             input: InputState::default(),
             browser: BrowserState::default(),
             data_dir,
@@ -628,6 +782,7 @@ impl Mods {
                 .instances(16)
                 .build(),
             world,
+            server,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
@@ -684,6 +839,9 @@ impl Mods {
             hooks,
             raycasts: functions.iter().any(|f| f == "game.raycast"),
             reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
+            reads_inventory: functions.iter().any(|f| f.starts_with("inventory.")),
+            reads_entities: functions.iter().any(|f| f.starts_with("entity.")),
+            reads_world_shapes: functions.iter().any(|f| f == "render.set-world"),
         }))
     }
 
@@ -762,9 +920,21 @@ impl Mods {
         fuel: u64,
         f: impl FnOnce(&mut Running) -> wasmtime::Result<R>,
     ) -> Option<R> {
+        // The aggregate as the call starts, from the other running mods,
+        // so the mod's getters read the effective value even before it
+        // sets anything of its own.
+        let (aggregate_gamma, aggregate_fog_off) = (self.gamma_except(i), self.fog_off_except(i));
+        // The camera aggregate is the winning override, whoever holds
+        // it — including this mod, when it already does.
+        let aggregate_camera = self.camera().map(|(camera, _)| camera);
+        let aggregate_is_mine = self.camera_winner() == Some(i);
         let entry = &mut self.entries[i];
         let run = entry.run.as_mut()?;
         run.store.data_mut().snapshot = self.snapshot.clone();
+        run.store.data_mut().aggregate_camera = aggregate_camera;
+        run.store.data_mut().aggregate_is_mine = aggregate_is_mine;
+        run.store.data_mut().aggregate_gamma = aggregate_gamma;
+        run.store.data_mut().aggregate_fog_off = aggregate_fog_off;
         run.store.data_mut().storage_budget = STORAGE_WRITE_BUDGET;
         let started = Instant::now();
         let result = run.store.set_fuel(fuel).and_then(|()| f(run));
@@ -1018,6 +1188,20 @@ impl Mods {
             .iter()
             .any(|e| e.run.as_ref().is_some_and(|r| r.reads_recipes))
     }
+    /// Some running mod reads capability `inventory`: the snapshot needs
+    /// [`Snapshot::inventory`] and [`Snapshot::open_container`].
+    pub fn wants_inventory(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.reads_inventory))
+    }
+    /// Some running mod reads capability `entity`: the snapshot needs
+    /// [`Snapshot::entities`] and [`Snapshot::targeted`].
+    pub fn wants_entities(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.reads_entities))
+    }
     /// Some running mod has a `frame` hook: the game refreshes the snapshot
     /// every frame for it.
     pub fn wants_frames(&self) -> bool {
@@ -1090,6 +1274,30 @@ impl Mods {
         input.bindings.push((name.to_owned(), key.to_owned()));
         input.rebind(name, key.to_owned());
         true
+    }
+    /// Mod `i`'s keys back to the defaults they registered, forgetting the
+    /// player's choices; live, so a held key lets go first. False when the
+    /// mod isn't running.
+    pub fn reset_keys(&mut self, i: usize) -> bool {
+        let Some(run) = self.entries.get_mut(i).and_then(|e| e.run.as_mut()) else {
+            return false;
+        };
+        run.store.data_mut().input.reset_keys();
+        true
+    }
+    /// Every other running mod's keys: (mod name, key), for the duplicate
+    /// warnings on the Mods screens. The caller's own index is skipped, so
+    /// a mod's keys never warn against themselves.
+    pub fn other_mod_keys(&self, skip: usize) -> impl Iterator<Item = (&str, &ModKey)> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(move |(i, _)| *i != skip)
+            .filter_map(|(_, e)| e.run.as_ref())
+            .flat_map(|r| {
+                let d = r.store.data();
+                d.input.keys.iter().map(move |k| (d.name.as_str(), k))
+            })
     }
     /// The use button went down with `item`: `use-start` to each mod that
     /// claimed it.
@@ -1179,6 +1387,55 @@ impl Mods {
             .iter()
             .find_map(|e| e.run.as_ref()?.store.data().far_terrain)
     }
+    /// The camera the first running mod drives (capability `render`),
+    /// with the call count of the `set-camera` that set it.
+    pub fn camera(&self) -> Option<(ModCameraOverride, u64)> {
+        self.entries.iter().find_map(|e| {
+            let data = e.run.as_ref()?.store.data();
+            data.camera.map(|camera| (camera, data.camera_seq))
+        })
+    }
+    /// The first running mod driving a camera, if any.
+    fn camera_winner(&self) -> Option<usize> {
+        self.entries.iter().position(|e| {
+            e.run
+                .as_ref()
+                .is_some_and(|run| run.store.data().camera.is_some())
+        })
+    }
+    /// The strongest gamma a running mod asks for (capability `render`).
+    pub fn gamma(&self) -> Option<f32> {
+        strongest_gamma(self.gamma_values(None))
+    }
+    /// The strongest gamma a running mod other than `skip` asks for: what
+    /// that mod's `get-gamma` reads beside its own value, so a mod that
+    /// lowers its own gamma after setting it high does not keep reading
+    /// its old value back.
+    fn gamma_except(&self, skip: usize) -> Option<f32> {
+        strongest_gamma(self.gamma_values(Some(skip)))
+    }
+    fn gamma_values(&self, skip: Option<usize>) -> impl Iterator<Item = f32> + '_ {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(move |(i, _)| Some(*i) != skip)
+            .filter_map(|(_, e)| e.run.as_ref()?.store.data().gamma)
+    }
+    /// Whether any running mod turned distance fog off (capability `render`).
+    pub fn fog_off(&self) -> bool {
+        any_fog_off(self.fog_values(None))
+    }
+    /// Whether any running mod other than `skip` turned distance fog off.
+    fn fog_off_except(&self, skip: usize) -> bool {
+        any_fog_off(self.fog_values(Some(skip)))
+    }
+    fn fog_values(&self, skip: Option<usize>) -> impl Iterator<Item = bool> + '_ {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(move |(i, _)| Some(*i) != skip)
+            .filter_map(|(_, e)| e.run.as_ref()?.store.data().fog)
+    }
     fn inputs(&self) -> impl Iterator<Item = &InputState> {
         self.entries
             .iter()
@@ -1199,6 +1456,33 @@ impl Mods {
             .iter()
             .filter_map(|e| e.run.as_ref())
             .flat_map(|r| &r.store.data().shapes)
+    }
+    /// Some running mod draws world shapes (`render.set-world`): the game
+    /// drains them into the frame's depth-tested lines. Any mod importing
+    /// `render` sets this — [`api_level::imports`] lists every function
+    /// of an imported interface — so the gate saves work only while no
+    /// render mod runs at all.
+    pub fn wants_world_shapes(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.reads_world_shapes))
+    }
+    /// The running mods' world shapes (capability `render`), each mod's
+    /// in its own order, mods in load order.
+    pub fn world_shapes(&self) -> impl Iterator<Item = &WorldShape> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .flat_map(|r| &r.store.data().world_shapes)
+    }
+    /// The running mods' world shapes as depth-tested lines, in the same
+    /// order: one line per line, a box's twelve edges.
+    pub fn world_lines(&self) -> Vec<WorldDrawLine> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .flat_map(|r| world_shape_lines(&r.store.data().world_shapes))
+            .collect()
     }
     /// The screen mod `i` last pushed with `ui.open-screen`, while it is up.
     pub fn screen(&self, i: usize) -> Option<&UiScreen> {
@@ -1412,6 +1696,36 @@ impl game::Host for State {
         (*at <= distance.min(RAYCAST_MAX) && !distance.is_nan()).then(|| hit.clone())
     }
 }
+/// Capability `inventory`: the player's own inventory and the open
+/// container, read-only by absence — this interface has no write function
+/// to refuse, unlike `world.set-blocks`.
+impl inventory::Host for State {
+    fn inventory(&mut self) -> PlayerInventory {
+        self.snapshot.inventory.clone().unwrap_or(PlayerInventory {
+            selected: 0,
+            saturation: 0.0,
+            slots: Vec::new(),
+            carried: None,
+        })
+    }
+    fn open_container(&mut self) -> Option<Container> {
+        self.snapshot.open_container.clone()
+    }
+}
+/// Capability `entity`: the living mobs around the player and the one
+/// under the crosshair, read-only by absence — this interface has no
+/// write function to refuse, unlike `world.set-blocks`.
+impl entity::Host for State {
+    fn entities(&mut self) -> Vec<Entity> {
+        self.snapshot.entities.clone()
+    }
+    fn targeted(&mut self, distance: f32) -> Option<Target> {
+        let target = self.snapshot.targeted.clone()?;
+        // NaN compares false: no hit. A request past the cap gets the
+        // capped result, as `game.raycast` does with `RAYCAST_MAX`.
+        (target.distance <= distance.min(ENTITY_TARGET_MAX) && !distance.is_nan()).then_some(target)
+    }
+}
 impl browser::Host for State {
     fn set_items(&mut self, items: Vec<BrowserStack>) {
         self.browser.items = items
@@ -1559,16 +1873,55 @@ impl chat::Host for State {
         });
     }
 }
-impl mod_world::Host for State {
-    fn get_block(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<String> {
+impl State {
+    /// One block read through the lent world: `None` where nothing is
+    /// lent or no chunk is loaded there.
+    fn view_block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String> {
         let view = self.world.lock().ok()?;
-        view.as_ref()?.block(&dimension, x, y, z)
+        view.as_ref()?.block(dimension, x, y, z)
     }
-    fn get_biome(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<String> {
+    /// One biome read, as [`State::view_block`].
+    fn view_biome(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String> {
         let view = self.world.lock().ok()?;
-        view.as_ref()?.biome(&dimension, x, y, z)
+        view.as_ref()?.biome(dimension, x, y, z)
     }
-    fn set_blocks(&mut self, dimension: String, blocks: Vec<BlockChange>) -> Result<(), String> {
+    /// The block states at `positions`, in order, through the lent world.
+    fn view_blocks(&self, dimension: &str, positions: &[(i32, i32, i32)]) -> Vec<Option<String>> {
+        let Ok(view) = self.world.lock() else {
+            return positions.iter().map(|_| None).collect();
+        };
+        let Some(view) = view.as_ref() else {
+            return positions.iter().map(|_| None).collect();
+        };
+        positions
+            .iter()
+            .map(|&(x, y, z)| view.block(dimension, x, y, z))
+            .collect()
+    }
+    /// The light at `positions`, in order, as [`State::view_blocks`].
+    fn view_lights(&self, dimension: &str, positions: &[(i32, i32, i32)]) -> Vec<Option<(u8, u8)>> {
+        let Ok(view) = self.world.lock() else {
+            return positions.iter().map(|_| None).collect();
+        };
+        let Some(view) = view.as_ref() else {
+            return positions.iter().map(|_| None).collect();
+        };
+        positions
+            .iter()
+            .map(|&(x, y, z)| view.light(dimension, x, y, z))
+            .collect()
+    }
+    /// `set-blocks`, shared by the client and server hosts: a client mod
+    /// is refused outright and queues nothing; a server mod's changes are
+    /// checked now and queued for the game to apply after the call.
+    fn set_blocks_checked(
+        &mut self,
+        dimension: String,
+        blocks: Vec<BlockChange>,
+    ) -> Result<(), String> {
+        if !self.server {
+            return Err("client mods cannot change blocks".into());
+        }
         if blocks.len() > BLOCKS_PER_CALL {
             return Err(format!(
                 "{} blocks: at most {BLOCKS_PER_CALL} per call",
@@ -1591,6 +1944,58 @@ impl mod_world::Host for State {
             });
         }
         Ok(())
+    }
+}
+
+impl mod_world::Host for State {
+    fn get_block(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<String> {
+        self.view_block(&dimension, x, y, z)
+    }
+    fn get_biome(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<String> {
+        self.view_biome(&dimension, x, y, z)
+    }
+    fn get_blocks(
+        &mut self,
+        dimension: String,
+        positions: Vec<mod_world::BlockPos>,
+    ) -> Vec<mod_world::BlockResult> {
+        if positions.len() > BLOCKS_PER_CALL {
+            return Vec::new();
+        }
+        let at: Vec<(i32, i32, i32)> = positions.iter().map(|p| (p.x, p.y, p.z)).collect();
+        self.view_blocks(&dimension, &at)
+            .into_iter()
+            .zip(positions)
+            .map(|(state, p)| mod_world::BlockResult {
+                x: p.x,
+                y: p.y,
+                z: p.z,
+                state,
+            })
+            .collect()
+    }
+    fn get_lights(
+        &mut self,
+        dimension: String,
+        positions: Vec<mod_world::BlockPos>,
+    ) -> Vec<mod_world::LightResult> {
+        if positions.len() > BLOCKS_PER_CALL {
+            return Vec::new();
+        }
+        let at: Vec<(i32, i32, i32)> = positions.iter().map(|p| (p.x, p.y, p.z)).collect();
+        self.view_lights(&dimension, &at)
+            .into_iter()
+            .zip(positions)
+            .map(|(light, p)| mod_world::LightResult {
+                x: p.x,
+                y: p.y,
+                z: p.z,
+                light: light.map(|(block, sky)| mod_world::LightValue { block, sky }),
+            })
+            .collect()
+    }
+    fn set_blocks(&mut self, dimension: String, blocks: Vec<BlockChange>) -> Result<(), String> {
+        self.set_blocks_checked(dimension, blocks)
     }
 }
 impl players::Host for State {
@@ -1621,6 +2026,9 @@ pub struct ModKey {
     pub label: String,
     /// `key.keyboard.r`.
     pub key: String,
+    /// The key `register-key` gave, before the player's choice: what a
+    /// reset restores. `rebind` never touches it.
+    pub default: String,
 }
 
 /// What capability `input` holds for one mod.
@@ -1667,6 +2075,19 @@ impl InputState {
             self.push(InputEvent::KeyUp(name));
         }
     }
+    /// Every key back to the default it registered with; the player's
+    /// choices are forgotten. A held key lets go first, as `rebind` does.
+    fn reset_keys(&mut self) {
+        self.bindings.clear();
+        let defaults: Vec<(String, String)> = self
+            .keys
+            .iter()
+            .map(|k| (k.name.clone(), k.default.clone()))
+            .collect();
+        for (name, key) in defaults {
+            self.rebind(&name, key);
+        }
+    }
     fn push(&mut self, event: InputEvent) {
         if self.events.len() == INPUT_EVENTS {
             self.events.pop_front();
@@ -1686,18 +2107,24 @@ impl input::Host for State {
             ));
         }
         let (name, label) = (clip(name), clip(label));
+        let default = key.clone();
         let key = match self.input.bindings.iter().find(|(n, _)| *n == name) {
             Some((_, chosen)) => chosen.clone(),
             None => key,
         };
         if let Some(k) = self.input.keys.iter_mut().find(|k| k.name == name) {
-            (k.label, k.key) = (label, key);
+            (k.label, k.key, k.default) = (label, key, default);
             return Ok(());
         }
         if self.input.keys.len() == KEYS {
             return Err(format!("a mod may register {KEYS} keys"));
         }
-        self.input.keys.push(ModKey { name, label, key });
+        self.input.keys.push(ModKey {
+            name,
+            label,
+            key,
+            default,
+        });
         Ok(())
     }
     fn held(&mut self) -> Option<HeldItem> {
@@ -1723,6 +2150,15 @@ impl input::Host for State {
 
 /// HUD shapes one mod may keep (capability `render`).
 const SHAPES: usize = 1024;
+/// World-shape lines one mod may keep (capability `render`): a box
+/// counts as its twelve edges.
+pub const WORLD_SHAPE_LINES: usize = 1024;
+/// A world line's width in pixels.
+pub const WORLD_LINE_WIDTH: (f32, f32) = (0.5, 8.0);
+
+/// One depth-tested world line, as the game's gizmos draw it: the ends
+/// in blocks, a 0xAARRGGBB colour, a width in pixels.
+pub type WorldDrawLine = ([f64; 3], [f64; 3], u32, f32);
 /// The longest jolt `render.shake` makes, in seconds.
 const SHAKE_SECONDS: f32 = 10.0;
 /// `render.set-zoom`'s limits: `Camera.tickFov` keeps the modifier at 0.1
@@ -1732,6 +2168,182 @@ const TURN_MIN: f32 = 0.05;
 /// `set-minimap`'s side in GUI pixels and its blocks per map pixel.
 const MINIMAP_SIZE: (f32, f32) = (16.0, 256.0);
 const MINIMAP_SCALE: (f32, f32) = (0.5, 4.0);
+/// `render.set-gamma`'s limits: 0.0 the darkest the lightmap goes, 10.0
+/// the 1000% Fullbright value. A non-finite value reads as 1.0, not 0.0,
+/// which would black the screen on a NaN.
+const GAMMA_MAX: f32 = 10.0;
+fn clamp_gamma(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, GAMMA_MAX)
+    } else {
+        1.0
+    }
+}
+/// The strongest of the gammas running mods set, if any.
+fn strongest_gamma(values: impl Iterator<Item = f32>) -> Option<f32> {
+    values.max_by(|a, b| a.total_cmp(b))
+}
+/// Whether any running mod turned distance fog off.
+fn any_fog_off(mut values: impl Iterator<Item = bool>) -> bool {
+    values.any(|fog| !fog)
+}
+/// `render.set-camera`'s distance cap, in blocks from the player's feet:
+/// a freecam cannot scout past it. The offset is scaled back to the cap,
+/// so the camera stops at the sphere instead of snapping back to the
+/// player.
+const CAMERA_DISTANCE_MAX: f64 = 64.0;
+/// The player's eye above their feet, for a freelook camera and for
+/// `get-camera`'s fallback when the last frame's camera is unknown.
+const CAMERA_EYE_HEIGHT: f64 = 1.62;
+/// `render.set-camera`'s value with the look wrapped/clamped and the
+/// position capped at [`CAMERA_DISTANCE_MAX`] from `feet` (the player's
+/// feet, when the game knows them): None when a non-finite position
+/// drops the whole call — the previous override, if any, stays.
+fn sanitize_camera(camera: ModCameraOverride, feet: Option<[f64; 3]>) -> Option<ModCameraOverride> {
+    let position = match camera.position {
+        None => None,
+        Some(p) if p.x.is_finite() && p.y.is_finite() && p.z.is_finite() => {
+            Some(cap_camera_position(p, feet))
+        }
+        Some(_) => return None,
+    };
+    // Yaw wraps (a mod turning past 180 keeps turning); pitch and roll
+    // clamp; a non-finite look reads as 0.0 for that field, so a NaN
+    // never poisons the view matrix.
+    let yaw = if camera.yaw.is_finite() {
+        (camera.yaw + 180.0).rem_euclid(360.0) - 180.0
+    } else {
+        0.0
+    };
+    let finite = |v: f32, lo: f32, hi: f32| if v.is_finite() { v.clamp(lo, hi) } else { 0.0 };
+    Some(ModCameraOverride {
+        position,
+        yaw,
+        pitch: finite(camera.pitch, -90.0, 90.0),
+        roll: finite(camera.roll, -180.0, 180.0),
+    })
+}
+/// A freecam position scaled back to the [`CAMERA_DISTANCE_MAX`] sphere
+/// around `feet`, when it is past it.
+fn cap_camera_position(p: WorldPoint, feet: Option<[f64; 3]>) -> WorldPoint {
+    let Some(feet) = feet else { return p };
+    let offset = [p.x - feet[0], p.y - feet[1], p.z - feet[2]];
+    let len = (offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2]).sqrt();
+    if len > CAMERA_DISTANCE_MAX {
+        let s = CAMERA_DISTANCE_MAX / len;
+        WorldPoint {
+            x: feet[0] + offset[0] * s,
+            y: feet[1] + offset[1] * s,
+            z: feet[2] + offset[2] * s,
+        }
+    } else {
+        p
+    }
+}
+/// The camera `get-camera` / `project` read: the last frame's rendered
+/// camera when the game filled one in, else the winning override, else
+/// this mod's own just-set override, else the player's own eye.
+fn effective_camera(
+    snapshot_camera: Option<SnapshotCamera>,
+    aggregate_camera: Option<ModCameraOverride>,
+    own_camera: Option<ModCameraOverride>,
+    player: Option<&Player>,
+) -> Option<SnapshotCamera> {
+    if let Some(camera) = snapshot_camera {
+        return Some(camera);
+    }
+    let pose = |camera: ModCameraOverride| {
+        let (x, y, z) = match camera.position {
+            Some(p) => (p.x, p.y, p.z),
+            // Freelook: the camera stays at the player's eye.
+            None => player.map_or((0.0, 0.0, 0.0), |p| (p.x, p.y + CAMERA_EYE_HEIGHT, p.z)),
+        };
+        SnapshotCamera {
+            x,
+            y,
+            z,
+            yaw: camera.yaw,
+            pitch: camera.pitch,
+            roll: camera.roll,
+            // The game's fill carries the zoomed field of view; before
+            // the first frame there is no zoom to read, so the default.
+            fov: 70.0,
+        }
+    };
+    aggregate_camera.or(own_camera).map(pose).or_else(|| {
+        player.map(|p| SnapshotCamera {
+            x: p.x,
+            y: p.y + CAMERA_EYE_HEIGHT,
+            z: p.z,
+            yaw: p.yaw,
+            pitch: p.pitch,
+            roll: 0.0,
+            fov: 70.0,
+        })
+    })
+}
+/// `render.project`'s world-to-screen projection, through `camera`:
+/// the locator bar's (`Camera.getViewRotationProjectionMatrix`, through
+/// view space), extended to the width with the aspect ratio and to the
+/// mod roll. No bob: a sub-degree wobble the label should not inherit.
+/// `visible` is false behind the camera; `x` and `y` are still given,
+/// so a mod can draw an off-screen arrow itself.
+fn project_point(camera: &SnapshotCamera, gui: (f32, f32), point: WorldPoint) -> ModScreenPoint {
+    if !(point.x.is_finite() && point.y.is_finite() && point.z.is_finite()) {
+        return ModScreenPoint {
+            x: 0.0,
+            y: 0.0,
+            visible: false,
+            depth: 0.0,
+        };
+    }
+    let (w, h) = (f64::from(gui.0), f64::from(gui.1));
+    let aspect = if h > 0.0 { w / h } else { 1.0 };
+    let fov = if camera.fov.is_finite() && (0.0..180.0).contains(&f64::from(camera.fov)) {
+        f64::from(camera.fov)
+    } else {
+        70.0
+    };
+    let focal = 1.0 / (fov / 2.0).to_radians().tan();
+    let o = [point.x - camera.x, point.y - camera.y, point.z - camera.z];
+    let (yaw, pitch) = (
+        f64::from(camera.yaw).to_radians(),
+        f64::from(camera.pitch).to_radians(),
+    );
+    let (sy, cy, sp, cp) = (yaw.sin(), yaw.cos(), pitch.sin(), pitch.cos());
+    // The locator bar's basis: forward and up from yaw and pitch, right
+    // as forward × up (the game's `Camera.left`, negated).
+    let forward = [-sy * cp, -sp, cy * cp];
+    let up0 = [-sy * sp, cp, cy * sp];
+    let cross = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let right0 = cross(forward, up0);
+    // Roll: the rendered pose rotates the view by -roll about the view
+    // direction (positive roll banks the horizon clockwise as the player
+    // sees it), so the basis rotates the same way.
+    let roll = -f64::from(camera.roll).to_radians();
+    let (sr, cr) = (roll.sin(), roll.cos());
+    let scale = |a: [f64; 3], s: f64| [a[0] * s, a[1] * s, a[2] * s];
+    let add = |a: [f64; 3], b: [f64; 3]| [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+    let right = add(scale(right0, cr), scale(up0, -sr));
+    let up = add(scale(right0, sr), scale(up0, cr));
+    let dot = |a: [f64; 3]| a[0] * o[0] + a[1] * o[1] + a[2] * o[2];
+    let depth = dot(forward);
+    // A point dead to the side has no depth: divide by a breath instead
+    // of zero, so it projects far off-screen rather than to infinity.
+    let d = if depth == 0.0 { 1e-9 } else { depth };
+    ModScreenPoint {
+        x: (((dot(right) * focal / (d * aspect) + 1.0) / 2.0) * w) as f32,
+        y: (((1.0 - dot(up) * focal / d) / 2.0) * h) as f32,
+        visible: depth > 0.0,
+        depth,
+    }
+}
 /// `set-far-terrain`'s distance in chunks, as the LOD Distance setting's.
 const FAR_TERRAIN_DISTANCE: (u32, u32) = (64, 1024);
 
@@ -1773,9 +2385,108 @@ fn clip_shapes(shapes: Vec<Shape>) -> Vec<Shape> {
         .collect()
 }
 
+/// The twelve edges of a world box, in `CuboidGizmo.emit`'s order — the
+/// same order `horizon_client::gizmos::Gizmos::cuboid` draws them.
+fn box_edges(min: [f64; 3], max: [f64; 3]) -> [([f64; 3], [f64; 3]); 12] {
+    let [x0, y0, z0] = min;
+    let [x1, y1, z1] = max;
+    [
+        ([x0, y0, z0], [x1, y0, z0]),
+        ([x0, y0, z0], [x0, y1, z0]),
+        ([x0, y0, z0], [x0, y0, z1]),
+        ([x1, y0, z0], [x1, y1, z0]),
+        ([x1, y1, z0], [x0, y1, z0]),
+        ([x0, y1, z0], [x0, y1, z1]),
+        ([x0, y1, z1], [x0, y0, z1]),
+        ([x0, y0, z1], [x1, y0, z1]),
+        ([x1, y0, z1], [x1, y0, z0]),
+        ([x0, y1, z1], [x1, y1, z1]),
+        ([x1, y0, z1], [x1, y1, z1]),
+        ([x1, y1, z0], [x1, y1, z1]),
+    ]
+}
+
+/// Clips a `render.set-world` submission to the line budget (a box
+/// counts 12): shapes past the budget are dropped, not rejected, and a
+/// shape that does not fit is skipped while a later cheaper one still
+/// fits. Non-finite coordinates drop the shape (a NaN end would poison
+/// the vertex buffer); widths clamp to [`WORLD_LINE_WIDTH`], a
+/// non-finite one reading 1.
+fn clip_world_shapes(shapes: Vec<WorldShape>) -> Vec<WorldShape> {
+    let mut budget = WORLD_SHAPE_LINES;
+    let mut out = Vec::new();
+    let width = |w: f32| {
+        if w.is_finite() {
+            w.clamp(WORLD_LINE_WIDTH.0, WORLD_LINE_WIDTH.1)
+        } else {
+            1.0
+        }
+    };
+    let point_ok = |p: &WorldPoint| p.x.is_finite() && p.y.is_finite() && p.z.is_finite();
+    for shape in shapes {
+        let cost = match &shape {
+            WorldShape::Line(_) => 1,
+            WorldShape::Box(_) => 12,
+        };
+        if cost > budget {
+            continue;
+        }
+        let shape = match shape {
+            WorldShape::Line(mut l) => {
+                if !point_ok(&l.start) || !point_ok(&l.end) {
+                    continue;
+                }
+                l.width = width(l.width);
+                WorldShape::Line(l)
+            }
+            WorldShape::Box(mut b) => {
+                if !point_ok(&b.min) || !point_ok(&b.max) {
+                    continue;
+                }
+                b.width = width(b.width);
+                WorldShape::Box(b)
+            }
+        };
+        budget -= cost;
+        out.push(shape);
+    }
+    out
+}
+
+/// A mod's world shapes as depth-tested lines: one line per line, a
+/// box's twelve edges in [`box_edges`] order. This is the expansion the
+/// game drains into the frame's lines, so the sandbox's edge-order
+/// check covers the real drain.
+pub fn world_shape_lines(shapes: &[WorldShape]) -> Vec<WorldDrawLine> {
+    let mut out = Vec::new();
+    for shape in shapes {
+        match shape {
+            WorldShape::Line(l) => out.push((
+                [l.start.x, l.start.y, l.start.z],
+                [l.end.x, l.end.y, l.end.z],
+                l.color,
+                l.width,
+            )),
+            WorldShape::Box(b) => {
+                let min = [b.min.x, b.min.y, b.min.z];
+                let max = [b.max.x, b.max.y, b.max.z];
+                out.extend(
+                    box_edges(min, max)
+                        .iter()
+                        .map(|&(start, end)| (start, end, b.color, b.width)),
+                );
+            }
+        }
+    }
+    out
+}
+
 impl render::Host for State {
     fn set_hud(&mut self, shapes: Vec<Shape>) {
         self.shapes = clip_shapes(shapes);
+    }
+    fn set_world(&mut self, shapes: Vec<WorldShape>) {
+        self.world_shapes = clip_world_shapes(shapes);
     }
     fn set_corner(&mut self, corner: RenderCorner, width: f32, height: f32, shapes: Vec<Shape>) {
         let size = |v: f32| {
@@ -1830,6 +2541,105 @@ impl render::Host for State {
                 .clamp(FAR_TERRAIN_DISTANCE.0, FAR_TERRAIN_DISTANCE.1),
             ..f
         });
+    }
+    fn get_gamma(&mut self) -> f32 {
+        // The effective value: the strongest any running mod set (this
+        // mod's own, if it set one after the call started, included), else
+        // the player's stored Brightness.
+        [self.aggregate_gamma, self.gamma]
+            .into_iter()
+            .flatten()
+            .max_by(|a, b| a.total_cmp(b))
+            .unwrap_or(self.snapshot.gamma)
+    }
+    fn set_gamma(&mut self, value: f32) {
+        self.gamma = Some(clamp_gamma(value));
+    }
+    fn get_fog(&mut self) -> bool {
+        self.snapshot.fog && !self.aggregate_fog_off && self.fog != Some(false)
+    }
+    fn set_fog(&mut self, enabled: bool) {
+        self.fog = Some(enabled);
+    }
+    fn get_camera(&mut self) -> ModCameraPose {
+        // The effective camera: the last frame's rendered one (which is
+        // the mouse-updated look, when a camera is active), else the
+        // winning override, else the player's own eye. Before the first
+        // frame there is no rendered camera, and on the title screen no
+        // player, so the pose is all zeros there.
+        match effective_camera(
+            self.snapshot.camera,
+            self.aggregate_camera,
+            self.camera,
+            self.snapshot.player.as_ref(),
+        ) {
+            Some(c) => ModCameraPose {
+                x: c.x,
+                y: c.y,
+                z: c.z,
+                yaw: c.yaw,
+                pitch: c.pitch,
+                roll: c.roll,
+            },
+            None => ModCameraPose {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                yaw: 0.0,
+                pitch: 0.0,
+                roll: 0.0,
+            },
+        }
+    }
+    fn set_camera(&mut self, camera: Option<ModCameraOverride>) {
+        // An accepted call counts even when the value is unchanged: the
+        // game re-reads the look on every count, so a mod calling this
+        // every tick with fixed angles keeps the mouse from drifting it.
+        // A non-finite position drops the call instead, and the previous
+        // override stays — the count does not move for a dropped call.
+        // A set keeps the aggregate live within the call when this mod
+        // is (or becomes) the winner, so a `get-camera` later in the
+        // same call already sees the new value, not the one the call
+        // started with. Releasing as the winner drops the aggregate
+        // this call knew — the next winner is only known to `Mods`,
+        // which refreshes it before the next call.
+        match camera {
+            None => {
+                self.camera = None;
+                self.camera_seq += 1;
+                if self.aggregate_is_mine {
+                    self.aggregate_camera = None;
+                    self.aggregate_is_mine = false;
+                }
+            }
+            Some(camera) => {
+                let feet = self.snapshot.player.as_ref().map(|p| [p.x, p.y, p.z]);
+                if let Some(camera) = sanitize_camera(camera, feet) {
+                    self.camera = Some(camera);
+                    self.camera_seq += 1;
+                    if self.aggregate_camera.is_none() || self.aggregate_is_mine {
+                        self.aggregate_camera = self.camera;
+                        self.aggregate_is_mine = true;
+                    }
+                }
+            }
+        }
+    }
+    fn project(&mut self, point: WorldPoint) -> ModScreenPoint {
+        match effective_camera(
+            self.snapshot.camera,
+            self.aggregate_camera,
+            self.camera,
+            self.snapshot.player.as_ref(),
+        ) {
+            Some(camera) => project_point(&camera, self.snapshot.gui_size, point),
+            None => ModScreenPoint {
+                x: 0.0,
+                y: 0.0,
+                visible: false,
+                depth: 0.0,
+            },
+        }
     }
     fn frame_stats(&mut self) -> FrameRate {
         let (fps, min, low) = self.snapshot.frame;
@@ -1968,4 +2778,379 @@ fn storage_key_ok(key: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b));
     chars_ok && key != "." && key != ".."
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A view that answers with its own name, so a test can tell which
+    /// view the slot holds.
+    struct NamedView(&'static str);
+    impl WorldView for NamedView {
+        fn block(&self, _dimension: &str, _x: i32, _y: i32, _z: i32) -> Option<String> {
+            Some(self.0.to_string())
+        }
+        fn biome(&self, _dimension: &str, _x: i32, _y: i32, _z: i32) -> Option<String> {
+            Some(self.0.to_string())
+        }
+        fn light(&self, _dimension: &str, _x: i32, _y: i32, _z: i32) -> Option<(u8, u8)> {
+            Some((0, 0))
+        }
+        fn has_dimension(&self, _dimension: &str) -> bool {
+            true
+        }
+        fn check_state(&self, _state: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// The shared `WorldSlot` pairing the spike calls the biggest risk:
+    /// one slot, one view at a time, lent and taken back in strict pairs.
+    /// A client mod calling `world` during a server tick would read the
+    /// server's view — so the game must never have both lent at once, and
+    /// must take back what it lent before the other tick lends its own.
+    /// This test proves the slot's half of that: a take returns exactly
+    /// the view that was lent, and after the take the slot is empty.
+    /// The other half — that the game's ticks lend and return in that
+    /// order, on one thread — is an inspected invariant of `Game::tick`
+    /// (`tick_mods` then `tick_server_mods`, each paired), not a test:
+    /// in the default server-thread singleplayer the two ticks do not
+    /// even share a `Mods` instance.
+    #[test]
+    fn the_world_slot_holds_one_view_lent_and_taken_in_pairs() {
+        let mut mods = Mods::default();
+        assert!(mods.take_world().is_none(), "nothing lent yet");
+        mods.lend_world(Box::new(NamedView("client")));
+        let view = mods.take_world().expect("the lent client view");
+        let view: Box<dyn std::any::Any> = view;
+        assert_eq!(view.downcast::<NamedView>().unwrap().0, "client");
+        assert!(mods.take_world().is_none(), "taken back: the slot is empty");
+        // The server tick lends its own view next, and takes it back the same way.
+        mods.lend_world(Box::new(NamedView("server")));
+        let view = mods.take_world().expect("the lent server view");
+        let view: Box<dyn std::any::Any> = view;
+        assert_eq!(view.downcast::<NamedView>().unwrap().0, "server");
+        assert!(mods.take_world().is_none());
+    }
+
+    /// Lending twice without a take in between replaces the first view:
+    /// the game must pair every lend with a take before the next lend, or
+    /// the first view is dropped — for the server's view, its chunk maps
+    /// with it. The client lend guards this with `client_world_lent`.
+    #[test]
+    fn lending_twice_without_a_take_replaces_the_first_view() {
+        let mut mods = Mods::default();
+        mods.lend_world(Box::new(NamedView("first")));
+        mods.lend_world(Box::new(NamedView("second")));
+        let view = mods.take_world().expect("a view");
+        let view: Box<dyn std::any::Any> = view;
+        assert_eq!(view.downcast::<NamedView>().unwrap().0, "second");
+        assert!(mods.take_world().is_none());
+    }
+
+    /// A mod key as `register-key` leaves it: the key is its own default.
+    fn mod_key(name: &str, label: &str, key: &str) -> ModKey {
+        ModKey {
+            name: name.to_owned(),
+            label: label.to_owned(),
+            key: key.to_owned(),
+            default: key.to_owned(),
+        }
+    }
+
+    /// Resetting restores the defaults the mod registered, not the keys
+    /// the player chose — and forgets those choices, so a later
+    /// `register-key` sees the default again.
+    #[test]
+    fn reset_keys_restores_the_registered_defaults() {
+        let mut input = InputState::default();
+        input
+            .keys
+            .push(mod_key("zoom", "Zoom key", "key.keyboard.v"));
+        input
+            .keys
+            .push(mod_key("recipes", "Show recipes", "key.keyboard.r"));
+        input
+            .bindings
+            .push(("zoom".to_owned(), "key.keyboard.b".to_owned()));
+        input.rebind("zoom", "key.keyboard.b".to_owned());
+        assert_eq!(input.keys[0].key, "key.keyboard.b");
+        input.reset_keys();
+        assert_eq!(input.keys[0].key, "key.keyboard.v");
+        assert_eq!(input.keys[0].default, "key.keyboard.v");
+        assert_eq!(input.keys[1].key, "key.keyboard.r");
+        assert!(input.bindings.is_empty());
+    }
+
+    /// A held key lets go on reset, as it does on rebind: the mod hears
+    /// `key-up` instead of the key staying down under the default.
+    #[test]
+    fn reset_keys_lets_go_of_a_held_key() {
+        let mut input = InputState::default();
+        input
+            .keys
+            .push(mod_key("zoom", "Zoom key", "key.keyboard.v"));
+        input.down.push("zoom".to_owned());
+        input.reset_keys();
+        assert!(input.down.is_empty());
+        assert!(input.events.iter().any(|e| matches!(
+            e,
+            InputEvent::KeyUp(name) if name == "zoom"
+        )));
+    }
+
+    /// Resetting a mod that isn't running changes nothing and says so.
+    #[test]
+    fn reset_keys_of_a_mod_that_isnt_running_is_false() {
+        let mut mods = Mods::default();
+        assert!(!mods.reset_keys(0));
+    }
+
+    fn world_point(x: f64, y: f64, z: f64) -> WorldPoint {
+        WorldPoint { x, y, z }
+    }
+    fn world_line(width: f32) -> WorldShape {
+        WorldShape::Line(WorldLine {
+            start: world_point(0.0, 64.0, 0.0),
+            end: world_point(1.0, 64.0, 0.0),
+            color: 0xFF00_FF00,
+            width,
+        })
+    }
+    fn world_box(width: f32) -> WorldShape {
+        WorldShape::Box(WorldBox {
+            min: world_point(0.0, 64.0, 0.0),
+            max: world_point(1.0, 65.0, 1.0),
+            color: 0xFFFF_0000,
+            width,
+        })
+    }
+
+    /// A `set-world` submission clips to the line budget (a box counts
+    /// 12), dropping past it rather than refusing it, while a cheaper
+    /// shape after the cut still fits: 200 boxes leave 85 (1020 lines)
+    /// and the line after them makes 1021.
+    #[test]
+    fn world_shapes_clip_to_the_line_budget() {
+        let mut shapes: Vec<WorldShape> = (0..200).map(|_| world_box(1.0)).collect();
+        shapes.push(world_line(1.0));
+        let clipped = clip_world_shapes(shapes);
+        assert_eq!(clipped.len(), 86);
+        assert_eq!(world_shape_lines(&clipped).len(), 1021);
+    }
+
+    /// Widths clamp to 0.5–8, a non-finite one reading 1, and a shape
+    /// with a non-finite coordinate is dropped, not drawn.
+    #[test]
+    fn world_shapes_clamp_widths_and_drop_non_finite_coordinates() {
+        let clipped = clip_world_shapes(vec![
+            world_line(0.1),
+            world_line(99.0),
+            world_line(f32::NAN),
+        ]);
+        let widths: Vec<f32> = clipped
+            .iter()
+            .map(|s| match s {
+                WorldShape::Line(l) => l.width,
+                WorldShape::Box(_) => unreachable!(),
+            })
+            .collect();
+        assert_eq!(widths, vec![0.5, 8.0, 1.0]);
+        let nan = WorldShape::Line(WorldLine {
+            start: world_point(f64::NAN, 64.0, 0.0),
+            end: world_point(1.0, 64.0, 0.0),
+            color: 0xFF00_FF00,
+            width: 1.0,
+        });
+        assert!(clip_world_shapes(vec![nan]).is_empty());
+    }
+
+    /// A box expands to its twelve edges in `CuboidGizmo.emit`'s order:
+    /// the three from the min corner, then round the box.
+    #[test]
+    fn a_world_box_expands_to_its_twelve_edges_in_cuboid_order() {
+        let boxed = WorldShape::Box(WorldBox {
+            min: world_point(0.0, 0.0, 0.0),
+            max: world_point(1.0, 2.0, 3.0),
+            color: 0xFFFF_0000,
+            width: 2.0,
+        });
+        let lines = world_shape_lines(std::slice::from_ref(&boxed));
+        let edges: Vec<([f64; 3], [f64; 3])> = lines
+            .iter()
+            .map(|(start, end, _, _)| (*start, *end))
+            .collect();
+        assert_eq!(
+            edges,
+            vec![
+                ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+                ([0.0, 0.0, 0.0], [0.0, 2.0, 0.0]),
+                ([0.0, 0.0, 0.0], [0.0, 0.0, 3.0]),
+                ([1.0, 0.0, 0.0], [1.0, 2.0, 0.0]),
+                ([1.0, 2.0, 0.0], [0.0, 2.0, 0.0]),
+                ([0.0, 2.0, 0.0], [0.0, 2.0, 3.0]),
+                ([0.0, 2.0, 3.0], [0.0, 0.0, 3.0]),
+                ([0.0, 0.0, 3.0], [1.0, 0.0, 3.0]),
+                ([1.0, 0.0, 3.0], [1.0, 0.0, 0.0]),
+                ([0.0, 2.0, 3.0], [1.0, 2.0, 3.0]),
+                ([1.0, 0.0, 3.0], [1.0, 2.0, 3.0]),
+                ([1.0, 2.0, 0.0], [1.0, 2.0, 3.0]),
+            ]
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|(_, _, color, width)| *color == 0xFFFF_0000 && *width == 2.0)
+        );
+    }
+
+    /// `set-gamma` clamps to 0.0..=10.0, and a non-finite value reads as
+    /// 1.0 — not 0.0, which would black the screen on a NaN.
+    #[test]
+    fn set_gamma_clamps_and_reads_non_finite_as_one() {
+        assert_eq!(clamp_gamma(11.0), 10.0);
+        assert_eq!(clamp_gamma(-1.0), 0.0);
+        assert_eq!(clamp_gamma(f32::NAN), 1.0);
+        assert_eq!(clamp_gamma(f32::INFINITY), 1.0);
+        assert_eq!(clamp_gamma(f32::NEG_INFINITY), 1.0);
+        assert_eq!(clamp_gamma(0.5), 0.5);
+    }
+
+    /// The gamma aggregate is the strongest any running mod sets; with
+    /// none set there is no aggregate, and the stored setting applies.
+    #[test]
+    fn the_gamma_aggregate_is_the_strongest_set() {
+        assert_eq!(strongest_gamma([2.0, 5.0].into_iter()), Some(5.0));
+        assert_eq!(strongest_gamma([2.0].into_iter()), Some(2.0));
+        assert_eq!(strongest_gamma([].into_iter()), None);
+    }
+
+    /// The fog aggregate is off when any running mod turns it off; a mod
+    /// leaving fog on does not re-enable it while another holds it off.
+    #[test]
+    fn the_fog_aggregate_is_off_when_any_mod_turns_it_off() {
+        assert!(any_fog_off([true, false].into_iter()));
+        assert!(!any_fog_off([true, true].into_iter()));
+        assert!(!any_fog_off([].into_iter()));
+    }
+
+    fn camera_override(
+        position: Option<WorldPoint>,
+        yaw: f32,
+        pitch: f32,
+        roll: f32,
+    ) -> ModCameraOverride {
+        ModCameraOverride {
+            position,
+            yaw,
+            pitch,
+            roll,
+        }
+    }
+
+    fn point(x: f64, y: f64, z: f64) -> WorldPoint {
+        WorldPoint { x, y, z }
+    }
+
+    /// `set-camera` wraps yaw, clamps pitch and roll, and reads a
+    /// non-finite look as 0.0 for that field.
+    #[test]
+    fn set_camera_wraps_and_clamps_the_look() {
+        let camera = sanitize_camera(camera_override(None, 270.0, 120.0, 200.0), None).unwrap();
+        assert_eq!(camera.yaw, -90.0);
+        assert_eq!(camera.pitch, 90.0);
+        assert_eq!(camera.roll, 180.0);
+        assert!(camera.position.is_none());
+        let camera =
+            sanitize_camera(camera_override(None, f32::NAN, f32::NAN, f32::NAN), None).unwrap();
+        assert_eq!((camera.yaw, camera.pitch, camera.roll), (0.0, 0.0, 0.0));
+    }
+
+    /// A non-finite position drops the whole call, and a position past
+    /// the cap scales back to the 64-block sphere around the feet.
+    #[test]
+    fn set_camera_drops_a_non_finite_position_and_caps_the_distance() {
+        let feet = Some([0.5, 64.0, 0.5]);
+        assert!(
+            sanitize_camera(
+                camera_override(Some(point(f64::NAN, 64.0, 0.5)), 0.0, 0.0, 0.0),
+                feet
+            )
+            .is_none()
+        );
+        let camera = sanitize_camera(
+            camera_override(Some(point(200.5, 64.0, 0.5)), 0.0, 0.0, 0.0),
+            feet,
+        )
+        .unwrap();
+        let p = camera.position.unwrap();
+        assert!((p.x - 64.5).abs() < 1e-9 && p.y == 64.0 && p.z == 0.5);
+        let camera = sanitize_camera(
+            camera_override(Some(point(10.5, 64.0, 0.5)), 0.0, 0.0, 0.0),
+            feet,
+        )
+        .unwrap();
+        let p = camera.position.expect("within the cap: kept");
+        assert_eq!((p.x, p.y, p.z), (10.5, 64.0, 0.5));
+    }
+
+    /// The harness's camera: the player's eye at (0.5, 65.62, 0.5),
+    /// looking along +Z at fov 70 on a 427 × 240 GUI.
+    fn harness_camera() -> SnapshotCamera {
+        SnapshotCamera {
+            x: 0.5,
+            y: 65.62,
+            z: 0.5,
+            yaw: 0.0,
+            pitch: 0.0,
+            roll: 0.0,
+            fov: 70.0,
+        }
+    }
+
+    /// A point dead ahead projects to the screen centre; a point behind
+    /// the camera is not visible and has a negative depth; a point 90°
+    /// off-axis lands off-screen.
+    #[test]
+    fn project_puts_ahead_at_the_centre_and_behind_out_of_view() {
+        let camera = harness_camera();
+        let ahead = project_point(&camera, (427.0, 240.0), point(0.5, 65.62, 10.5));
+        assert!(ahead.visible);
+        assert!((ahead.x - 213.5).abs() < 0.01 && (ahead.y - 120.0).abs() < 0.01);
+        assert!((ahead.depth - 10.0).abs() < 1e-9);
+        let behind = project_point(&camera, (427.0, 240.0), point(0.5, 65.62, -9.5));
+        assert!(!behind.visible && behind.depth < 0.0);
+        let side = project_point(&camera, (427.0, 240.0), point(10.5, 65.62, 0.5));
+        assert!(!(-427.0..=854.0).contains(&side.x), "side x={}", side.x);
+    }
+
+    /// A point ahead and to the camera's right sits right of centre at
+    /// rest; rolling the view 90° clockwise moves it to the bottom
+    /// centre, and rolling it the other way moves it to the top centre.
+    #[test]
+    fn project_rolls_with_the_camera() {
+        let gui = (427.0, 240.0);
+        let ahead_right = point(-9.5, 65.62, 10.5);
+        let level = project_point(&harness_camera(), gui, ahead_right);
+        assert!(level.x > 213.5 && (level.y - 120.0).abs() < 0.01);
+        let mut rolled = harness_camera();
+        rolled.roll = 90.0;
+        let clockwise = project_point(&rolled, gui, ahead_right);
+        assert!((clockwise.x - 213.5).abs() < 0.01 && clockwise.y > 240.0);
+        rolled.roll = -90.0;
+        let counter = project_point(&rolled, gui, ahead_right);
+        assert!((counter.x - 213.5).abs() < 0.01 && counter.y < 0.0);
+    }
+
+    /// Turning the camera 90° turns the projection with it: the point
+    /// that was ahead and right is dead ahead again.
+    #[test]
+    fn project_follows_the_camera_yaw() {
+        let mut camera = harness_camera();
+        camera.yaw = 90.0;
+        let ahead = project_point(&camera, (427.0, 240.0), point(-9.5, 65.62, 0.5));
+        assert!(ahead.visible);
+        assert!((ahead.x - 213.5).abs() < 0.01 && (ahead.y - 120.0).abs() < 0.01);
+    }
 }

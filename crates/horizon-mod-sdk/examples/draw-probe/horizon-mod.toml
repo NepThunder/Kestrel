@@ -1,0 +1,9 @@
+id = "draw_probe"
+name = "Draw Probe"
+version = "0.1.0"
+description = "Prototype for world-space drawing: a box round the nearest mob and a line from the player to the mob under the crosshair."
+authors = ["Horizon"]
+api = "0.1"
+side = "client"
+capabilities = ["entity", "game-read", "render"]
+experimental = ["entity", "render"]

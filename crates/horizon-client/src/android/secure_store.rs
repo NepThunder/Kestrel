@@ -10,7 +10,7 @@ use std::{
 };
 static VM: OnceLock<JavaVM> = OnceLock::new();
 static LOCK: Mutex<()> = Mutex::new(());
-const ALIAS: &str = "dev.horizon.android.accounts.v1";
+const ALIAS: &str = "com.kestrel.android.accounts.v1";
 pub fn initialize(vm: JavaVM) {
     let _ = VM.set(vm);
 }

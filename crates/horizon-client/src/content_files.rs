@@ -30,7 +30,7 @@ impl Kind {
     pub fn accepts(self, name: &str) -> bool {
         let lower = name.to_ascii_lowercase();
         match self {
-            Self::Mods => lower.ends_with(".hmod"),
+            Self::Mods => lower.ends_with(".kmod"),
             Self::Packs => lower.ends_with(".zip"),
             Self::Shaders => lower.ends_with(".zip") || lower.ends_with(".hshader"),
         }
@@ -58,13 +58,13 @@ pub fn validate(
 ) -> crate::Result<bool> {
     if !plain_name(name) || !kind.accepts(name) {
         return Err(
-            "Choose a ZIP pack, .hshader shader pack or sandboxed .hmod matching this folder"
+            "Choose a ZIP pack, .hshader shader pack or sandboxed .kmod matching this folder"
                 .into(),
         );
     }
     let file = std::fs::File::open(path)?;
     if kind == Kind::Mods && file.metadata()?.len() > 32 << 20 {
-        return Err("Horizon mod exceeds 32 MiB".into());
+        return Err("Kestrel mod exceeds 32 MiB".into());
     }
     if file.metadata()?.len() > MAX_INPUT {
         return Err("Import exceeds 256 MiB".into());
@@ -243,19 +243,19 @@ mod tests {
         std::fs::write(&path, archive(&[("horizon-shaders.toml", b"manifest")])).unwrap();
         assert!(validate(&path, Kind::Shaders, "Test.zip", || false).unwrap());
         std::fs::write(&path, archive(&[("horizon-mod.toml", b"manifest")])).unwrap();
-        assert!(validate(&path, Kind::Mods, "Test.hmod", || false).is_err());
+        assert!(validate(&path, Kind::Mods, "Test.kmod", || false).is_err());
         let content = b"id='test_content'\nname='Content'\nversion='1'\napi='0.2'\ncapabilities=['registries']\n";
         std::fs::write(&path, archive(&[("horizon-mod.toml", content)])).unwrap();
-        assert!(validate(&path, Kind::Mods, "Content.hmod", || false).is_ok());
+        assert!(validate(&path, Kind::Mods, "Content.kmod", || false).is_ok());
         let code = b"id='test_code'\nname='Code'\nversion='1'\napi='0.1'\ncapabilities=['hud']\n";
         std::fs::write(&path, archive(&[("horizon-mod.toml", code)])).unwrap();
-        assert!(validate(&path, Kind::Mods, "Code.hmod", || false).is_err());
+        assert!(validate(&path, Kind::Mods, "Code.kmod", || false).is_err());
         std::fs::write(
             &path,
             archive(&[("horizon-mod.toml", code), ("mod.wasm", b"wasm")]),
         )
         .unwrap();
-        assert!(validate(&path, Kind::Mods, "Code.hmod", || false).is_ok());
+        assert!(validate(&path, Kind::Mods, "Code.kmod", || false).is_ok());
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         writer
             .add_symlink(

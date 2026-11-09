@@ -105,6 +105,10 @@ pub struct Config {
     pub custom_profile_desc: String,
     #[serde(default)]
     pub preset_edit_mode: String,
+    /// Kestrel build dismissed with Later in the update prompt; the launch
+    /// check does not offer it again (a manual check still does).
+    #[serde(default)]
+    pub dismissed_update_build: Option<u64>,
     #[serde(default)]
     pub theme: horizon_client::ui_theme::LauncherThemeConfig,
 }
@@ -586,6 +590,10 @@ pub struct Catalog {
     pub fm_modal: Option<FmModal>,
     pub fm_input_text: String,
     downloaded: Vec<(browser::SourceId, String)>,
+    /// Installed mod versions by (source, project id), from `mod-browser.json`
+    /// and, for a `.kmod` copied in by hand, from the package manifest: the
+    /// version an update offer compares against the registry's latest.
+    installed_mod_versions: HashMap<(browser::SourceId, String), String>,
     pub downloading: Option<(browser::SourceId, String)>,
     pub downloading_title: String,
     pub downloading_size_mib: f32,
@@ -645,6 +653,7 @@ impl Catalog {
             fm_modal: None,
             fm_input_text: String::new(),
             downloaded: vec![],
+            installed_mod_versions: HashMap::new(),
             downloading: None,
             downloading_title: String::new(),
             downloading_size_mib: 4.8,
@@ -707,6 +716,13 @@ impl Catalog {
             .map(|e| (e.source, e.project.clone()))
             .collect();
         let on = horizon_client::mod_list::ModList::load(&game);
+        self.installed_mod_versions.clear();
+        for e in &installed.entries {
+            if e.kind == Kind::Mod {
+                self.installed_mod_versions
+                    .insert((e.source, e.project.clone()), e.number.clone());
+            }
+        }
         self.bundled_enabled = on.enabled.difference(&on.disabled).cloned().collect();
         let settings = horizon_client::settings::Settings::load(&game.join("options.txt"));
         self.local.clear();
@@ -735,7 +751,7 @@ impl Catalog {
                         settings.horizon.shader_pack == name
                     }
                     horizon_client::content_files::Kind::Mods => name
-                        .strip_suffix(".hmod")
+                        .strip_suffix(".kmod")
                         .or_else(|| name.strip_suffix(".jar"))
                         .is_some_and(|id| on.enabled.contains(id)),
                 };
@@ -745,8 +761,8 @@ impl Catalog {
                     horizon_client::content_files::Kind::Packs => "PACK",
                     horizon_client::content_files::Kind::Shaders => "SHADER",
                 };
-                let ext_tag = if name.ends_with(".hmod") {
-                    "Horizon Mod (.hmod)"
+                let ext_tag = if name.ends_with(".kmod") {
+                    "Kestrel Mod (.kmod)"
                 } else if name.ends_with(".jar") {
                     "Java Mod (.jar)"
                 } else if name.ends_with(".hshader") {
@@ -758,7 +774,7 @@ impl Catalog {
                 };
                 let subtitle = format!("{ext_tag}  •  {}  •  {name}", format_file_size(size_bytes));
                 let clean_title = name
-                    .strip_suffix(".hmod")
+                    .strip_suffix(".kmod")
                     .or_else(|| name.strip_suffix(".jar"))
                     .or_else(|| name.strip_suffix(".hshader"))
                     .or_else(|| name.strip_suffix(".zip"))
@@ -796,7 +812,7 @@ impl Catalog {
                 .strip_prefix("horizon-native-mods/")
                 .unwrap_or(&file_name)
                 .strip_suffix(".hnmod")
-                .or_else(|| file_name.strip_suffix(".hmod"))
+                .or_else(|| file_name.strip_suffix(".kmod"))
                 .or_else(|| file_name.strip_suffix(".jar"))
                 .unwrap_or(&file_name);
             let full_path = game.join(&e.file);
@@ -817,7 +833,7 @@ impl Catalog {
                 subtitle,
             });
         }
-        // Also scan horizon-native-mods/ for any .hnmod or .hmod files on disk.
+        // Also scan horizon-native-mods/ for any .hnmod or .kmod files on disk.
         let native_dir = game.join("horizon-native-mods");
         if std::fs::symlink_metadata(&native_dir).is_ok_and(|m| !m.file_type().is_symlink()) {
             for entry in std::fs::read_dir(&native_dir)
@@ -831,7 +847,7 @@ impl Catalog {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if !horizon_client::content_files::plain_name(&name)
                     || (!name.ends_with(".hnmod")
-                        && !name.ends_with(".hmod")
+                        && !name.ends_with(".kmod")
                         && !name.ends_with(".jar"))
                 {
                     continue;
@@ -846,7 +862,7 @@ impl Catalog {
                 }
                 let mod_id = name
                     .strip_suffix(".hnmod")
-                    .or_else(|| name.strip_suffix(".hmod"))
+                    .or_else(|| name.strip_suffix(".kmod"))
                     .or_else(|| name.strip_suffix(".jar"))
                     .unwrap_or(&name);
                 let size_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
@@ -876,9 +892,33 @@ impl Catalog {
                         enabled: true,
                         size_bytes: 0,
                         badge: "MOD",
-                        subtitle: format!("Built-in Horizon Mod  •  {b_desc}  •  {b_id}"),
+                        subtitle: format!("Built-in Kestrel Mod  •  {b_desc}  •  {b_id}"),
                     });
                 }
+            }
+        }
+        // A `.kmod` copied in by hand has no `mod-browser.json` entry, so read
+        // its version from the package manifest for the update comparison.
+        let mut missing = Vec::new();
+        for item in &self.local {
+            if item.kind != horizon_client::content_files::Kind::Mods {
+                continue;
+            }
+            let Some(id) = item.file.strip_suffix(".kmod") else {
+                continue;
+            };
+            if self
+                .installed_mod_versions
+                .contains_key(&(browser::SourceId::Horizon, id.to_owned()))
+            {
+                continue;
+            }
+            missing.push((id.to_owned(), game.join(&item.file)));
+        }
+        for (id, path) in missing {
+            if let Ok(manifest) = horizon_mods::Package::read_manifest(&path) {
+                self.installed_mod_versions
+                    .insert((browser::SourceId::Horizon, id), manifest.version);
             }
         }
         self.sort_local_items();
@@ -1123,6 +1163,62 @@ impl Catalog {
         self.downloading_title.clear();
         self.status = "Download cancelled.".into();
     }
+    /// Whether the catalog's latest version of a mod is newer than the
+    /// installed one: the "Update" offer. Kestrel's own registry only; other
+    /// sources keep the file-existence answer. The registry index is only
+    /// consulted as already read (never the network), so an update appears
+    /// once the catalog has loaded the index, and never blocks a render.
+    pub fn update_available(&self, project: &Project) -> bool {
+        if project.kind != Kind::Mod || project.source != browser::SourceId::Horizon {
+            return false;
+        }
+        let Some(installed) = self
+            .installed_mod_versions
+            .get(&(project.source, project.id.clone()))
+        else {
+            return false;
+        };
+        let Some(latest) = browser::horizon::newest_known_version(&project.id) else {
+            return false;
+        };
+        Self::semver_cmp(installed, &latest) == std::cmp::Ordering::Less
+    }
+
+    /// Numeric dot-separated version comparison (`0.1.0` < `0.1.1`); a
+    /// pre-release suffix (`-beta`) sorts below the release of the same
+    /// numbers. Non-numeric parts compare as text.
+    fn semver_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        let mut ai = a.split(['-', '+']).next().unwrap_or(a).split('.');
+        let mut bi = b.split(['-', '+']).next().unwrap_or(b).split('.');
+        loop {
+            match (ai.next(), bi.next()) {
+                (None, None) => break,
+                (Some(x), None) => {
+                    if x.parse::<u64>().unwrap_or(0) != 0 {
+                        return Ordering::Greater;
+                    }
+                }
+                (None, Some(y)) => {
+                    if y.parse::<u64>().unwrap_or(0) != 0 {
+                        return Ordering::Less;
+                    }
+                }
+                (Some(x), Some(y)) => {
+                    let ord = match (x.parse::<u64>(), y.parse::<u64>()) {
+                        (Ok(x), Ok(y)) => x.cmp(&y),
+                        _ => x.cmp(y),
+                    };
+                    if ord != Ordering::Equal {
+                        return ord;
+                    }
+                }
+            }
+        }
+        // Same numbers: a release beats a pre-release of the same numbers.
+        b.contains('-').cmp(&a.contains('-'))
+    }
+
     pub fn download_label(&self, project: &Project) -> Option<String> {
         if source_only_mod(project) {
             return Some("Unsupported".into());
@@ -1144,13 +1240,16 @@ impl Catalog {
             || (project.kind == Kind::Mod
                 && self.local.iter().any(|item| {
                     item.kind == horizon_client::content_files::Kind::Mods
-                        && (item.file == format!("{}.hmod", project.id)
+                        && (item.file == format!("{}.kmod", project.id)
                             || item.file == format!("{}.jar", project.slug)
                             || item.file == format!("horizon-mods/{}", project.id)
                             || item.file == format!("horizon-mods/{}", project.slug)
                             || item.file == format!("horizon-native-mods/{}.hnmod", project.id))
                 }))
         {
+            if self.update_available(project) {
+                return Some("Update".into());
+            }
             return Some("Installed".into());
         }
         None
@@ -1297,7 +1396,7 @@ impl Catalog {
         self.start_search();
     }
     fn fetch_icons(&mut self, home: &Path) {
-        // Collect both direct icon URLs and Horizon/bundled items that need a Modrinth name search
+        // Collect both direct icon URLs and Kestrel/bundled items that need a Modrinth name search
         // for their PFP and description.
         let mut tasks: Vec<(String, String, Option<String>, Kind)> = Vec::new();
         if self.page == Page::Mods
@@ -1432,7 +1531,7 @@ impl Catalog {
                 }
             }
 
-            // For Horizon list items (or bundled mods), search Modrinth by the project's name
+            // For Kestrel list items (or bundled mods), search Modrinth by the project's name
             // to enrich with Modrinth's full description, PFP icon, and gallery screenshots!
             if project.source == browser::SourceId::Horizon
                 || gallery.is_empty()
@@ -1543,14 +1642,14 @@ impl Catalog {
                 self.import_native(home);
             } else {
                 self.results.clear();
-                self.status = "Press Import .hmod to download this HTTPS link".into();
+                self.status = "Press Import .kmod to download this HTTPS link".into();
             }
             return;
         }
         self.scroll = 0.0;
         let source = match self.page {
             Page::Packs => browser::SourceId::Modrinth,
-            Page::Shaders => self.config.shader_source.source(),
+            Page::Shaders => self.effective_shader_source().source(),
             Page::Mods => self.config.mod_source.source(),
             _ => browser::SourceId::Horizon,
         };
@@ -1564,10 +1663,19 @@ impl Catalog {
         }
         self.start_search();
     }
+    /// The shader source actually searched on the Shaders page. Modrinth
+    /// only, while the Horizon shaders tab is hidden (the registry index
+    /// is Kestrel's, mods only, so Horizon lists no shaders). Restore
+    /// `self.config.shader_source` here when the Horizon shaders are
+    /// ported to Android/Kestrel.
+    pub(crate) fn effective_shader_source(&self) -> crate::shader_catalog::Origin {
+        crate::shader_catalog::Origin::Modrinth
+    }
+
     fn show_results(&mut self, items: Vec<Project>) {
         self.status = if self.page == Page::Shaders
             && items.is_empty()
-            && self.config.shader_source == crate::shader_catalog::Origin::Horizon
+            && self.effective_shader_source() == crate::shader_catalog::Origin::Horizon
         {
             "No Horizon shader packs match this search. Try another query or import a .hshader."
                 .into()
@@ -1580,7 +1688,7 @@ impl Catalog {
             )
         } else if self.page == Page::Mods {
             format!(
-                "{} Horizon mods available (playhorizon.dev/mods) - select Install to download",
+                "{} Kestrel mods available (github.com/NepThunder/Kestrel-mods) - select Install to download",
                 items.len()
             )
         } else {
@@ -1625,13 +1733,13 @@ impl Catalog {
         let url = self.query.trim().to_owned();
         let game = self.config.game_home(home);
         self.downloading = Some((browser::SourceId::Horizon, "https-import".into()));
-        self.downloading_title = "Custom .hmod Package".into();
+        self.downloading_title = "Custom .kmod Package".into();
         self.downloading_size_mib = 2.4;
         self.paused.store(false, Ordering::Relaxed);
         self.cancelled.store(false, Ordering::Relaxed);
         *self.progress.lock().unwrap_or_else(|e| e.into_inner()) = 0.15;
         let progress = self.progress.clone();
-        self.job("Downloading sandboxed .hmod over HTTPS...", move || {
+        self.job("Downloading sandboxed .kmod over HTTPS...", move || {
             use std::io::Read;
             let mut bytes = Vec::new();
             ureq::AgentBuilder::new()
@@ -1647,7 +1755,7 @@ impl Catalog {
                 .read_to_end(&mut bytes)
                 .map_err(|e| e.to_string())?;
             if bytes.len() > 32 * 1024 * 1024 {
-                return Err("Horizon mod exceeds 32 MiB".into());
+                return Err("Kestrel mod exceeds 32 MiB".into());
             }
             *progress.lock().unwrap_or_else(|e| e.into_inner()) = 0.85;
             let dir = game.join("horizon-mods");
@@ -1656,9 +1764,9 @@ impl Catalog {
             std::fs::write(&stage, bytes).map_err(|e| e.to_string())?;
             let result = (|| {
                 let package = horizon_mods::Package::read(&stage)?;
-                let destination = dir.join(format!("{}.hmod", package.manifest.id));
+                let destination = dir.join(format!("{}.kmod", package.manifest.id));
                 if destination.exists() {
-                    std::fs::copy(&destination, destination.with_extension("hmod.previous"))
+                    std::fs::copy(&destination, destination.with_extension("kmod.previous"))
                         .map_err(|e| e.to_string())?;
                 }
                 std::fs::rename(&stage, destination).map_err(|e| e.to_string())?;
@@ -1684,7 +1792,9 @@ impl Catalog {
             self.status = "Native .hnmod mods are temporarily unsupported on Android. Built-in mods remain available.".into();
             return;
         }
-        if self.busy() || self.download_label(&project).is_some() {
+        if self.busy()
+            || (self.download_label(&project).is_some() && !self.update_available(&project))
+        {
             return;
         }
         let game = self.config.game_home(home);
@@ -1711,7 +1821,7 @@ impl Catalog {
         let status = match (project.kind, project.source) {
             (Kind::Shader, browser::SourceId::Modrinth) => "Downloading shader pack ZIP...",
             (Kind::Mod, browser::SourceId::Modrinth) => "Downloading and porting Modrinth mod...",
-            (Kind::Mod, _) => "Downloading Horizon mod package...",
+            (Kind::Mod, _) => "Downloading Kestrel mod package...",
             _ => "Checking compatibility and downloading...",
         };
         self.job(status, move || {
@@ -1793,7 +1903,7 @@ impl Catalog {
                     .or_else(|| item.file.strip_prefix("horizon-mods/"))
                     .unwrap_or(&item.file);
                 let id = id
-                    .strip_suffix(".hmod")
+                    .strip_suffix(".kmod")
                     .or_else(|| id.strip_suffix(".hnmod"))
                     .or_else(|| id.strip_suffix(".jar"))
                     .unwrap_or(id);
@@ -1861,7 +1971,7 @@ impl Catalog {
                     .or_else(|| item.file.strip_prefix("horizon-mods/"))
                     .unwrap_or(&item.file);
                 let id = id
-                    .strip_suffix(".hmod")
+                    .strip_suffix(".kmod")
                     .or_else(|| id.strip_suffix(".hnmod"))
                     .or_else(|| id.strip_suffix(".jar"))
                     .unwrap_or(id);
@@ -1909,7 +2019,7 @@ impl Catalog {
                 let mut on = horizon_client::mod_list::ModList::load(&game);
                 if let Some(id) = item
                     .file
-                    .strip_suffix(".hmod")
+                    .strip_suffix(".kmod")
                     .or_else(|| item.file.strip_suffix(".jar"))
                 {
                     on.enabled.remove(id);
@@ -2211,4 +2321,27 @@ fn clean_markdown_body(raw: &str) -> String {
         }
     }
     out.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cmp::Ordering;
+
+    #[test]
+    fn semver_orders_versions() {
+        assert_eq!(Catalog::semver_cmp("0.1.0", "0.1.1"), Ordering::Less);
+        assert_eq!(Catalog::semver_cmp("0.1.1", "0.1.0"), Ordering::Greater);
+        assert_eq!(Catalog::semver_cmp("0.1.0", "0.1.0"), Ordering::Equal);
+        assert_eq!(Catalog::semver_cmp("0.2.0", "0.1.9"), Ordering::Greater);
+        assert_eq!(Catalog::semver_cmp("1.0.0", "0.9.9"), Ordering::Greater);
+        // A pre-release sorts below the release of the same numbers.
+        assert_eq!(Catalog::semver_cmp("0.1.0-beta", "0.1.0"), Ordering::Less);
+        assert_eq!(
+            Catalog::semver_cmp("0.1.0", "0.1.0-beta"),
+            Ordering::Greater
+        );
+        // Missing trailing components count as zero.
+        assert_eq!(Catalog::semver_cmp("0.1", "0.1.0"), Ordering::Equal);
+    }
 }
