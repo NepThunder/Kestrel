@@ -1,0 +1,9 @@
+id = "camera_probe"
+name = "Camera Probe"
+version = "0.1.0"
+description = "Prototype for the mod camera: shows the effective camera pose and a projected world point each tick, and proves freelook, freecam, a scripted orbit, roll, the 64-block cap and the non-finite drop."
+authors = ["Horizon"]
+api = "0.1"
+side = "client"
+capabilities = ["game-read", "hud", "command", "render"]
+experimental = ["render"]

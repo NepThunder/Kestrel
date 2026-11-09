@@ -119,6 +119,36 @@ setting still writes, but the screen does not change until the mod releases.
 `crates/horizon-mod-sdk/examples/gamma-probe` is a probe mod that shows the
 effective gamma and fog flag each tick.
 
+The same capability moves the camera (`render.get-camera`, `set-camera`,
+`render.project`, API level 14). `set-camera` takes this mod's override:
+with `position` none it is a freelook — the camera stays at the player's
+eye and only the look changes — with `position` some it is a freecam, the
+camera detached to that position. Either way the player's yaw and pitch do
+not move, so the player keeps walking, aiming and mining in the direction
+they faced, and the server keeps seeing the player face that way; the
+crosshair, the hand and the raycast stay the player's too. While a camera
+is active the mouse turns the camera, not the player — so a mod that wants
+mouse look calls `set-camera` only when its position, roll or mode changes
+and reads the current look back through `get-camera`, while a mod that
+calls it every tick with fixed angles drives a scripted camera the mouse
+cannot move. Yaw wraps, pitch clamps to -90..=90, roll clamps to -180..=180
+and rides the frame's pose (positive rolls clockwise as the player sees
+it); a non-finite look reads as 0.0 for that field, and a non-finite
+position drops the whole call. A freecam stops at the 64-block sphere
+around the player's feet and at the first visual-shape hit, so v1 never
+sees through walls. Only one mod drives the camera: the first loaded mod
+that sets one wins, and unloading or disabling it restores the player's own
+camera within a frame — the player's stored settings are never changed. A
+spectator's camera wins over any override. `project` maps a world position
+onto the screen in GUI pixels through the camera this frame renders from,
+with the effective field of view including a mod zoom: `visible` is false
+behind the camera, `x` and `y` are still given, and there is no occlusion
+test — a point behind a wall still projects, as the HUD distances do. All
+three work in multiplayer, as third person and shake already do.
+`crates/horizon-mod-sdk/examples/camera-probe` is a probe mod that shows
+the effective pose and a projected world point each tick, and proves
+freelook, freecam, a scripted orbit, roll, the cap and the non-finite drop.
+
 ## Making a content mod
 
 ```sh

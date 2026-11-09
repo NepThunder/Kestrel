@@ -61,6 +61,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "gamma-probe",
                 "-p",
+                "camera-probe",
+                "-p",
                 "horizon-mods-test-guest",
                 "-p",
                 "horizon-mods-test-ui-guest",
@@ -91,6 +93,7 @@ fn mods_dir() -> &'static Path {
             ("draw_probe", example("draw-probe")),
             ("light_probe", example("light-probe")),
             ("gamma_probe", example("gamma-probe")),
+            ("camera_probe", example("camera-probe")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
         ];
@@ -286,7 +289,9 @@ experimental = ["ui", "render", "input", "recipes", "inventory", "entity"]
     // The light probe reads light (`world.get-lights`, level 12).
     assert_eq!(level("light_probe.kmod"), 12);
     // The gamma probe brightens (`render.set-gamma`, level 13).
-    assert_eq!(level("gamma_probe.kmod"), LEVEL);
+    assert_eq!(level("gamma_probe.kmod"), 13);
+    // The camera probe moves the camera (`render.set-camera`, level 14).
+    assert_eq!(level("camera_probe.kmod"), LEVEL);
 }
 
 #[test]

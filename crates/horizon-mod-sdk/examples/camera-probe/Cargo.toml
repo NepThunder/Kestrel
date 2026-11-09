@@ -1,0 +1,16 @@
+[package]
+name = "camera-probe"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Prototype probe for the mod camera: the effective pose, a projected world point, freelook, freecam, a scripted orbit, roll, the 64-block cap and the non-finite drop"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+horizon-mod-sdk = { path = "../.." }
+
+[lints]
+workspace = true
