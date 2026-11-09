@@ -46,6 +46,7 @@ entry is SHA-256 pinned.
 
 ## Lineage
 
-Kestrel is developed on a detached fork of the Horizon engine (now
-[Starling](https://github.com/starling-client/starling)), rewritten for
-Android as a standalone client. Not affiliated with Mojang or Microsoft.
+Kestrel is developed on a detached fork of the Starling engine
+([starling-client/Starling](https://github.com/starling-client/starling),
+previously known as Horizon Android), rewritten for Android as a
+standalone client. Not affiliated with Mojang or Microsoft.
