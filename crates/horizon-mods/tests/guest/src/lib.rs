@@ -5,11 +5,14 @@
 //! `/handset` and `/handclear` exercise capability `render`'s hand (API 16);
 //! `/swinganim` and `/swingscale` its swing terms (API 17); `/effects`,
 //! `/selfstate` and `/toggles` capability `game-read`'s self reads and the
-//! movement toggle write (API 18); `tick` and
+//! movement toggle write (API 18); `/zoomstate`, `/hidehud`, `/handfov`
+//! and `/fpscap` capability `render`'s zoom truth, HUD hide, hand FOV
+//! and frame-rate cap, and `/idle` capability `input`'s idle clock
+//! (API 19); `tick` and
 //! `frame` do nothing, to measure the cost of a call.
 use horizon_mod_sdk::{
-    HandTransform, Mod, Registration, SoundAdjustment, SoundQuery, SwingAnim, audio, chat, game,
-    hand, storage,
+    HandFov, HandFovMode, HandTransform, Mod, Registration, SoundAdjustment, SoundQuery, SwingAnim,
+    audio, chat, game, hand, input, render, storage,
 };
 
 struct Guest {
@@ -34,6 +37,11 @@ impl Mod for Guest {
             "effects",
             "selfstate",
             "toggles",
+            "zoomstate",
+            "hidehud",
+            "handfov",
+            "fpscap",
+            "idle",
         ]
         .into_iter()
         .fold(Registration::new(), Registration::command)
@@ -176,6 +184,65 @@ impl Mod for Guest {
                 game::set_movement_toggles(sprint, sneak);
                 Ok(Some("toggled".into()))
             }
+            "zoomstate" => {
+                let spy = render::get_spyglass_zoom()
+                    .map_or("none".into(), |f| format!("{f}"));
+                Ok(Some(format!(
+                    "zoom can {} spy {}",
+                    render::can_zoom(),
+                    spy
+                )))
+            }
+            "hidehud" => {
+                let hidden = match args {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err("Usage: /hidehud <on|off>".into()),
+                };
+                render::set_hide_hud(hidden);
+                Ok(Some(if hidden {
+                    "hud hidden".into()
+                } else {
+                    "hud shown".into()
+                }))
+            }
+            "handfov" => {
+                // `/handfov off`, or `/handfov <multiply|add|keep> <base>`.
+                if args == "off" {
+                    render::set_hand_fov(None);
+                    return Ok(Some("handfov off".into()));
+                }
+                let mut words = args.split_whitespace();
+                let mode = match words.next() {
+                    Some("multiply") => HandFovMode::Multiply,
+                    Some("add") => HandFovMode::Add,
+                    Some("keep") => HandFovMode::Keep,
+                    _ => {
+                        return Err(
+                            "Usage: /handfov <multiply|add|keep> <base>, or /handfov off".into()
+                        )
+                    }
+                };
+                let base: f32 = words
+                    .next()
+                    .and_then(|w| w.parse().ok())
+                    .ok_or("Usage: /handfov <multiply|add|keep> <base>, or /handfov off")?;
+                render::set_hand_fov(Some(HandFov { mode, base }));
+                Ok(Some("handfov set".into()))
+            }
+            "fpscap" => {
+                // `/fpscap off`, or `/fpscap <fps>`.
+                if args == "off" {
+                    render::set_fps_cap(None);
+                    return Ok(Some("cap off".into()));
+                }
+                let fps: u32 = args
+                    .parse()
+                    .map_err(|_| "Usage: /fpscap <fps>, or /fpscap off")?;
+                render::set_fps_cap(Some(fps));
+                Ok(Some("capped".into()))
+            }
+            "idle" => Ok(Some(format!("idle {}", input::last_input_ms()))),
             _ => {
                 chat::show(&format!("hello {args} after {} ticks", self.ticks));
                 Ok(None)

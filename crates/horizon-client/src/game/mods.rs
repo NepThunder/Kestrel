@@ -118,6 +118,15 @@ pub(super) struct ModsState {
     /// to the world never reads as one giant turn.
     #[cfg(feature = "mods")]
     hand_prev_look: Option<(f32, f32)>,
+    /// The view's zoom ratio (API 19), for `render.set-hand-fov`:
+    /// 1 unzoomed, easing toward 1/factor beside the FOV ease in
+    /// `tick_fov` (`Game::tick_mod_zoom_ratio`). None until the
+    /// first tick eases it; readers take 1.0 then. The spyglass's
+    /// narrowing is never in it: the game's zoom is off while
+    /// scoping, so the ratio stays 1 and the hand does not follow
+    /// the spyglass.
+    #[cfg(feature = "mods")]
+    pub(super) zoom_ratio: Option<f32>,
 }
 
 /// The mappings `input.mapping` answers for, with the default key their
@@ -137,6 +146,23 @@ const MAPPINGS: [(&str, Option<winit::keyboard::KeyCode>); 9] = {
         ("key.use", None),
     ]
 };
+/// The hotbar mappings `input.mapping` also answers for (API 19):
+/// the label is the player's own binding's, the held state the
+/// *physical* key's (`Game::mapped_key_down`) — the game's hotbar
+/// keys are events on physical digits and never enter the logical
+/// key set the movement names above read.
+#[cfg(feature = "mods")]
+const HOTBAR_MAPPINGS: [&str; 9] = [
+    "key.hotbar.1",
+    "key.hotbar.2",
+    "key.hotbar.3",
+    "key.hotbar.4",
+    "key.hotbar.5",
+    "key.hotbar.6",
+    "key.hotbar.7",
+    "key.hotbar.8",
+    "key.hotbar.9",
+];
 /// Characters `render.text-width` knows exactly: U+0000 to U+024F.
 #[cfg(feature = "mods")]
 const FONT_CHARS: u32 = 0x250;
@@ -339,6 +365,13 @@ fn register_mob_effects(mods: &[horizon_client::mod_content::ContentMod]) {
 /// A build without the `mods` feature: no mod runs.
 #[cfg(not(feature = "mods"))]
 impl Game<'_> {
+    /// Whether the HUD is hidden: F1's `hide_gui` alone (no mod can
+    /// ask in this build). The one test every HUD reader shares, so
+    /// a mod's `render.set-hide-hud` (API 19) matches F1 site for
+    /// site in the mods build.
+    pub(super) fn hud_hidden(&self) -> bool {
+        self.ui.hide_gui
+    }
     /// Says why the installed and dev mods don't run.
     pub(super) fn start_mods(&mut self) {
         let dir = Self::options_path().with_file_name(mod_list::DIR);
@@ -636,6 +669,14 @@ impl Game<'_> {
             self.start_mods();
         }
     }
+    /// Whether the HUD is hidden: F1's `hide_gui`, or any running
+    /// mod's `render.set-hide-hud` (API 19). The one test every HUD
+    /// reader shares, so a mod hide matches F1 site for site: the
+    /// HUD pass (whose draws include the mods' own panels), the
+    /// hand, the block outline, chat, the minimap and player names.
+    pub(super) fn hud_hidden(&self) -> bool {
+        self.ui.hide_gui || self.mods.mods.hide_hud()
+    }
     /// What mods read this tick (or frame, for mods with a `frame` hook): the
     /// server's players as they were at the last tick's end.
     fn mod_snapshot(&mut self) -> Snapshot {
@@ -665,7 +706,7 @@ impl Game<'_> {
         let (cps, mouse) = self.mouse_reading();
         // The movement and click mappings, as the keystroke overlay reads them:
         // keys by the default key their binding is translated to.
-        let mappings = MAPPINGS
+        let mut mappings: Vec<(&'static str, String, bool)> = MAPPINGS
             .iter()
             .map(|&(name, key)| {
                 let label = keybinds::display_name(self.settings.keys.get(name)).plain();
@@ -676,6 +717,12 @@ impl Game<'_> {
                 (name, label, down)
             })
             .collect();
+        // The hotbar slots join them (API 19): the label from the
+        // player's own binding, the held state from the physical key.
+        mappings.extend(HOTBAR_MAPPINGS.iter().map(|&name| {
+            let label = keybinds::display_name(self.settings.keys.get(name)).plain();
+            (name, label, self.mapped_key_down(name))
+        }));
         if self.mods.font_widths.is_empty() {
             let atlas = &self.gui.atlas;
             self.mods.font_widths = (0..FONT_CHARS)
@@ -710,6 +757,9 @@ impl Game<'_> {
             camera: self.snapshot_camera(),
             effects,
             self_state,
+            can_zoom: self.mod_can_zoom(),
+            spyglass_zoom: self.mod_spyglass_zoom(),
+            last_input_ms: self.last_input.elapsed().as_millis() as u64,
         }
     }
     /// The camera the last frame rendered from, for `get-camera` /
@@ -1005,7 +1055,7 @@ impl Game<'_> {
     /// not posed this frame (`hand_geometry`'s own conditions).
     fn hand_state_now(&mut self) -> Option<ModHandState> {
         if self.spectator()
-            || self.ui.hide_gui
+            || self.hud_hidden()
             || self.sleeping.is_some()
             || !self.camera_type.first_person()
             || self.mod_camera_detached()

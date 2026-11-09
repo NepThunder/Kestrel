@@ -24,6 +24,22 @@ impl Game<'_> {
             .and_then(|(slot, _)| self.stack_in(slot))
             .is_some_and(|s| &*s.item == "minecraft:spyglass")
     }
+    /// The zoom the spyglass is showing (API 19,
+    /// `render.get-spyglass-zoom`): while the player scopes in first
+    /// person, 1 / the modifier from the same `field_of_view_modifier`
+    /// arm the view narrows by — never a second hard-coded 10, so if
+    /// the spyglass constant moves, this moves. None while not
+    /// scoping, and in third person, whose scope does not narrow.
+    #[cfg(feature = "mods")]
+    pub(super) fn mod_spyglass_zoom(&self) -> Option<f32> {
+        if !self.scoping() || !self.camera_type.first_person() {
+            return None;
+        }
+        let modifier = self
+            .fov_player()
+            .map_or(1.0, |p| field_of_view_modifier(&p, true, self.fov_effect_scale()));
+        (modifier > 0.0).then(|| 1.0 / modifier)
+    }
     /// `options.fovEffectScale`.
     pub(super) fn fov_effect_scale(&self) -> f32 {
         self.settings.file.double("fovEffectScale") as f32
@@ -79,6 +95,10 @@ impl Game<'_> {
             .fov_player()
             .map_or(1.0, |p| field_of_view_modifier(&p, first_person, effect));
         let target = self.zoomed_fov_target(target);
+        // The hand FOV's zoom ratio eases beside this tick's ease
+        // (API 19, `render.set-hand-fov`).
+        #[cfg(feature = "mods")]
+        self.tick_mod_zoom_ratio();
         // A server's spectator camera on a mob: its eye height. Its modifier
         // stays 1 (another player's own modifier is not modelled here); the
         // zoom extra still narrows it.
@@ -127,7 +147,27 @@ impl Game<'_> {
         self.zoomed_fov_degrees(fov)
     }
     /// `Camera.calculateHudFov`: the first-person hand's field of view.
+    /// With a mod's `render.set-hand-fov` (API 19), the mode's maths
+    /// applies to the base *before* the death/fluid distortion — the
+    /// distortion is a screen effect, not FOV policy, and vanilla
+    /// applies it last to whatever the hand FOV is.
     pub(super) fn hud_fov_degrees(&self, partial: f32, camera: [f64; 3]) -> f32 {
+        #[cfg(feature = "mods")]
+        if let Some(setting) = self.mods.mods.hand_fov() {
+            let ratio = self.mods.zoom_ratio.unwrap_or(1.0);
+            let base = horizon_mods::hand_fov_base(
+                &setting,
+                ratio,
+                self.fov_degrees(partial, camera),
+            );
+            return self.view.calculate_hud_fov_from(
+                partial,
+                base,
+                self.fov_effect_scale(),
+                self.death_time(),
+                self.camera_fluid(camera),
+            );
+        }
         self.view.calculate_hud_fov(
             partial,
             self.fov_effect_scale(),

@@ -1,0 +1,9 @@
+id = "zoom_probe"
+name = "Zoom Probe"
+version = "0.1.0"
+description = "Prototype for the zoom truth reads: shows whether a mod zoom would take effect now, the spyglass's zoom while scoping and the time since your last input, and makes the hand's field of view follow the view's zoom."
+authors = ["Horizon"]
+api = "0.1"
+side = "client"
+capabilities = ["hud", "render", "input"]
+experimental = ["render", "input"]

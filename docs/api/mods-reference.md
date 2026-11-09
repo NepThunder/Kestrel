@@ -14,8 +14,8 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `command` | [`command`](#command) | run commands as you, with your permissions |
 | `registries` | data files (`assets/`, `data/`), no interface | add blocks, items, mob effects and entity types to your worlds |
 | `ui` | [`ui`](#ui) | show its own screens and a settings page |
-| `render` | [`render`](#render) | draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it, turn off distance fog and move your hand and held item in first person |
-| `input` | [`input`](#input) | see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys |
+| `render` | [`render`](#render) | draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it, turn off distance fog, move your hand and held item in first person, hide the whole HUD, make the hand's field of view follow the zoom and cap the frame rate |
+| `input` | [`input`](#input) | see the keys you hold, your clicks and how long since you last gave input, take over the use button on its own items and the mouse wheel, and add keys |
 | `players` | [`players`](#players) | see who is on the server and message them |
 | `world` | [`world`](#world) | read the world's blocks, and change them where the game runs the world |
 | `recipes` | [`recipes`](#recipes) | read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items |
@@ -364,12 +364,13 @@ A mapping as the player has bound it.
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `claim-items` | `func(ids: list<string>)` | The items whose use the mod handles instead of the game, by id (at most 64). Replaces the previous list. |
-| `register-key` | `func(name: string, label: string, key: string) -> result<_, string>` | A key of the mod's: `name` comes back in `key-down` and `key-up`, `label` says what it does, `key` is the key as options.txt writes it (`key.keyboard.r`), the default: the player can bind another one on the mod's page in Options > Mods, and that one wins. At most 16; an unknown key is an error. |
+| `register-key` | `func(name: string, label: string, key: string) -> result<_, string>` | A key of the mod's: `name` comes back in `key-down` and `key-up`, `label` says what it does, `key` is the key as options.txt writes it (`key.keyboard.r`), the default: the player can bind another one on the mod's page in Options > Mods, and that one wins. At most 32; an unknown key is an error. |
 | `held` | `func() -> option<held-item>` | The main hand's stack, as of this tick; none when it is empty. |
 | `poll` | `func() -> list<event>` | The events since the last call, oldest first. |
 | `claim-wheel` | `func(on: bool)` | Takes the mouse wheel while playing (true) or gives it back: while taken, its steps are the mod's `wheel` events and the hotbar doesn't move. The game gives it back when the mod stops. |
-| `mapping` | `func(name: string) -> option<mapping-state>` | A movement or click mapping as the player has bound it: `key.forward`, `key.left`, `key.back`, `key.right`, `key.jump`, `key.sneak`, `key.sprint`, `key.attack` or `key.use`. None for another name. |
+| `mapping` | `func(name: string) -> option<mapping-state>` | A movement or click mapping as the player has bound it: `key.forward`, `key.left`, `key.back`, `key.right`, `key.jump`, `key.sneak`, `key.sprint`, `key.attack`, `key.use`, or `key.hotbar.1` to `key.hotbar.9`. None for another name. A mapping is a read window: the game's own action on the key still runs — pressing a hotbar key still selects its slot. |
 | `clicks-per-second` | `func() -> tuple<u32, u32>` | Clicks of the attack and use buttons in the last second. |
+| `last-input-ms` | `func() -> u64` | Milliseconds since the player's last input — a key, a click, mouse or touch movement, a gamepad or touch-control action — as the game's own inactivity tracker measures it (the same clock the game's idle framerate limit reads). 0 at the moment of input. Before the first snapshot in a world it reads as the time since the world was entered, as the game seeds it. |
 
 ## `render`
 
@@ -511,9 +512,26 @@ One world-space box: the two opposite corners, a 0xAARRGGBB colour, and a width 
 
 | Field | Type | |
 | --- | --- | --- |
-| `factor` | `f32` | The field of view is divided by it: 1 is none, at most 10. |
+| `factor` | `f32` | The field of view is divided by it: 1 is none, at most 250. |
 | `smooth` | `bool` | Ease in and out through the game's field-of-view easing, as the spyglass does, instead of at once. |
 | `turn` | `f32` | Mouse turning is multiplied by it while zoomed: 1 keeps the player's sensitivity, at least 0.05. |
+
+### enum `hand-fov-mode`
+
+How the hand's field of view follows the view's, while zoomed.
+
+| Case | |
+| --- | --- |
+| `multiply` | The hand's FOV is scaled by the view's zoom ratio. |
+| `add` | The view's zoom shift, in degrees, is added to the hand's FOV. |
+| `keep` | The hand keeps its own FOV (what vanilla does). |
+
+### record `hand-fov`
+
+| Field | Type | |
+| --- | --- | --- |
+| `mode` | `hand-fov-mode` |  |
+| `base` | `f32` | The hand FOV to work from, in degrees: the base the mode adjusts. (Zoomify's setting is the mode alone over the vanilla 70; the base is here for mods that pose the hand at another width.) |
 
 ### record `minimap`
 
@@ -577,13 +595,18 @@ A point on the screen, in GUI pixels from the top left.
 | `set-world` | `func(shapes: list<world-shape>)` | Replaces the mod's world shapes: up to 1024 lines (a box counts as 12), drawn every frame in order over the world, depth-tested so walls hide them, hidden with the HUD (F1). An empty list removes them. Nothing here is ever drawn on top of everything. |
 | `text-width` | `func(text: string) -> f32` | The width of one line of text in GUI pixels, in the HUD's font: exact for Latin letters (U+0000 to U+024F), 6 per other character. |
 | `frame-stats` | `func() -> frame-rate` | The game's frame counter, recomputed twice a second. |
+| `set-fps-cap` | `func(fps: option<u32>)` | Caps the frame rate at `fps` while set (none lifts the cap): the game's frame limiter runs at the lowest of the player's Max Framerate, the game's own inactivity and battery limits, and every running mod's cap. 1 to 240; a cap can only ever lower the rate, never raise it past the player's settings. The world still ticks at full rate — only frames are paced. |
 | `set-zoom` | `func(zoom: zoom)` | Zooms the camera until the next call (`factor` 1 ends it), only while playing: a screen opening or the spyglass's own view (which wins) leave the camera vanilla's. With several mods, the strongest zoom counts. |
+| `can-zoom` | `func() -> bool` | Whether a `set-zoom` would take effect now: the player is in the world with no screen open, and not scoping. When this is false a zoom is kept but not shown. |
+| `get-spyglass-zoom` | `func() -> option<f32>` | The zoom the spyglass is showing, while the player scopes with one in first person: the factor the view is narrowed by (10 in this game). None while not scoping. Holding a spyglass without scoping is `input.held`'s answer, not this one's. |
+| `set-hand-fov` | `func(hand-fov: option<hand-fov>)` | Makes the first-person hand's field of view follow the view's zoom by `mode` over `base`, until the next call (none restores vanilla's: a fixed 70 degrees, moved only by the death and fluid effects). One hand FOV applies: the first loaded mod that sets one, as with the minimap. A stopped mod's setting goes with it. |
 | `set-minimap` | `func(minimap: option<minimap>)` | Shows a map of the world around the player in `corner`, stacked with the game's overlays and the mods' panels, until the next call (none hides it). It looks like a map item: vanilla's map colours with their height shading and water depth, and the player's arrow. Underground, under a roof and in the Nether it maps the floor around the player's height. The game keeps the map's tiles and refreshes them within its own frame budget; hidden, they are dropped. One map shows at a time: the first loaded mod's. |
 | `set-far-terrain` | `func(far-terrain: option<far-terrain>)` | Draws the world beyond the render distance as distant terrain, out to `distance` chunks, until the next call (none ends it). The game builds it on its own workers, from the chunks already loaded or saved and, where nobody has been, from the world's generator; the simulation distance doesn't change. Only worlds whose generator the game has (single player and a LAN world you host) show it. The player's own LOD Distance setting, when on, wins. One far terrain shows at a time: the first loaded mod's. |
 | `get-gamma` | `func() -> f32` | The brightness the renderer is applying right now, as a gamma value: the strongest gamma any running mod set, or the player's own Brightness setting when no mod sets one. 0.5 is the vanilla default, 1.0 the brightest the options screen allows. Values above 1.0 come only from a mod. |
 | `set-gamma` | `func(value: f32)` | Sets this mod's gamma until the next call: 0.0 is the darkest the lightmap goes, 1.0 is the brightest the options screen allows, and values above 1.0 brighten further with diminishing returns — the lightmap saturates toward white, so colours wash out as the value grows. 10.0 is the 1000% Fullbright mods use. Values are clamped to 0.0..=10.0; a non-finite value reads as 1.0. The strongest gamma any running mod sets wins; when no running mod sets one, the player's own Brightness setting applies again. The player's stored setting is never changed. Only while playing: at the title screen there is no renderer to brighten, and the value is the stored setting. |
 | `get-fog` | `func() -> bool` | Whether distance fog is drawn right now: false while any running mod turned it off, otherwise the player's own Fog setting. Distance fog is the atmospheric and render-distance fog, including the Nether's; the fog of water, lava and powder snow, blindness, darkness and a boss's world fog are never removed by this. |
 | `set-fog` | `func(enabled: bool)` | Sets this mod's distance-fog flag until the next call: false removes distance fog (the same removal the Fog setting in the graphics options does), true leaves the player's setting alone. Any running mod turning fog off turns it off; when no running mod turns it off, the player's own Fog setting applies again. The player's stored setting is never changed. Only while playing. |
+| `set-hide-hud` | `func(hidden: bool)` | Hides the HUD while true: the hotbar, crosshair, bars, chat, overlays and every mod's panels, the player's own included — what F1 hides, for as long as any running mod asks. Screens, the debug screen and the sleep overlay still draw, as with F1. The hand hides with the HUD, as it does under F1. |
 | `get-camera` | `func() -> camera-pose` | The camera this frame renders from: the mod override when one is active, else the player's own camera (the first-person eye, or the third-person back-off). Only while playing. |
 | `set-camera` | `func(override: option<camera-override>)` | Detaches the camera until the next call (none releases it): freelook while `position` is none, freecam while it is some. Only one mod drives the camera: the first loaded mod that sets one wins; the others' calls are stored but ignored until it releases. While a camera is active the mouse turns the camera, not the player — the player's yaw and pitch do not move, so the player keeps walking, aiming and mining in the direction they faced. The player's stored settings are never changed. Only while playing: at the title screen there is no camera to move, and the value is the panorama's. |
 | `project` | `func(point: world-point) -> screen-point` | Projects a world position onto the screen through the camera this frame renders from (a mod camera when one is active, else the player's own), with the effective field of view, including a mod zoom. `visible` is false behind the camera; `x` and `y` are still given, so a mod can draw an off-screen arrow itself. No occlusion test: a point behind a wall still projects, as the HUD distances do. Only while playing. |

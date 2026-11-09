@@ -325,7 +325,7 @@ interface input {
     /// `label` says what it does, `key` is the key as options.txt writes
     /// it (`key.keyboard.r`), the default: the player can bind another
     /// one on the mod's page in Options > Mods, and that one wins. At most
-    /// 16; an unknown key is an error.
+    /// 32; an unknown key is an error.
     register-key: func(name: string, label: string, key: string) -> result<_, string>;
     /// The main hand's stack, as of this tick; none when it is empty.
     held: func() -> option<held-item>;
@@ -345,10 +345,20 @@ interface input {
     }
     /// A movement or click mapping as the player has bound it: `key.forward`,
     /// `key.left`, `key.back`, `key.right`, `key.jump`, `key.sneak`,
-    /// `key.sprint`, `key.attack` or `key.use`. None for another name.
+    /// `key.sprint`, `key.attack`, `key.use`, or `key.hotbar.1` to
+    /// `key.hotbar.9`. None for another name. A mapping is a read window:
+    /// the game's own action on the key still runs — pressing a hotbar
+    /// key still selects its slot.
     mapping: func(name: string) -> option<mapping-state>;
     /// Clicks of the attack and use buttons in the last second.
     clicks-per-second: func() -> tuple<u32, u32>;
+    /// Milliseconds since the player's last input — a key, a click,
+    /// mouse or touch movement, a gamepad or touch-control action —
+    /// as the game's own inactivity tracker measures it (the same
+    /// clock the game's idle framerate limit reads). 0 at the moment
+    /// of input. Before the first snapshot in a world it reads as
+    /// the time since the world was entered, as the game seeds it.
+    last-input-ms: func() -> u64;
 }
 
 /// Capability `render` (experimental: the manifest needs
@@ -492,8 +502,15 @@ interface render {
     }
     /// The game's frame counter, recomputed twice a second.
     frame-stats: func() -> frame-rate;
+    /// Caps the frame rate at `fps` while set (none lifts the cap):
+    /// the game's frame limiter runs at the lowest of the player's
+    /// Max Framerate, the game's own inactivity and battery limits,
+    /// and every running mod's cap. 1 to 240; a cap can only ever
+    /// lower the rate, never raise it past the player's settings.
+    /// The world still ticks at full rate — only frames are paced.
+    set-fps-cap: func(fps: option<u32>);
     record zoom {
-        /// The field of view is divided by it: 1 is none, at most 10.
+        /// The field of view is divided by it: 1 is none, at most 250.
         factor: f32,
         /// Ease in and out through the game's field-of-view easing, as the
         /// spyglass does, instead of at once.
@@ -507,6 +524,39 @@ interface render {
     /// wins) leave the camera vanilla's. With several mods, the strongest
     /// zoom counts.
     set-zoom: func(zoom: zoom);
+    /// Whether a `set-zoom` would take effect now: the player is in
+    /// the world with no screen open, and not scoping. When this is
+    /// false a zoom is kept but not shown.
+    can-zoom: func() -> bool;
+    /// The zoom the spyglass is showing, while the player scopes
+    /// with one in first person: the factor the view is narrowed by
+    /// (10 in this game). None while not scoping. Holding a spyglass
+    /// without scoping is `input.held`'s answer, not this one's.
+    get-spyglass-zoom: func() -> option<f32>;
+    /// How the hand's field of view follows the view's, while zoomed.
+    enum hand-fov-mode {
+        /// The hand's FOV is scaled by the view's zoom ratio.
+        multiply,
+        /// The view's zoom shift, in degrees, is added to the hand's FOV.
+        add,
+        /// The hand keeps its own FOV (what vanilla does).
+        keep,
+    }
+    record hand-fov {
+        mode: hand-fov-mode,
+        /// The hand FOV to work from, in degrees: the base the mode
+        /// adjusts. (Zoomify's setting is the mode alone over the
+        /// vanilla 70; the base is here for mods that pose the hand
+        /// at another width.)
+        base: f32,
+    }
+    /// Makes the first-person hand's field of view follow the view's
+    /// zoom by `mode` over `base`, until the next call (none restores
+    /// vanilla's: a fixed 70 degrees, moved only by the death and
+    /// fluid effects). One hand FOV applies: the first loaded mod
+    /// that sets one, as with the minimap. A stopped mod's setting
+    /// goes with it.
+    set-hand-fov: func(hand-fov: option<hand-fov>);
     record minimap {
         corner: corner,
         /// Its side in GUI pixels, 16 to 256.
@@ -575,6 +625,12 @@ interface render {
     /// own Fog setting applies again. The player's stored setting is never
     /// changed. Only while playing.
     set-fog: func(enabled: bool);
+    /// Hides the HUD while true: the hotbar, crosshair, bars, chat,
+    /// overlays and every mod's panels, the player's own included —
+    /// what F1 hides, for as long as any running mod asks. Screens,
+    /// the debug screen and the sleep overlay still draw, as with
+    /// F1. The hand hides with the HUD, as it does under F1.
+    set-hide-hud: func(hidden: bool);
     /// The camera this frame renders from.
     record camera-pose {
         /// World position, in blocks.

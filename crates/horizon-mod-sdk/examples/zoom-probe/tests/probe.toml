@@ -1,0 +1,16 @@
+# Zoom truth (API 19): with no fixtures a zoom is kept but not
+# shown (no world), there is no scope and the idle clock reads 0;
+# a step's own fixtures then flow in — a live zoom gate, the
+# spyglass's factor of 10 and 65 seconds of idle.
+[[step]]
+ticks = 1
+[step.expect]
+panel = ["zoom kept", "spy none", "idle 0"]
+
+[[step]]
+ticks = 1
+can-zoom = true
+spyglass = 10.0
+idle-ms = 65000
+[step.expect]
+panel = ["zoom live", "spy 10", "idle 65000"]

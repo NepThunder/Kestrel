@@ -107,9 +107,10 @@ pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, I
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
     CameraOverride as ModCameraOverride, CameraPose as ModCameraPose, Corner as RenderCorner,
-    FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape, Minimap as ModMinimap,
-    Point as RenderPoint, QuadShape, Rect as RenderRect, ScreenPoint as ModScreenPoint, Shape,
-    SpriteShape, TextShape, WorldBox, WorldLine, WorldPoint, WorldShape, Zoom as ModZoom,
+    FarTerrain as ModFarTerrain, FillShape, FrameRate, HandFov as ModHandFov,
+    HandFovMode as ModHandFovMode, ItemShape, Minimap as ModMinimap, Point as RenderPoint,
+    QuadShape, Rect as RenderRect, ScreenPoint as ModScreenPoint, Shape, SpriteShape, TextShape,
+    WorldBox, WorldLine, WorldPoint, WorldShape, Zoom as ModZoom,
 };
 use render_bindings::{RenderHost, horizon::mods::render};
 use render_bindings::horizon::mods::hand;
@@ -251,6 +252,20 @@ pub struct Snapshot {
     /// toggle options (capability `game-read`, API 18); filled with
     /// [`Snapshot::effects`]. None on the title screen.
     pub self_state: Option<ModSelfState>,
+    /// Whether a mod's `set-zoom` would take effect now (capability
+    /// `render`, API 19): the player is in the world with no screen
+    /// open, and not scoping — the gate the game's own zoom applies,
+    /// filled where the mappings are.
+    pub can_zoom: bool,
+    /// The zoom the spyglass is showing (capability `render`,
+    /// API 19): while the player scopes in first person, 1 / the
+    /// spyglass's field-of-view modifier, from the game's own arm —
+    /// never a second constant. None while not scoping.
+    pub spyglass_zoom: Option<f32>,
+    /// Milliseconds since the player's last input (capability
+    /// `input`, API 19): the game's own inactivity clock, the one
+    /// its idle framerate limit reads, filled where the mappings are.
+    pub last_input_ms: u64,
 }
 
 impl Default for Snapshot {
@@ -279,6 +294,9 @@ impl Default for Snapshot {
             camera: None,
             effects: Vec::new(),
             self_state: None,
+            can_zoom: false,
+            spyglass_zoom: None,
+            last_input_ms: 0,
         }
     }
 }
@@ -596,6 +614,17 @@ struct State {
     fog: Option<bool>,
     /// Capability `render`'s camera override, when the mod sets one.
     camera: Option<ModCameraOverride>,
+    /// Capability `render`'s HUD hide (API 19): while set, the game
+    /// hides the HUD as F1 does ([`Mods::hide_hud`]).
+    hide_hud: bool,
+    /// Capability `render`'s hand FOV (API 19), kept sanitized by the
+    /// host call: the first running mod that sets one wins
+    /// ([`Mods::hand_fov`]).
+    hand_fov: Option<ModHandFov>,
+    /// Capability `render`'s frame-rate cap (API 19), kept sanitized
+    /// to 1..=240 by the host call: the lowest running mod's cap
+    /// applies ([`Mods::fps_cap`]).
+    fps_cap: Option<u32>,
     /// Capability `audio`'s shared reverb character (wet gain, decay
     /// seconds), when the mod sets one (API 15).
     sound_env: Option<(f32, f32)>,
@@ -895,6 +924,9 @@ impl Mods {
             gamma: None,
             fog: None,
             camera: None,
+            hide_hud: false,
+            hand_fov: None,
+            fps_cap: None,
             sound_env: None,
             hand_state: zero_hand_state(),
             hand_offset: None,
@@ -1537,6 +1569,32 @@ impl Mods {
         self.entries
             .iter()
             .find_map(|e| e.run.as_ref()?.store.data().far_terrain)
+    }
+    /// Whether any running mod hides the HUD (capability `render`,
+    /// API 19): the flag is the mod's own store's, so a stopped mod's
+    /// ask dies with it, as its fog and gamma do.
+    pub fn hide_hud(&self) -> bool {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .any(|r| r.store.data().hide_hud)
+    }
+    /// The hand FOV the first running mod set (capability `render`,
+    /// API 19): one renderer-wide property two mods cannot compose,
+    /// as with the minimap. A stopped mod's setting goes with it.
+    pub fn hand_fov(&self) -> Option<ModHandFov> {
+        self.entries
+            .iter()
+            .find_map(|e| e.run.as_ref()?.store.data().hand_fov)
+    }
+    /// The lowest frame-rate cap a running mod set (capability
+    /// `render`, API 19): caps only ever lower the rate, so the
+    /// minimum is the aggregate. A stopped mod's cap goes with it.
+    pub fn fps_cap(&self) -> Option<u32> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref()?.store.data().fps_cap)
+            .min()
     }
     /// The camera the first running mod drives (capability `render`),
     /// with the call count of the `set-camera` that set it.
@@ -2380,7 +2438,9 @@ struct InputState {
 /// Events kept for `poll`, items claimed and keys, per mod.
 const INPUT_EVENTS: usize = 256;
 const CLAIMS: usize = 64;
-const KEYS: usize = 16;
+/// Keys one mod may register: 32 since API 19 (16 before; every
+/// consumer is linear, so the number is a sanity bound only).
+const KEYS: usize = 32;
 
 /// `key.keyboard.<name>` or `key.mouse.<name>`, as options.txt writes keys;
 /// the game knows which names exist and ignores a key it has none for.
@@ -2475,6 +2535,9 @@ impl input::Host for State {
     fn clicks_per_second(&mut self) -> (u32, u32) {
         self.snapshot.cps
     }
+    fn last_input_ms(&mut self) -> u64 {
+        self.snapshot.last_input_ms
+    }
     fn claim_wheel(&mut self, on: bool) {
         self.input.wheel = on;
     }
@@ -2493,10 +2556,74 @@ pub const WORLD_LINE_WIDTH: (f32, f32) = (0.5, 8.0);
 pub type WorldDrawLine = ([f64; 3], [f64; 3], u32, f32);
 /// The longest jolt `render.shake` makes, in seconds.
 const SHAKE_SECONDS: f32 = 10.0;
-/// `render.set-zoom`'s limits: `Camera.tickFov` keeps the modifier at 0.1
-/// or more, and turning never stops.
-const ZOOM_MAX: f32 = 10.0;
+/// `render.set-zoom`'s limits: the factor's cap (250 since API 19,
+/// 10 before — the camera tick's floor now follows a divided target
+/// below 0.1, so a smooth zoom can pass 10x; a finite cap keeps the
+/// projection away from the degenerate FOV → 0 region), and turning
+/// never stops.
+const ZOOM_MAX: f32 = 250.0;
 const TURN_MIN: f32 = 0.05;
+/// `render.set-zoom`'s factor, sanitized: inside 1.0..=[`ZOOM_MAX`];
+/// a non-finite factor reads as 1.0, no zoom.
+fn clamp_zoom_factor(factor: f32) -> f32 {
+    if factor.is_finite() {
+        factor.clamp(1.0, ZOOM_MAX)
+    } else {
+        1.0
+    }
+}
+/// The range a hand FOV may sit in, in degrees (API 19): what a
+/// projection can use — below it the hand inverts, above it the
+/// hand all but vanishes.
+const HAND_FOV_RANGE: (f32, f32) = (5.0, 175.0);
+/// Vanilla's hand FOV, the base a non-finite one reads as.
+const HAND_FOV_DEFAULT: f32 = 70.0;
+/// `render.set-hand-fov`'s value, sanitized: the base inside
+/// [`HAND_FOV_RANGE`]; a non-finite base reads as vanilla's 70.
+fn sanitize_hand_fov(hand_fov: ModHandFov) -> ModHandFov {
+    ModHandFov {
+        base: if hand_fov.base.is_finite() {
+            hand_fov.base.clamp(HAND_FOV_RANGE.0, HAND_FOV_RANGE.1)
+        } else {
+            HAND_FOV_DEFAULT
+        },
+        ..hand_fov
+    }
+}
+/// The hand FOV a `set-hand-fov` setting (API 19) works out to for a
+/// frame, in degrees, before the death/fluid distortion the game
+/// applies last: `ratio` is the view's zoom ratio (1 unzoomed,
+/// 1/factor settled at a zoom of factor) and `zoomed_view` the
+/// view's field of view as rendered, so the unzoomed view is
+/// `zoomed_view / ratio`. Settled at factor F, multiply gives
+/// base / F and add gives base − V(1 − 1/F) with V the unzoomed
+/// view; at ratio 1 both give the base exactly. The spyglass's
+/// narrowing is never in the ratio (the game's zoom is off while
+/// scoping), so the hand does not follow the spyglass. The result
+/// stays inside [`HAND_FOV_RANGE`]; a non-finite one reads as 70.
+pub fn hand_fov_base(setting: &ModHandFov, ratio: f32, zoomed_view: f32) -> f32 {
+    let ratio = if ratio.is_finite() && ratio > 0.0 {
+        ratio
+    } else {
+        1.0
+    };
+    let view = zoomed_view / ratio;
+    let base = match setting.mode {
+        ModHandFovMode::Multiply => setting.base * ratio,
+        ModHandFovMode::Add => setting.base - view * (1.0 - ratio),
+        ModHandFovMode::Keep => setting.base,
+    };
+    if base.is_finite() {
+        base.clamp(HAND_FOV_RANGE.0, HAND_FOV_RANGE.1)
+    } else {
+        HAND_FOV_DEFAULT
+    }
+}
+/// `render.set-fps-cap`'s value, sanitized: 1..=240 — 0 reads as 1,
+/// the deepest tier (a literal 0 would divide by zero in pacing).
+fn sanitize_fps_cap(fps: Option<u32>) -> Option<u32> {
+    fps.map(|f| f.clamp(1, 240))
+}
 /// `set-minimap`'s side in GUI pixels and its blocks per map pixel.
 const MINIMAP_SIZE: (f32, f32) = (16.0, 256.0);
 const MINIMAP_SCALE: (f32, f32) = (0.5, 4.0);
@@ -2846,8 +2973,7 @@ impl render::Host for State {
             .ceil()
     }
     fn set_zoom(&mut self, zoom: ModZoom) {
-        let finite = |v: f32, lo: f32, hi: f32| if v.is_finite() { v.clamp(lo, hi) } else { lo };
-        let factor = finite(zoom.factor, 1.0, ZOOM_MAX);
+        let factor = clamp_zoom_factor(zoom.factor);
         self.zoom = (factor > 1.0).then(|| ModZoom {
             factor,
             smooth: zoom.smooth,
@@ -2976,6 +3102,21 @@ impl render::Host for State {
     fn frame_stats(&mut self) -> FrameRate {
         let (fps, min, low) = self.snapshot.frame;
         FrameRate { fps, min, low }
+    }
+    fn can_zoom(&mut self) -> bool {
+        self.snapshot.can_zoom
+    }
+    fn get_spyglass_zoom(&mut self) -> Option<f32> {
+        self.snapshot.spyglass_zoom
+    }
+    fn set_hide_hud(&mut self, hidden: bool) {
+        self.hide_hud = hidden;
+    }
+    fn set_hand_fov(&mut self, hand_fov: Option<ModHandFov>) {
+        self.hand_fov = hand_fov.map(sanitize_hand_fov);
+    }
+    fn set_fps_cap(&mut self, fps: Option<u32>) {
+        self.fps_cap = sanitize_fps_cap(fps);
     }
     fn gui_size(&mut self) -> (f32, f32) {
         self.snapshot.gui_size
@@ -3365,6 +3506,90 @@ mod tests {
         assert!(any_fog_off([true, false].into_iter()));
         assert!(!any_fog_off([true, true].into_iter()));
         assert!(!any_fog_off([].into_iter()));
+    }
+
+    /// `set-zoom`'s factor clamps to the API 19 cap of 250 (10 before
+    /// it), and a non-finite factor reads as 1.0, no zoom.
+    #[test]
+    fn set_zoom_clamps_the_factor_to_250() {
+        assert_eq!(clamp_zoom_factor(300.0), 250.0);
+        assert_eq!(clamp_zoom_factor(250.0), 250.0);
+        assert_eq!(clamp_zoom_factor(200.0), 200.0);
+        assert_eq!(clamp_zoom_factor(10.0), 10.0);
+        assert_eq!(clamp_zoom_factor(0.5), 1.0);
+        assert_eq!(clamp_zoom_factor(f32::NAN), 1.0);
+        assert_eq!(clamp_zoom_factor(f32::INFINITY), 1.0);
+    }
+
+    /// `set-fps-cap` sanitizes to 1..=240: 0 reads as 1, the deepest
+    /// tier, and none stays none.
+    #[test]
+    fn set_fps_cap_sanitizes_to_1_through_240() {
+        assert_eq!(sanitize_fps_cap(None), None);
+        assert_eq!(sanitize_fps_cap(Some(0)), Some(1));
+        assert_eq!(sanitize_fps_cap(Some(1)), Some(1));
+        assert_eq!(sanitize_fps_cap(Some(60)), Some(60));
+        assert_eq!(sanitize_fps_cap(Some(240)), Some(240));
+        assert_eq!(sanitize_fps_cap(Some(999)), Some(240));
+    }
+
+    /// `set-hand-fov`'s base stays inside the projection's range, and
+    /// a non-finite base reads as vanilla's 70.
+    #[test]
+    fn set_hand_fov_sanitizes_the_base() {
+        let fov = |base: f32| {
+            sanitize_hand_fov(ModHandFov {
+                mode: ModHandFovMode::Add,
+                base,
+            })
+        };
+        assert_eq!(fov(70.0).base, 70.0);
+        assert_eq!(fov(f32::NAN).base, 70.0);
+        assert_eq!(fov(f32::INFINITY).base, 70.0);
+        assert_eq!(fov(1000.0).base, 175.0);
+        assert_eq!(fov(1.0).base, 5.0);
+        assert_eq!(fov(70.0).mode, ModHandFovMode::Add);
+    }
+
+    /// The hand FOV's algebra, at the invariants the district pins:
+    /// settled at factor F, multiply gives base / F and add gives
+    /// base − V(1 − 1/F) with V the unzoomed view; at F = 1 every
+    /// mode gives the base exactly; keep never moves.
+    #[test]
+    fn hand_fov_follows_the_zoom_ratio() {
+        let setting = |mode: ModHandFovMode, base: f32| ModHandFov { mode, base };
+        // Settled at F = 4 with an unzoomed view of 80 (zoomed: 20).
+        assert_eq!(
+            hand_fov_base(&setting(ModHandFovMode::Multiply, 70.0), 0.25, 20.0),
+            17.5
+        );
+        assert_eq!(
+            hand_fov_base(&setting(ModHandFovMode::Add, 70.0), 0.25, 20.0),
+            10.0
+        );
+        assert_eq!(
+            hand_fov_base(&setting(ModHandFovMode::Keep, 70.0), 0.25, 20.0),
+            70.0
+        );
+        // No zoom (ratio 1): every mode gives the base exactly.
+        for mode in [
+            ModHandFovMode::Multiply,
+            ModHandFovMode::Add,
+            ModHandFovMode::Keep,
+        ] {
+            assert_eq!(hand_fov_base(&setting(mode, 70.0), 1.0, 80.0), 70.0);
+        }
+        // An extreme mode result clamps instead of reaching a
+        // projection: add at F = 250 over a 110-degree view.
+        assert_eq!(
+            hand_fov_base(&setting(ModHandFovMode::Add, 70.0), 0.004, 0.44),
+            5.0
+        );
+        // A non-finite result reads as vanilla's 70.
+        assert_eq!(
+            hand_fov_base(&setting(ModHandFovMode::Multiply, f32::NAN), 0.25, 20.0),
+            70.0
+        );
     }
 
     fn camera_override(

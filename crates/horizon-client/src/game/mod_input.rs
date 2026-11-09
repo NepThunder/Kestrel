@@ -46,6 +46,9 @@ impl Game<'_> {
     pub(super) fn effective_gamma(&self) -> f32 {
         self.settings.gamma
     }
+    pub(super) fn mod_fps_cap(&self) -> Option<u32> {
+        None
+    }
     pub(super) fn mod_fog_off(&self) -> bool {
         false
     }
@@ -208,6 +211,13 @@ impl Game<'_> {
         }
         self.mods.playing = playing;
     }
+    /// Whether a mod's `set-zoom` would take effect now (API 19,
+    /// `render.can-zoom`): the exact gate [`Game::mod_zoom`] applies —
+    /// playing, and not scoping — answered for the snapshot, so a mod
+    /// can tell a kept-but-unshown zoom from a live one.
+    pub(super) fn mod_can_zoom(&self) -> bool {
+        self.mod_playing() && !self.scoping()
+    }
     /// The strongest zoom a mod asks for, while playing; the spyglass's
     /// own view wins.
     pub(super) fn mod_zoom(&self) -> Option<ModZoom> {
@@ -291,5 +301,12 @@ impl Game<'_> {
     /// Whether any running mod turned distance fog off, while playing.
     pub(super) fn mod_fog_off(&self) -> bool {
         self.mod_playing() && self.mods.mods.fog_off()
+    }
+    /// The lowest frame-rate cap a running mod set (API 19,
+    /// `render.set-fps-cap`): `Game::framerate_limit` folds it in
+    /// before the battery cap, so it composes everywhere that limit
+    /// does, splitscreen's min included.
+    pub(super) fn mod_fps_cap(&self) -> Option<u32> {
+        self.mods.mods.fps_cap()
     }
 }

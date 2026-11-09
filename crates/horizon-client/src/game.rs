@@ -8191,7 +8191,7 @@ impl Game<'_> {
         // the sleep overlay, debug screen and open screens still draw.
         let spectator = self.spectator();
         let (wi, hi) = (w as i32, h as i32);
-        let show_hud = !self.ui.hide_gui;
+        let show_hud = !self.hud_hidden();
         // max(Hud.leftHeight, Hud.rightHeight) after the bars: the item name and
         // the action bar sit above it.
         let mut bar_height = 39;
@@ -13369,7 +13369,7 @@ impl Game<'_> {
         let mut out = Vec::new();
         // GameRenderer.renderItemInHand: F1 hides the hand with the HUD.
         if self.spectator()
-            || self.ui.hide_gui
+            || self.hud_hidden()
             || self.sleeping.is_some()
             || !self.camera_type.first_person()
             || self.mod_camera_detached()
@@ -15077,7 +15077,7 @@ impl Game<'_> {
         if debug_crosshair_drawn(
             self.debug_crosshair(),
             self.camera_type.first_person(),
-            self.ui.hide_gui,
+            self.hud_hidden(),
             self.shows_panorama(),
         ) {
             let scale = HudBatch::new(size).scale;
@@ -15106,7 +15106,7 @@ impl Game<'_> {
         let adventure = self.mode == horizon_client::command::args::GameMode::Adventure;
         let outline = if !skip_world_for_blur
             && touch_target_visible
-            && !self.ui.hide_gui
+            && !self.hud_hidden()
             && (self.may_build() || adventure)
         {
             self.pick()
@@ -15205,7 +15205,7 @@ impl Game<'_> {
             self.pad.touch.in_inventory =
                 matches!(self.screen, Screen::Inventory | Screen::Creative);
             self.pad.touch.goy_rendered_by_ui = true;
-            if (in_menu || !self.ui.hide_gui)
+            if (in_menu || !self.hud_hidden())
                 && (self.player.is_some() || self.settings.keypad.enabled)
                 && (!hud_in_menu
                     || self.android_inventory_controls()
@@ -15226,7 +15226,7 @@ impl Game<'_> {
                 self.pad.touch.break_progress = self.touch_mining_progress();
                 self.pad.touch.draw(&mut hud, &self.gui.atlas);
             }
-            if !self.settings.keypad.enabled && (in_menu || !self.ui.hide_gui) {
+            if !self.settings.keypad.enabled && (in_menu || !self.hud_hidden()) {
                 horizon_client::touch_ui::draw_goy_hud(
                     &self.pad.touch,
                     &mut hud,

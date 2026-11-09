@@ -628,6 +628,13 @@ impl Game<'_> {
             has_overlay: false,
         };
         let limit = framerate_limit(self.settings.max_fps as i32, context);
+        // A mod's frame-rate cap (`render.set-fps-cap`, API 19) folds
+        // in here: it can only lower the limit, and the battery cap
+        // still applies after it and can only lower it further.
+        let limit = match self.mod_fps_cap() {
+            Some(cap) => limit.min(cap as i32),
+            None => limit,
+        };
         self.settings
             .horizon
             .battery_limit(limit, self.title.is_none(), self.focused)

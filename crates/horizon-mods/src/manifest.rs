@@ -188,10 +188,10 @@ impl Capability {
             }
             Capability::Ui => "show its own screens and a settings page",
             Capability::Render => {
-                "draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it, turn off distance fog and move your hand and held item in first person"
+                "draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it, turn off distance fog, move your hand and held item in first person, hide the whole HUD, make the hand's field of view follow the zoom and cap the frame rate"
             }
             Capability::Input => {
-                "see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys"
+                "see the keys you hold, your clicks and how long since you last gave input, take over the use button on its own items and the mouse wheel, and add keys"
             }
             Capability::Players => "see who is on the server and message them",
             Capability::World => {

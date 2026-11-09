@@ -32,6 +32,10 @@
 //! are API level 17); a server mod `storage` and `players`).
 //! `game-read` also reads the player themselves through [`game`]:
 //! their active effects and self-state (API level 18).
+//! `render` also reads whether a zoom would take effect and the
+//! spyglass's own zoom, hides the HUD, makes the hand's field of
+//! view follow the zoom and caps the frame rate, and `input` reads
+//! the time since the player's last input (API level 19).
 //! Server mods: [`server`].
 //!
 //! Widgets (capability `ui`): a mod shows a screen it owns with
@@ -58,6 +62,7 @@ pub use horizon::mods::{
 };
 pub use horizon::mods::game::{Effect, Mount, SelfState};
 pub use horizon::mods::hand::{HandState, HandTransform, SwingAnim, SwingKind};
+pub use horizon::mods::render::{HandFov, HandFovMode};
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for
 /// are called; the others may stay as their defaults.

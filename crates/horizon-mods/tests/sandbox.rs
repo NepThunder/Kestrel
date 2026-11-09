@@ -2,10 +2,9 @@
 //! examples and a guest
 //! that misbehaves on command. Needs `rustup target add wasm32-unknown-unknown`.
 use horizon_mods::{
-    BlockPos, Clock, Corner, GameMode, HeldItem, Hit, ModEffect, ModMount, ModSelfState, Mods,
-    Output, Package, Player, Runs, ServerPlayer, Shape, Snapshot, Status,
-    manifest::componentize,
-    testing::{Script, TestGame},
+    BlockPos, Clock, Corner, GameMode, HeldItem, Hit, ModEffect, ModHandFov, ModHandFovMode,
+    ModMount, ModSelfState, Mods, Output, Package, Player, Runs, ServerPlayer, Shape, Snapshot,
+    Status, manifest::componentize, testing::{Script, TestGame},
 };
 use std::{
     path::{Path, PathBuf},
@@ -19,8 +18,8 @@ id = "test_guest"
 name = "Test Guest"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "storage", "audio", "render"]
-experimental = ["audio", "render"]
+capabilities = ["game-read", "chat", "storage", "audio", "render", "input"]
+experimental = ["audio", "render", "input"]
 "#;
 const UI_MANIFEST: &str = r#"
 id = "test_ui_guest"
@@ -66,6 +65,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "self-probe",
                 "-p",
+                "zoom-probe",
+                "-p",
                 "horizon-mods-test-guest",
                 "-p",
                 "horizon-mods-test-ui-guest",
@@ -98,6 +99,7 @@ fn mods_dir() -> &'static Path {
             ("gamma_probe", example("gamma-probe")),
             ("camera_probe", example("camera-probe")),
             ("self_probe", example("self-probe")),
+            ("zoom_probe", example("zoom-probe")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
         ];
@@ -413,6 +415,238 @@ fn effects_and_self_state_flow_and_the_toggles_queue() {
     );
 }
 
+/// The zoom's truth and the idle clock (API 19): the snapshot's
+/// `can-zoom`, spyglass factor and last-input milliseconds reach
+/// the mod verbatim — the spyglass's 10 among them — and read as
+/// the not-in-a-world defaults from a snapshot that carries none.
+#[test]
+fn zoom_truth_and_the_idle_clock_flow() {
+    let mut mods = load("horizon_mods_test_guest.kmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let mut snapshot = player();
+    snapshot.can_zoom = true;
+    snapshot.spyglass_zoom = Some(10.0);
+    snapshot.last_input_ms = 123_456;
+    mods.set_snapshot(snapshot);
+    assert!(mods.command("zoomstate"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "zoom can true spy 10".into(),
+            error: false,
+        }]
+    );
+    assert!(mods.command("idle"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "idle 123456".into(),
+            error: false,
+        }]
+    );
+    // A plain snapshot (the title screen's shape): kept zoom, no
+    // scope, no idle time.
+    mods.set_snapshot(player());
+    assert!(mods.command("zoomstate"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "zoom can false spy none".into(),
+            error: false,
+        }]
+    );
+    assert!(mods.command("idle"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "idle 0".into(),
+            error: false,
+        }]
+    );
+}
+
+/// `render.set-zoom`'s widened cap (API 19): a factor of 300 clamps
+/// to 250, where it clamped to 10 before; an in-range factor and
+/// the old cap round-trip.
+#[test]
+fn the_zoom_factor_clamps_at_250() {
+    let mut mods = load("horizon_mods_test_ui_guest.kmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert!(mods.command("zoom 300 0 1"));
+    mods.drain();
+    assert_eq!(mods.zoom().map(|z| z.factor), Some(250.0));
+    assert!(mods.command("zoom 200 0 1"));
+    mods.drain();
+    assert_eq!(mods.zoom().map(|z| z.factor), Some(200.0));
+    assert!(mods.command("zoom 10 0 1"));
+    mods.drain();
+    assert_eq!(mods.zoom().map(|z| z.factor), Some(10.0));
+}
+
+/// `render.set-hide-hud` (API 19): any running mod's flag hides the
+/// HUD; one mod letting go while another holds changes nothing, and
+/// a stopped mod's ask is dropped with its store.
+#[test]
+fn hide_hud_aggregates_across_mods_and_drops_on_stop() {
+    let paths = [
+        mods_dir().join("horizon_mods_test_guest.kmod"),
+        mods_dir().join("horizon_mods_test_ui_guest.kmod"),
+    ];
+    let mut mods = Mods::load(&paths, |_| true, |_| false);
+    assert!(!mods.hide_hud());
+    assert!(mods.command("hidehud on"));
+    mods.drain();
+    assert!(mods.hide_hud());
+    assert!(mods.command("hide_hud on"));
+    mods.drain();
+    assert!(mods.hide_hud());
+    // The guest lets go; the UI guest still holds.
+    assert!(mods.command("hidehud off"));
+    mods.drain();
+    assert!(mods.hide_hud());
+    assert!(mods.command("hide_hud off"));
+    mods.drain();
+    assert!(!mods.hide_hud());
+    // A stopped mod's flag is dropped with its store.
+    assert!(mods.command("hidehud on"));
+    mods.drain();
+    assert!(mods.hide_hud());
+    assert!(mods.command("panic"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Stopped {
+            name: "Test Guest".into(),
+            reason: "it crashed (a panic)".into(),
+        }]
+    );
+    assert!(!mods.hide_hud());
+}
+
+/// `render.set-hand-fov` (API 19): the first loaded mod that sets
+/// one wins — a later mod's set waits behind it — a non-finite base
+/// reads as 70 through the host's sanitize, and the winner stopping
+/// hands the setting to the next mod that set one.
+#[test]
+fn hand_fov_is_first_loaded_wins_and_drops_on_stop() {
+    let paths = [
+        mods_dir().join("horizon_mods_test_guest.kmod"),
+        mods_dir().join("horizon_mods_test_ui_guest.kmod"),
+    ];
+    let mut mods = Mods::load(&paths, |_| true, |_| false);
+    assert_eq!(mods.hand_fov(), None);
+    // The second mod sets first: with the first mod silent, its
+    // setting is the one that applies.
+    assert!(mods.command("hand_fov add 80"));
+    mods.drain();
+    assert_eq!(
+        mods.hand_fov(),
+        Some(ModHandFov {
+            mode: ModHandFovMode::Add,
+            base: 80.0,
+        })
+    );
+    // The first loaded mod sets: it wins, over the waiting one.
+    assert!(mods.command("handfov multiply 60"));
+    mods.drain();
+    assert_eq!(
+        mods.hand_fov(),
+        Some(ModHandFov {
+            mode: ModHandFovMode::Multiply,
+            base: 60.0,
+        })
+    );
+    // A non-finite base is sanitized to vanilla's 70.
+    assert!(mods.command("handfov keep nan"));
+    mods.drain();
+    assert_eq!(
+        mods.hand_fov(),
+        Some(ModHandFov {
+            mode: ModHandFovMode::Keep,
+            base: 70.0,
+        })
+    );
+    // The winner stops: the waiting mod's setting takes over.
+    assert!(mods.command("panic"));
+    mods.drain();
+    assert_eq!(
+        mods.hand_fov(),
+        Some(ModHandFov {
+            mode: ModHandFovMode::Add,
+            base: 80.0,
+        })
+    );
+    assert!(mods.command("hand_fov off"));
+    mods.drain();
+    assert_eq!(mods.hand_fov(), None);
+}
+
+/// `render.set-fps-cap` (API 19): the aggregate is the lowest cap
+/// any running mod set, values sanitize to 1..=240 at the host
+/// (0 reads as 1, 999 as 240), and a stopped mod's cap is dropped.
+#[test]
+fn fps_cap_is_the_minimum_and_drops_on_stop() {
+    let paths = [
+        mods_dir().join("horizon_mods_test_guest.kmod"),
+        mods_dir().join("horizon_mods_test_ui_guest.kmod"),
+    ];
+    let mut mods = Mods::load(&paths, |_| true, |_| false);
+    assert_eq!(mods.fps_cap(), None);
+    assert!(mods.command("fpscap 30"));
+    mods.drain();
+    assert_eq!(mods.fps_cap(), Some(30));
+    assert!(mods.command("fps_cap 60"));
+    mods.drain();
+    assert_eq!(mods.fps_cap(), Some(30));
+    assert!(mods.command("fps_cap 20"));
+    mods.drain();
+    assert_eq!(mods.fps_cap(), Some(20));
+    // 0 sanitizes to 1, the deepest tier — and wins the minimum.
+    assert!(mods.command("fpscap 0"));
+    mods.drain();
+    assert_eq!(mods.fps_cap(), Some(1));
+    assert!(mods.command("fpscap off"));
+    mods.drain();
+    assert_eq!(mods.fps_cap(), Some(20));
+    assert!(mods.command("fpscap 15"));
+    mods.drain();
+    assert_eq!(mods.fps_cap(), Some(15));
+    // The guest stops: its cap is dropped, the other's stands.
+    assert!(mods.command("panic"));
+    mods.drain();
+    assert_eq!(mods.fps_cap(), Some(20));
+    // 999 sanitizes to the top of the range.
+    assert!(mods.command("fps_cap 999"));
+    mods.drain();
+    assert_eq!(mods.fps_cap(), Some(240));
+    assert!(mods.command("fps_cap off"));
+    mods.drain();
+    assert_eq!(mods.fps_cap(), None);
+}
+
+/// The registered-key cap (API 19): 32 keys register; the 33rd is
+/// refused with the cap's own error (16 before this API).
+#[test]
+fn the_registered_key_cap_is_32() {
+    let mut mods = load("horizon_mods_test_ui_guest.kmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert!(mods.command("keys 32"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Chat {
+            name: "Test UI Guest".into(),
+            text: "keys 32 took; ".into(),
+        }]
+    );
+    assert!(mods.command("keys 33"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Chat {
+            name: "Test UI Guest".into(),
+            text: "keys 32 took; a mod may register 32 keys".into(),
+        }]
+    );
+}
+
 #[test]
 fn coords_hud_draws_and_answers() {
     let mut mods = load("coords_hud.kmod");
@@ -528,8 +762,8 @@ experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audi
         needed(imports(&wasm).unwrap().iter().map(String::as_str)).0
     };
     assert_eq!(level("coords_hud.kmod"), 0);
-    // The UI guest draws far terrain (`render.set-far-terrain`, level 7).
-    assert_eq!(level("horizon_mods_test_ui_guest.kmod"), 7);
+    // The UI guest sets the hand FOV (`render.set-hand-fov`, level 19).
+    assert_eq!(level("horizon_mods_test_ui_guest.kmod"), 19);
     // The world probe reads blocks (`world.get-blocks`, level 8).
     assert_eq!(level("world_probe.kmod"), 8);
     // The inventory probe reads its inventory (`inventory.inventory`, level 9).
@@ -546,6 +780,8 @@ experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audi
     assert_eq!(level("camera_probe.kmod"), 14);
     // The self probe reads the player's own effects (`game.get-effects`, level 18).
     assert_eq!(level("self_probe.kmod"), 18);
+    // The zoom probe reads the zoom's truth (`render.can-zoom`, level 19).
+    assert_eq!(level("zoom_probe.kmod"), 19);
 }
 
 #[test]
@@ -998,8 +1234,10 @@ fn render_zoom_is_clamped_and_the_strongest_counts() {
     };
     assert!(mods.zoom().is_none());
     assert_eq!(zoom(&mut mods, "4 1 0.25"), Some((4.0, true, 0.25)));
-    // Over 10 and a turn under 0.05 are clamped.
-    assert_eq!(zoom(&mut mods, "50 0 0"), Some((10.0, false, 0.05)));
+    // 50 passes since API 19 widened the cap; over 250 and a turn
+    // under 0.05 are clamped.
+    assert_eq!(zoom(&mut mods, "50 0 0"), Some((50.0, false, 0.05)));
+    assert_eq!(zoom(&mut mods, "300 0 0"), Some((250.0, false, 0.05)));
     // A NaN turn keeps the player's sensitivity.
     assert_eq!(zoom(&mut mods, "2 0 x"), Some((2.0, false, 1.0)));
     // 1, under 1 and NaN end the zoom.

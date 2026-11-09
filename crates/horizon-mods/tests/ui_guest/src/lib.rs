@@ -8,7 +8,10 @@
 //! `/raycast DISTANCE` says what `game.raycast` sees; `/quiet A;B` runs
 //! lines with `command.run-quiet` (`/quiet_many N`: N of them). `/recipes`
 //! counts what `recipes` reads; `/recipes ID` describes that recipe.
-//! `/browser ID...` fills `browser`'s panel (`/browser N`: the first N
+//! `/hide_hud`, `/hand_fov` and `/fps_cap` are the second mod's
+//! `render` setters (API 19), for the aggregates' two-mod tests;
+//! `/keys N` registers N keys and reports the first refusal, for the
+//! registered-key cap. `/browser ID...` fills `browser`'s panel (`/browser N`: the first N
 //! items, `/browser` alone empties it) and registers the keys `recipe` (R)
 //! and `uses` (U); `/browser_poll` says what the player did on it;
 //! `/browser_recipes ID` shows the recipes making ID (`/browser_recipes`
@@ -16,7 +19,7 @@
 //! with `recipes.place`; `/recipe_give ITEM [COUNT]` gives with
 //! `recipes.give`.
 use horizon_mod_sdk::{
-    Mod, Registration, browser, chat, command, game,
+    HandFov, HandFovMode, Mod, Registration, browser, chat, command, game,
     input::{self, Event},
     recipes,
     render::{self, FillShape, ItemShape, Point, QuadShape, Rect, Shape, SpriteShape, TextShape},
@@ -124,6 +127,10 @@ impl Mod for Guest {
             "recipe_give",
             "corner",
             "readings",
+            "hide_hud",
+            "hand_fov",
+            "fps_cap",
+            "keys",
         ]
         .into_iter()
         .fold(Registration::new(), Registration::command)
@@ -242,6 +249,60 @@ impl Mod for Guest {
                     round: words.get(3) == Some(&"1"),
                 });
                 render::set_minimap(map);
+            }
+            // The second mod's API 19 setters: the same calls as the
+            // test guest's `/hidehud`, `/handfov` and `/fpscap`, under
+            // this guest's own names.
+            "hide_hud" => render::set_hide_hud(args == "on"),
+            "hand_fov" => {
+                if args == "off" {
+                    render::set_hand_fov(None);
+                } else {
+                    let mut words = args.split_whitespace();
+                    let mode = match words.next() {
+                        Some("multiply") => HandFovMode::Multiply,
+                        Some("add") => HandFovMode::Add,
+                        _ => HandFovMode::Keep,
+                    };
+                    let base: f32 = words.next().and_then(|w| w.parse().ok()).unwrap_or(70.0);
+                    render::set_hand_fov(Some(HandFov { mode, base }));
+                }
+            }
+            "fps_cap" => {
+                if args == "off" {
+                    render::set_fps_cap(None);
+                } else if let Ok(fps) = args.parse() {
+                    render::set_fps_cap(Some(fps));
+                }
+            }
+            // Registers keys k0..k(N-1) on the letters a..z then the
+            // digits 0..9, and reports how many took and the first
+            // refusal: the registered-key cap (32 since API 19).
+            "keys" => {
+                let n: u32 = args.parse().unwrap_or(0);
+                let names: Vec<String> = (0..n)
+                    .map(|i| {
+                        let c = if i < 26 {
+                            (b'a' + i as u8) as char
+                        } else {
+                            (b'0' + (i as u8 - 26)) as char
+                        };
+                        format!("key.keyboard.{c}")
+                    })
+                    .collect();
+                let mut took = 0;
+                let mut refusal = String::new();
+                for (i, key) in names.iter().enumerate() {
+                    match input::register_key(&format!("k{i}"), &format!("Key {i}"), key) {
+                        Ok(()) => took += 1,
+                        Err(e) => {
+                            if refusal.is_empty() {
+                                refusal = e;
+                            }
+                        }
+                    }
+                }
+                chat::show(&format!("keys {took} took; {refusal}"));
             }
             // `far_terrain off`, or `far_terrain DISTANCE REDUCED`.
             "far_terrain" => {

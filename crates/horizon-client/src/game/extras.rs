@@ -137,7 +137,7 @@ impl Game<'_> {
     /// in GUI pixels and its view of the player.
     fn minimap_shown(&self) -> Option<(Corner, f32, View)> {
         let p = self.player.as_ref()?;
-        if self.title.is_some() || self.ui.hide_gui {
+        if self.title.is_some() || self.hud_hidden() {
             return None;
         }
         let m = self.minimap_wanted()?;
@@ -227,6 +227,23 @@ impl Game<'_> {
         self.mod_zoom().map_or((1.0, true, 1.0), |z| {
             (z.factor, z.smooth, f64::from(z.turn))
         })
+    }
+    /// Ease the tracked zoom ratio (API 19, `render.set-hand-fov`):
+    /// toward 1/factor with the same halfway lerp `Camera::tick`
+    /// gives the FOV modifier whenever the winning zoom is smooth,
+    /// snapped to 1/factor for an instant zoom (whose division is
+    /// exact each frame). No zoom eases it back to 1. Called from
+    /// `tick_fov`, once per tick.
+    #[cfg(feature = "mods")]
+    pub(super) fn tick_mod_zoom_ratio(&mut self) {
+        let (factor, smooth, _) = self.zoom_now();
+        let target = 1.0 / factor;
+        let current = self.mods.zoom_ratio.unwrap_or(1.0);
+        self.mods.zoom_ratio = Some(if smooth {
+            current + (target - current) * 0.5
+        } else {
+            target
+        });
     }
     /// The field-of-view modifier target, divided by a smooth zoom.
     pub(super) fn zoomed_fov_target(&self, vanilla: f32) -> f32 {

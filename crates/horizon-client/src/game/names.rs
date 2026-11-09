@@ -165,7 +165,7 @@ impl Game<'_> {
                 discrete,
                 distance_sqr,
                 invisible_to_viewer: invisible,
-                hud_hidden: self.ui.hide_gui,
+                hud_hidden: self.hud_hidden(),
                 is_camera: false,
                 is_vehicle: ridden.contains(&m.id),
             };
@@ -265,7 +265,7 @@ impl Game<'_> {
                 discrete: false,
                 distance_sqr,
                 invisible_to_viewer: invisible,
-                hud_hidden: self.ui.hide_gui,
+                hud_hidden: self.hud_hidden(),
                 is_camera: false,
                 is_vehicle: false,
             };
@@ -303,7 +303,7 @@ impl Game<'_> {
         }
         // ItemFrameRenderer.shouldShowName/getNameTag: only the targeted
         // frame's custom-named item, with the HUD visible (also glow frames).
-        if !self.ui.hide_gui
+        if !self.hud_hidden()
             && let Some((i, distance)) = self.frame_hit()
             && self.before_block(distance)
             && self.mob_hit().is_none_or(|(_, d)| d > distance)

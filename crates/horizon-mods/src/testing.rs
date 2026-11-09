@@ -66,6 +66,17 @@ pub struct TestGame {
     /// local player's movement state, mount and toggle options. None
     /// until a test sets it, as on the title screen.
     pub self_state: Option<ModSelfState>,
+    /// What the mod reads with `render.can-zoom` (API 19): a zoom
+    /// would take effect. False until a test sets it, as outside a
+    /// world.
+    pub can_zoom: bool,
+    /// What the mod reads with `render.get-spyglass-zoom` (API 19):
+    /// the spyglass's factor while scoping. None until a test sets
+    /// it, as while not scoping.
+    pub spyglass_zoom: Option<f32>,
+    /// What the mod reads with `input.last-input-ms` (API 19): the
+    /// idle clock. 0 until a test sets it, as at the moment of input.
+    pub last_input_ms: u64,
 }
 
 /// The world a script's mod reads: [`TestGame::world`] and
@@ -179,6 +190,9 @@ impl TestGame {
             lights: Default::default(),
             effects: Vec::new(),
             self_state: None,
+            can_zoom: false,
+            spyglass_zoom: None,
+            last_input_ms: 0,
         };
         copy_mod(kmod, &copy)?;
         game.start()?;
@@ -244,6 +258,9 @@ impl TestGame {
             targeted: self.compute_targeted(),
             effects: self.effects.clone(),
             self_state: self.self_state.clone(),
+            can_zoom: self.can_zoom,
+            spyglass_zoom: self.spyglass_zoom,
+            last_input_ms: self.last_input_ms,
             ..Snapshot::default()
         });
     }
@@ -778,7 +795,8 @@ impl EntitySet {
 
 /// One step. Its parts happen in this order: `reload`, `title-screen`,
 /// `blocks`, `lights`, `join`, `player`, `clock`, `inventory`, `container`,
-/// `close-container`, `dead`, `entities`, `effects`, `self`, `multiplayer`, `ticks`,
+/// `close-container`, `dead`, `entities`, `effects`, `self`, `can-zoom`,
+/// `spyglass`, `idle-ms`, `multiplayer`, `ticks`,
 /// `frames`, `chat`, `command`, `break`, `place`, `leave`; then the blocks the mod set are made, and `expect`
 /// is checked against what the mod showed and changed during the step.
 /// For a server mod, `player`, `chat`, `command`, `break` and `place` are
@@ -814,6 +832,16 @@ pub struct Step {
     /// The local player's own state (API 18): replaces the fixture
     /// wholesale; a step without it keeps the last one.
     self_state: Option<SelfSet>,
+    /// Whether a mod's zoom would take effect (API 19): replaces the
+    /// fixture; a step without it keeps the last one.
+    can_zoom: Option<bool>,
+    /// The spyglass's zoom factor while scoping (API 19): replaces
+    /// the fixture; a step without it keeps the last one. (A script
+    /// cannot clear it back to none — no probe needs to.)
+    spyglass: Option<f32>,
+    /// Milliseconds since the player's last input (API 19): replaces
+    /// the fixture; a step without it keeps the last one.
+    idle_ms: Option<u64>,
     /// Multiplayer from this step on (capability `entity`): the list
     /// reads empty and health reads None, while the crosshair target
     /// still answers.
@@ -958,6 +986,15 @@ impl Step {
         if self.self_state.is_some() {
             parts.push("self".to_string());
         }
+        if self.can_zoom.is_some() {
+            parts.push("can-zoom".to_string());
+        }
+        if self.spyglass.is_some() {
+            parts.push("spyglass".to_string());
+        }
+        if self.idle_ms.is_some() {
+            parts.push("idle-ms".to_string());
+        }
         if self.multiplayer {
             parts.push("multiplayer".to_string());
         }
@@ -1063,6 +1100,15 @@ impl Step {
         }
         if let Some(set) = &self.self_state {
             game.self_state = Some(set.to_self_state());
+        }
+        if let Some(can) = self.can_zoom {
+            game.can_zoom = can;
+        }
+        if let Some(factor) = self.spyglass {
+            game.spyglass_zoom = Some(factor);
+        }
+        if let Some(ms) = self.idle_ms {
+            game.last_input_ms = ms;
         }
         if self.multiplayer {
             game.multiplayer = true;

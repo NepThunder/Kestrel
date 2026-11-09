@@ -470,7 +470,12 @@ impl Camera {
         }
         self.old_fov_modifier = self.fov_modifier;
         self.fov_modifier += (target_fov_modifier - self.fov_modifier) * 0.5;
-        self.fov_modifier = clamp(self.fov_modifier, 0.1, 1.5);
+        // The floor follows a divided target down (a mod's smooth
+        // zoom past 10x, API 19): every vanilla target is at least
+        // 0.1 — the spyglass's is exactly 0.1 — so with no mod zoom
+        // the floor is 0.1 and vanilla is unchanged; only a target
+        // below 0.1 lowers it, exactly as far as that target.
+        self.fov_modifier = clamp(self.fov_modifier, 0.1f32.min(target_fov_modifier), 1.5);
     }
     /// `Camera.setRotation`.
     pub fn set_rotation(&mut self, y_rot: f32, x_rot: f32) {
@@ -595,7 +600,21 @@ impl Camera {
         dead: Option<i32>,
         fluid: CameraFluid,
     ) -> f32 {
-        modify_fov_based_on_death_or_fluid(partial, 70.0, effect_scale, dead, fluid)
+        self.calculate_hud_fov_from(partial, 70.0, effect_scale, dead, fluid)
+    }
+    /// `Camera.calculateHudFov` over a caller-chosen base instead of
+    /// vanilla's fixed 70 (a mod's hand FOV, API 19): the death and
+    /// fluid distortion applies to the base last, as it does to the
+    /// 70 — it is a screen effect, not FOV policy.
+    pub fn calculate_hud_fov_from(
+        &self,
+        partial: f32,
+        base: f32,
+        effect_scale: f32,
+        dead: Option<i32>,
+        fluid: CameraFluid,
+    ) -> f32 {
+        modify_fov_based_on_death_or_fluid(partial, base, effect_scale, dead, fluid)
     }
 }
 /// `Camera.update`: the far plane covers four times the render distance and
@@ -938,6 +957,45 @@ mod tests {
         camera.tick(None, 1.0);
         assert_eq!(camera.eye_height, 0.81);
         assert_eq!(camera.fov_modifier, 0.75);
+    }
+    #[test]
+    fn the_spyglass_target_settles_at_its_floor_as_before() {
+        // The spyglass's target is exactly 0.1, the old floor
+        // (`0.1f32.min(0.1)` is `0.1`, so the vanilla computation is
+        // unchanged): easing down to it never dips below, and it
+        // settles on it to within a float ULP — the halfway ease
+        // stalls one ULP above the target rather than landing
+        // exactly, as it always did.
+        let mut camera = Camera::default();
+        camera.fov_modifier = 1.0;
+        for _ in 0..200 {
+            camera.tick(None, 0.1);
+            assert!(camera.fov_modifier >= 0.1);
+        }
+        assert!((camera.fov_modifier - 0.1).abs() < 1e-6);
+    }
+    #[test]
+    fn a_divided_mod_target_eases_below_the_old_floor() {
+        // A smooth mod zoom's target below 0.1 (a 50x zoom asks for
+        // ~0.02): the floor follows the target down, and the ease
+        // settles on the target, not on 0.1.
+        let mut camera = Camera::default();
+        camera.fov_modifier = 1.0;
+        for _ in 0..200 {
+            camera.tick(None, 0.02);
+        }
+        assert!(camera.fov_modifier < 0.1);
+        assert!((camera.fov_modifier - 0.02).abs() < 1e-6);
+    }
+    #[test]
+    fn the_fov_ceiling_is_unchanged() {
+        let mut camera = Camera::default();
+        camera.fov_modifier = 1.0;
+        for _ in 0..200 {
+            camera.tick(None, 3.0);
+            assert!(camera.fov_modifier <= 1.5);
+        }
+        assert_eq!(camera.fov_modifier, 1.5);
     }
     #[test]
     fn rotation_faces_south_at_zero_yaw() {
