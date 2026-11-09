@@ -1,0 +1,30 @@
+# Self reads (API 18): with no fixtures the player stands with no
+# effects; a step's own effects and self-state then flow in — the
+# countdown in m:ss, an infinite effect as `inf`, the sprint and
+# its toggle, and the mount's health.
+[[step]]
+ticks = 1
+[step.expect]
+panel = ["standing"]
+
+[[step]]
+ticks = 1
+[[step.effects]]
+id = "minecraft:speed"
+amplifier = 1
+duration = 1234
+[[step.effects]]
+id = "minecraft:regeneration"
+duration = -1
+ambient = true
+show-particles = false
+[step.self]
+sprinting = true
+sprint-toggled = true
+[step.self.mount]
+id = 42
+kind = "minecraft:horse"
+health = 24.5
+max-health = 30.0
+[step.expect]
+panel = ["speed II 1:01", "regeneration inf", "sprinting [sprint toggled] on minecraft:horse 24.5/30.0"]

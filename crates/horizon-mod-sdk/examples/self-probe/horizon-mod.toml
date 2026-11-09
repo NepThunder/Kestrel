@@ -1,0 +1,8 @@
+id = "self_probe"
+name = "Self Probe"
+version = "0.1.0"
+description = "Prototype for client self reads: shows your own active effects with their remaining time, your movement state and your mount's health."
+authors = ["Horizon"]
+api = "0.1"
+side = "client"
+capabilities = ["game-read", "hud"]

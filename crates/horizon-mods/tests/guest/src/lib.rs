@@ -3,11 +3,13 @@
 //! capability `storage` on a fixed key, `/save_key <key> <text>` exercises
 //! it on an arbitrary key (for the quota and key-count limits); `/handstate`,
 //! `/handset` and `/handclear` exercise capability `render`'s hand (API 16);
-//! `/swinganim` and `/swingscale` its swing terms (API 17); `tick` and
+//! `/swinganim` and `/swingscale` its swing terms (API 17); `/effects`,
+//! `/selfstate` and `/toggles` capability `game-read`'s self reads and the
+//! movement toggle write (API 18); `tick` and
 //! `frame` do nothing, to measure the cost of a call.
 use horizon_mod_sdk::{
-    HandTransform, Mod, Registration, SoundAdjustment, SoundQuery, SwingAnim, audio, chat, hand,
-    storage,
+    HandTransform, Mod, Registration, SoundAdjustment, SoundQuery, SwingAnim, audio, chat, game,
+    hand, storage,
 };
 
 struct Guest {
@@ -29,6 +31,9 @@ impl Mod for Guest {
             "handclear",
             "swinganim",
             "swingscale",
+            "effects",
+            "selfstate",
+            "toggles",
         ]
         .into_iter()
         .fold(Registration::new(), Registration::command)
@@ -124,6 +129,52 @@ impl Mod for Guest {
                 let scale: f32 = args.parse().map_err(|_| "Usage: /swingscale <f32>")?;
                 hand::set_swing_scale(scale);
                 Ok(Some("scaled".into()))
+            }
+            "effects" => {
+                let list: Vec<String> = game::get_effects()
+                    .iter()
+                    .map(|e| {
+                        format!(
+                            "{} amp {} {} ticks ambient {} particles {} icon {}",
+                            e.id, e.amplifier, e.duration, e.ambient, e.show_particles, e.show_icon
+                        )
+                    })
+                    .collect();
+                Ok(Some(format!("effects [{}]", list.join("; "))))
+            }
+            "selfstate" => {
+                let Some(s) = game::get_self_state() else {
+                    return Ok(Some("self none".into()));
+                };
+                let mount = s.mount.as_ref().map_or("none".into(), |m| {
+                    format!("{} {} {:.1}/{:.1}", m.id, m.kind, m.health, m.max_health)
+                });
+                Ok(Some(format!(
+                    "self sprint {} sneak {} fly {} glide {} mount {} toggles {} {}",
+                    s.sprinting,
+                    s.sneaking,
+                    s.flying,
+                    s.gliding,
+                    mount,
+                    s.sprint_toggled,
+                    s.sneak_toggled
+                )))
+            }
+            "toggles" => {
+                // `/toggles on off`: each half is on, off or keep.
+                let half = |word: Option<&str>| -> Result<Option<bool>, String> {
+                    match word {
+                        Some("on") => Ok(Some(true)),
+                        Some("off") => Ok(Some(false)),
+                        Some("keep") => Ok(None),
+                        _ => Err("Usage: /toggles <on|off|keep> <on|off|keep>".into()),
+                    }
+                };
+                let mut words = args.split_whitespace();
+                let sprint = half(words.next())?;
+                let sneak = half(words.next())?;
+                game::set_movement_toggles(sprint, sneak);
+                Ok(Some("toggled".into()))
             }
             _ => {
                 chat::show(&format!("hello {args} after {} ticks", self.ticks));

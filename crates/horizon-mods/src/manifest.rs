@@ -178,7 +178,7 @@ impl Capability {
     /// What the player reads before turning the mod on: "May <this>".
     pub fn describe(self) -> &'static str {
         match self {
-            Capability::GameRead => "see your position, health and the time",
+            Capability::GameRead => "see your position, health and the time, your active effects, movement and mount, and change your sprint and sneak toggle options",
             Capability::Chat => "show you chat messages",
             Capability::Hud => "draw text on your screen",
             Capability::Storage => "save its own settings to disk",

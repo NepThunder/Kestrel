@@ -685,6 +685,7 @@ impl Game<'_> {
         let (recipes, known_recipes) = self.mod_recipes();
         let (inventory, open_container) = self.mod_inventory();
         let (entities, targeted) = self.mod_entities();
+        let (effects, self_state) = self.mod_self_reads();
         Snapshot {
             player,
             clock,
@@ -707,6 +708,8 @@ impl Game<'_> {
             gamma: self.settings.gamma,
             fog: self.settings.horizon.fog,
             camera: self.snapshot_camera(),
+            effects,
+            self_state,
         }
     }
     /// The camera the last frame rendered from, for `get-camera` /
@@ -1180,6 +1183,10 @@ impl Game<'_> {
                     if self.mods.screen.as_ref().is_some_and(|s| s.owner == owner) {
                         self.close_mod_screen(false);
                     }
+                    continue;
+                }
+                Output::SetMovementToggles { sprint, sneak } => {
+                    self.mod_set_movement_toggles(sprint, sneak);
                     continue;
                 }
             };

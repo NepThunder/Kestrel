@@ -30,6 +30,8 @@
 //! through [`hand`] (API level 16; the swing's own terms — which
 //! animation plays and how much of the vanilla swing applies —
 //! are API level 17); a server mod `storage` and `players`).
+//! `game-read` also reads the player themselves through [`game`]:
+//! their active effects and self-state (API level 18).
 //! Server mods: [`server`].
 //!
 //! Widgets (capability `ui`): a mod shows a screen it owns with
@@ -54,6 +56,7 @@ pub use horizon::mods::{
     audio, browser, chat, command, entity, game, hand, hud, input, inventory, log, recipes,
     render, storage, ui, world,
 };
+pub use horizon::mods::game::{Effect, Mount, SelfState};
 pub use horizon::mods::hand::{HandState, HandTransform, SwingAnim, SwingKind};
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for

@@ -51,7 +51,7 @@ mod ui_bindings {
 }
 pub use bindings::horizon::mods::{
     entity::{Entity, Target},
-    game::{Clock, Hit, Player},
+    game::{Clock, Effect as ModEffect, Hit, Mount as ModMount, Player, SelfState as ModSelfState},
     hud::{Corner, Line},
     inventory::{Container, InvStack, PlayerInventory},
 };
@@ -242,6 +242,15 @@ pub struct Snapshot {
     /// None before the first frame renders, and on the title screen
     /// until the game fills in the panorama's pose.
     pub camera: Option<SnapshotCamera>,
+    /// The local player's active effects, in the game's order
+    /// (capability `game-read`, API 18); the game fills it once per
+    /// tick, and only while a mod reads it
+    /// ([`Mods::wants_self_state`]). Empty on the title screen.
+    pub effects: Vec<ModEffect>,
+    /// The local player's movement state, ridden mount and movement
+    /// toggle options (capability `game-read`, API 18); filled with
+    /// [`Snapshot::effects`]. None on the title screen.
+    pub self_state: Option<ModSelfState>,
 }
 
 impl Default for Snapshot {
@@ -268,6 +277,8 @@ impl Default for Snapshot {
             gamma: 0.5,
             fog: true,
             camera: None,
+            effects: Vec::new(),
+            self_state: None,
         }
     }
 }
@@ -364,6 +375,14 @@ pub enum Output {
         item: String,
         count: u32,
         components: String,
+    },
+    /// `game.set-movement-toggles` (API 18): the Toggle Sprint /
+    /// Toggle Crouch options to set; a `None` half leaves that
+    /// option as it is. The game applies and saves them as an
+    /// options-page change.
+    SetMovementToggles {
+        sprint: Option<bool>,
+        sneak: Option<bool>,
     },
 }
 
@@ -462,6 +481,8 @@ struct Running {
     reads_entities: bool,
     /// It imports `render.set-world`.
     reads_world_shapes: bool,
+    /// It imports `game.get-effects` or `game.get-self-state` (API 18).
+    reads_self: bool,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -597,6 +618,11 @@ struct State {
     /// vanilla swing pose applies ([`Mods::swing_scale`]). Kept
     /// clamped by the host call.
     swing_scale: Option<(u64, f32)>,
+    /// The movement toggle options this mod last asked to set in the
+    /// current call (API 18): `Mods::call` moves it into an
+    /// [`Output::SetMovementToggles`] when the call ends, as it does
+    /// the ui open/close flags.
+    movement_toggles: Option<(Option<bool>, Option<bool>)>,
     /// How many times this mod called `set-camera`: the game re-reads
     /// the look whenever the winning mod's count moves, so a mod
     /// calling `set-camera` every tick with fixed angles keeps the
@@ -874,6 +900,7 @@ impl Mods {
             hand_offset: None,
             swing_anim: ModSwingAnim::None,
             swing_scale: None,
+            movement_toggles: None,
             camera_seq: 0,
             aggregate_camera: None,
             aggregate_is_mine: false,
@@ -951,6 +978,9 @@ impl Mods {
             reads_inventory: functions.iter().any(|f| f.starts_with("inventory.")),
             reads_entities: functions.iter().any(|f| f.starts_with("entity.")),
             reads_world_shapes: functions.iter().any(|f| f == "render.set-world"),
+            reads_self: functions
+                .iter()
+                .any(|f| f == "game.get-effects" || f == "game.get-self-state"),
         }))
     }
 
@@ -1054,6 +1084,10 @@ impl Mods {
             std::mem::take(&mut data.ui.open),
             std::mem::take(&mut data.ui.close),
         );
+        let movement_toggles = data.movement_toggles.take();
+        if let Some((sprint, sneak)) = movement_toggles {
+            self.out.push(Output::SetMovementToggles { sprint, sneak });
+        }
         self.out.append(&mut data.out);
         if open {
             self.out.push(Output::OpenScreen { owner: i });
@@ -1310,6 +1344,14 @@ impl Mods {
         self.entries
             .iter()
             .any(|e| e.run.as_ref().is_some_and(|r| r.reads_entities))
+    }
+    /// Some running mod reads the local player's own effects or
+    /// self-state (API 18): the snapshot needs [`Snapshot::effects`]
+    /// and [`Snapshot::self_state`].
+    pub fn wants_self_state(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.reads_self))
     }
     /// Some running mod has a `frame` hook: the game refreshes the snapshot
     /// every frame for it.
@@ -1968,6 +2010,17 @@ impl game::Host for State {
     }
     fn get_clock(&mut self) -> Option<Clock> {
         self.snapshot.clock
+    }
+    fn get_effects(&mut self) -> Vec<ModEffect> {
+        self.snapshot.effects.clone()
+    }
+    fn get_self_state(&mut self) -> Option<ModSelfState> {
+        self.snapshot.self_state.clone()
+    }
+    fn set_movement_toggles(&mut self, sprint: Option<bool>, sneak: Option<bool>) {
+        // The last call in the hook wins, whole: the game applies it
+        // as one options change when the call ends (`Mods::call`).
+        self.movement_toggles = Some((sprint, sneak));
     }
     fn raycast(&mut self, distance: f32) -> Option<Hit> {
         let (at, hit) = self.snapshot.view_hit.as_ref()?;

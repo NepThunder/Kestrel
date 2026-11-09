@@ -19,7 +19,11 @@ interface log {
 }
 
 /// Capability `game-read`: the local player, the world clock and the block
-/// the player looks at.
+/// the player looks at. API 18 adds the player themselves: their active
+/// effects with the ticks left on them, their movement state and the
+/// mount they ride, and the sprint and sneak toggle options a mod may
+/// set (the game's own Options, changed the way the options page
+/// changes them — nothing here forces the player to move).
 interface game {
     record player {
         /// Feet position, in blocks.
@@ -65,6 +69,78 @@ interface game {
     /// distant terrain when LOD Distance is on), as of this tick. None when
     /// nothing is hit, and on the title screen.
     raycast: func(distance: f32) -> option<hit>;
+    /// One of the local player's active status effects (API 18).
+    record effect {
+        /// `minecraft:speed`, `minecraft:poison`, ...
+        id: string,
+        /// 0 is level I, 1 is level II, as vanilla counts.
+        amplifier: u32,
+        /// Ticks left, counted down by the client as the game does;
+        /// -1 is infinite (a beacon's renewal, a toggled conduit).
+        duration: s32,
+        /// From a beacon or a conduit: it refreshes while the player
+        /// stays in range, and shows faded in the inventory.
+        ambient: bool,
+        /// The effect throws off particles (a potion's own do; an
+        /// ambient beacon effect's are quieter, and one applied with
+        /// particles off shows none).
+        show-particles: bool,
+        /// The effect's icon shows in the HUD. The client always
+        /// shows the local player's effect icons today, so this is
+        /// always true; the field is the shape's room for a client
+        /// that learns to hide one.
+        show-icon: bool,
+    }
+    /// The local player's active effects (API 18), in the game's own
+    /// order, as of this tick. An effect queued behind a stronger one
+    /// of its kind is not active and not listed; it appears when the
+    /// stronger one ends. Empty on the title screen.
+    get-effects: func() -> list<effect>;
+    /// The living mount the local player rides (API 18).
+    record mount {
+        /// The entity id, the same id `entity.entities` lists it by.
+        id: u32,
+        /// `minecraft:horse`, `minecraft:pig`, ...
+        kind: string,
+        /// Hit points as vanilla counts them.
+        health: f32,
+        /// The mount kind's maximum.
+        max-health: f32,
+    }
+    /// The local player themselves (API 18): how they move, what
+    /// they ride, and the two movement toggle options.
+    record self-state {
+        /// Sprinting now.
+        sprinting: bool,
+        /// Sneaking now: the sneak key held or toggled, or a forced
+        /// crouch under a low ceiling.
+        sneaking: bool,
+        /// Flying on the abilities (creative, spectator).
+        flying: bool,
+        /// Gliding on an elytra: not `flying`, the fall flight the
+        /// game tracks separately.
+        gliding: bool,
+        /// The mount ridden now; none on foot. A boat or a minecart
+        /// is not a living mount and reads as none in v1.
+        mount: option<mount>,
+        /// The Toggle Sprint option is on: the sprint key latches
+        /// instead of holding.
+        sprint-toggled: bool,
+        /// The Toggle Crouch option is on: the sneak key latches.
+        sneak-toggled: bool,
+    }
+    /// The local player's own state (API 18), as of this tick.
+    /// None on the title screen.
+    get-self-state: func() -> option<self-state>;
+    /// Sets the Toggle Sprint / Toggle Crouch options (API 18), the
+    /// game's own settings: a `some` sets that option, a `none`
+    /// leaves it. They are saved to options.txt, as a change on the
+    /// options page is. Only the option changes, never the movement:
+    /// a sprint the key already latched stays latched until the key
+    /// is next pressed, exactly as when the player flips the option
+    /// by hand, and nothing here makes the player sprint, sneak or
+    /// fly who isn't.
+    set-movement-toggles: func(sprint: option<bool>, sneak: option<bool>);
 }
 
 /// Capability `chat`: messages only the local player sees.

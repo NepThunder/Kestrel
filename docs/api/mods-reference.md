@@ -7,7 +7,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 
 | In `capabilities` | Grants | The player reads "May …" |
 | --- | --- | --- |
-| `game-read` | [`game`](#game) | see your position, health and the time |
+| `game-read` | [`game`](#game) | see your position, health and the time, your active effects, movement and mount, and change your sprint and sneak toggle options |
 | `chat` | [`chat`](#chat) | show you chat messages |
 | `hud` | [`hud`](#hud) | draw text on your screen |
 | `storage` | [`storage`](#storage) | save its own settings to disk |
@@ -95,7 +95,7 @@ The mod's log, in the game's log under the mod's id. Always granted.
 
 Access: capability `game-read`.
 
-Capability `game-read`: the local player, the world clock and the block the player looks at.
+Capability `game-read`: the local player, the world clock and the block the player looks at. API 18 adds the player themselves: their active effects with the ticks left on them, their movement state and the mount they ride, and the sprint and sneak toggle options a mod may set (the game's own Options, changed the way the options page changes them — nothing here forces the player to move).
 
 ### record `player`
 
@@ -131,11 +131,52 @@ A block along the player's view.
 | `z` | `f64` |  |
 | `block` | `string` | `minecraft:stone`, ... |
 
+### record `effect`
+
+One of the local player's active status effects (API 18).
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `string` | `minecraft:speed`, `minecraft:poison`, ... |
+| `amplifier` | `u32` | 0 is level I, 1 is level II, as vanilla counts. |
+| `duration` | `s32` | Ticks left, counted down by the client as the game does; -1 is infinite (a beacon's renewal, a toggled conduit). |
+| `ambient` | `bool` | From a beacon or a conduit: it refreshes while the player stays in range, and shows faded in the inventory. |
+| `show-particles` | `bool` | The effect throws off particles (a potion's own do; an ambient beacon effect's are quieter, and one applied with particles off shows none). |
+| `show-icon` | `bool` | The effect's icon shows in the HUD. The client always shows the local player's effect icons today, so this is always true; the field is the shape's room for a client that learns to hide one. |
+
+### record `mount`
+
+The living mount the local player rides (API 18).
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `u32` | The entity id, the same id `entity.entities` lists it by. |
+| `kind` | `string` | `minecraft:horse`, `minecraft:pig`, ... |
+| `health` | `f32` | Hit points as vanilla counts them. |
+| `max-health` | `f32` | The mount kind's maximum. |
+
+### record `self-state`
+
+The local player themselves (API 18): how they move, what they ride, and the two movement toggle options.
+
+| Field | Type | |
+| --- | --- | --- |
+| `sprinting` | `bool` | Sprinting now. |
+| `sneaking` | `bool` | Sneaking now: the sneak key held or toggled, or a forced crouch under a low ceiling. |
+| `flying` | `bool` | Flying on the abilities (creative, spectator). |
+| `gliding` | `bool` | Gliding on an elytra: not `flying`, the fall flight the game tracks separately. |
+| `mount` | `option<mount>` | The mount ridden now; none on foot. A boat or a minecart is not a living mount and reads as none in v1. |
+| `sprint-toggled` | `bool` | The Toggle Sprint option is on: the sprint key latches instead of holding. |
+| `sneak-toggled` | `bool` | The Toggle Crouch option is on: the sneak key latches. |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `get-player` | `func() -> option<player>` | None on the title screen. |
 | `get-clock` | `func() -> option<clock>` | None on the title screen. |
 | `raycast` | `func(distance: f32) -> option<hit>` | The first block along the player's view (fluids pass), up to `distance` blocks (at most 1024; past the loaded chunks, across the distant terrain when LOD Distance is on), as of this tick. None when nothing is hit, and on the title screen. |
+| `get-effects` | `func() -> list<effect>` | The local player's active effects (API 18), in the game's own order, as of this tick. An effect queued behind a stronger one of its kind is not active and not listed; it appears when the stronger one ends. Empty on the title screen. |
+| `get-self-state` | `func() -> option<self-state>` | The local player's own state (API 18), as of this tick. None on the title screen. |
+| `set-movement-toggles` | `func(sprint: option<bool>, sneak: option<bool>)` | Sets the Toggle Sprint / Toggle Crouch options (API 18), the game's own settings: a `some` sets that option, a `none` leaves it. They are saved to options.txt, as a change on the options page is. Only the option changes, never the movement: a sprint the key already latched stays latched until the key is next pressed, exactly as when the player flips the option by hand, and nothing here makes the player sprint, sneak or fly who isn't. |
 
 ## `chat`
 

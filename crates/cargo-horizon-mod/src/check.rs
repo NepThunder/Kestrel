@@ -281,6 +281,18 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
                 format!("placed recipe {book_id}{}", if all { " (all)" } else { "" })
             }
             Output::Give { item, count, .. } => format!("gave {count} {item}"),
+            Output::SetMovementToggles { sprint, sneak } => {
+                let half = |v: Option<bool>| match v {
+                    Some(true) => "on",
+                    Some(false) => "off",
+                    None => "kept",
+                };
+                format!(
+                    "set the movement toggles: sprint {}, sneak {}",
+                    half(sprint),
+                    half(sneak)
+                )
+            }
             Output::Shake { strength, seconds } => {
                 format!("shook the camera: {strength:.2} for {seconds:.1} s")
             }

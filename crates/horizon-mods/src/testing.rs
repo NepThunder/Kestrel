@@ -8,8 +8,8 @@
 //! test written in TOML, `tests/<name>.toml` in the mod's folder: steps, each
 //! saying what happens and what the mod must have shown by then.
 use crate::{
-    BlockPos, Clock, Container, Corner, Entity, GameMode, InvStack, Mods, Output, Panel, Player,
-    PlayerInventory, ServerPlayer, Snapshot, Status, Target, WorldDrawLine,
+    BlockPos, Clock, Container, Corner, Entity, GameMode, InvStack, ModEffect, ModSelfState, Mods,
+    Output, Panel, Player, PlayerInventory, ServerPlayer, Snapshot, Status, Target, WorldDrawLine,
 };
 use serde::Deserialize;
 use std::{
@@ -58,6 +58,14 @@ pub struct TestGame {
     /// set, each 0 to 15; every other position reads `None` — unloaded,
     /// unlit, or outside the build range — as the game reads it.
     pub lights: std::collections::BTreeMap<(i32, i32, i32), (u8, u8)>,
+    /// What the mod reads with `game.get-effects` (API 18): the local
+    /// player's active effects. A script's mod reads them as the game
+    /// filled them; the sandbox starts with none.
+    pub effects: Vec<ModEffect>,
+    /// What the mod reads with `game.get-self-state` (API 18): the
+    /// local player's movement state, mount and toggle options. None
+    /// until a test sets it, as on the title screen.
+    pub self_state: Option<ModSelfState>,
 }
 
 /// The world a script's mod reads: [`TestGame::world`] and
@@ -169,6 +177,8 @@ impl TestGame {
             dead: false,
             world: Default::default(),
             lights: Default::default(),
+            effects: Vec::new(),
+            self_state: None,
         };
         copy_mod(kmod, &copy)?;
         game.start()?;
@@ -232,6 +242,8 @@ impl TestGame {
             open_container: (!self.dead).then(|| self.open_container.clone()).flatten(),
             entities,
             targeted: self.compute_targeted(),
+            effects: self.effects.clone(),
+            self_state: self.self_state.clone(),
             ..Snapshot::default()
         });
     }
@@ -652,6 +664,90 @@ fn on_ground_default() -> bool {
     true
 }
 
+/// One of the local player's own effects for a step (API 18), in the
+/// WIT record's shape.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct EffectSet {
+    id: String,
+    #[serde(default)]
+    amplifier: u32,
+    duration: i32,
+    #[serde(default)]
+    ambient: bool,
+    #[serde(default = "show_default")]
+    show_particles: bool,
+    #[serde(default = "show_default")]
+    show_icon: bool,
+}
+
+fn show_default() -> bool {
+    true
+}
+
+impl EffectSet {
+    fn to_effect(&self) -> ModEffect {
+        ModEffect {
+            id: self.id.clone(),
+            amplifier: self.amplifier,
+            duration: self.duration,
+            ambient: self.ambient,
+            show_particles: self.show_particles,
+            show_icon: self.show_icon,
+        }
+    }
+}
+
+/// The local player's own state for a step (API 18), in the WIT
+/// record's shape: the movement flags, the mount (id, kind, health,
+/// max-health) and the two toggle options.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct SelfSet {
+    #[serde(default)]
+    sprinting: bool,
+    #[serde(default)]
+    sneaking: bool,
+    #[serde(default)]
+    flying: bool,
+    #[serde(default)]
+    gliding: bool,
+    mount: Option<MountSet>,
+    #[serde(default)]
+    sprint_toggled: bool,
+    #[serde(default)]
+    sneak_toggled: bool,
+}
+
+/// A step's mount: the entity id, its kind and its health.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct MountSet {
+    id: u32,
+    kind: String,
+    health: f32,
+    max_health: f32,
+}
+
+impl SelfSet {
+    fn to_self_state(&self) -> ModSelfState {
+        ModSelfState {
+            sprinting: self.sprinting,
+            sneaking: self.sneaking,
+            flying: self.flying,
+            gliding: self.gliding,
+            mount: self.mount.as_ref().map(|m| crate::ModMount {
+                id: m.id,
+                kind: m.kind.clone(),
+                health: m.health,
+                max_health: m.max_health,
+            }),
+            sprint_toggled: self.sprint_toggled,
+            sneak_toggled: self.sneak_toggled,
+        }
+    }
+}
+
 impl EntitySet {
     fn to_entity(&self) -> Entity {
         Entity {
@@ -682,7 +778,7 @@ impl EntitySet {
 
 /// One step. Its parts happen in this order: `reload`, `title-screen`,
 /// `blocks`, `lights`, `join`, `player`, `clock`, `inventory`, `container`,
-/// `close-container`, `dead`, `entities`, `multiplayer`, `ticks`,
+/// `close-container`, `dead`, `entities`, `effects`, `self`, `multiplayer`, `ticks`,
 /// `frames`, `chat`, `command`, `break`, `place`, `leave`; then the blocks the mod set are made, and `expect`
 /// is checked against what the mod showed and changed during the step.
 /// For a server mod, `player`, `chat`, `command`, `break` and `place` are
@@ -712,6 +808,12 @@ pub struct Step {
     /// replaces the fixture wholesale; a step without it keeps the
     /// last one.
     entities: Option<Vec<EntitySet>>,
+    /// The local player's own active effects (API 18): replaces the
+    /// fixture wholesale; a step without it keeps the last one.
+    effects: Option<Vec<EffectSet>>,
+    /// The local player's own state (API 18): replaces the fixture
+    /// wholesale; a step without it keeps the last one.
+    self_state: Option<SelfSet>,
     /// Multiplayer from this step on (capability `entity`): the list
     /// reads empty and health reads None, while the crosshair target
     /// still answers.
@@ -850,6 +952,12 @@ impl Step {
         if self.entities.is_some() {
             parts.push("entities".to_string());
         }
+        if self.effects.is_some() {
+            parts.push("effects".to_string());
+        }
+        if self.self_state.is_some() {
+            parts.push("self".to_string());
+        }
         if self.multiplayer {
             parts.push("multiplayer".to_string());
         }
@@ -949,6 +1057,12 @@ impl Step {
         }
         if let Some(set) = &self.entities {
             game.entities = set.iter().map(EntitySet::to_entity).collect();
+        }
+        if let Some(set) = &self.effects {
+            game.effects = set.iter().map(EffectSet::to_effect).collect();
+        }
+        if let Some(set) = &self.self_state {
+            game.self_state = Some(set.to_self_state());
         }
         if self.multiplayer {
             game.multiplayer = true;

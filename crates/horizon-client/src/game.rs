@@ -192,6 +192,8 @@ mod mod_inventory;
 mod mod_panel;
 mod mod_render;
 #[cfg(feature = "mods")]
+mod mod_self;
+#[cfg(feature = "mods")]
 mod mod_world_shapes;
 mod mods;
 mod mount_menu;

@@ -45,6 +45,7 @@ members = [
     "crates/horizon-mod-sdk/examples/light-probe",
     "crates/horizon-mod-sdk/examples/gamma-probe",
     "crates/horizon-mod-sdk/examples/camera-probe",
+    "crates/horizon-mod-sdk/examples/self-probe",
     "crates/horizon-mod-sdk/examples/predator-missile",
     "crates/horizon-mod-sdk/examples/welcome",
     "crates/horizon-mod-sdk/examples/beacons",

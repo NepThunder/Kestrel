@@ -2,8 +2,8 @@
 //! examples and a guest
 //! that misbehaves on command. Needs `rustup target add wasm32-unknown-unknown`.
 use horizon_mods::{
-    BlockPos, Clock, Corner, GameMode, HeldItem, Hit, Mods, Output, Package, Player, Runs,
-    ServerPlayer, Shape, Snapshot, Status,
+    BlockPos, Clock, Corner, GameMode, HeldItem, Hit, ModEffect, ModMount, ModSelfState, Mods,
+    Output, Package, Player, Runs, ServerPlayer, Shape, Snapshot, Status,
     manifest::componentize,
     testing::{Script, TestGame},
 };
@@ -19,7 +19,7 @@ id = "test_guest"
 name = "Test Guest"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["chat", "storage", "audio", "render"]
+capabilities = ["game-read", "chat", "storage", "audio", "render"]
 experimental = ["audio", "render"]
 "#;
 const UI_MANIFEST: &str = r#"
@@ -64,6 +64,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "camera-probe",
                 "-p",
+                "self-probe",
+                "-p",
                 "horizon-mods-test-guest",
                 "-p",
                 "horizon-mods-test-ui-guest",
@@ -95,6 +97,7 @@ fn mods_dir() -> &'static Path {
             ("light_probe", example("light-probe")),
             ("gamma_probe", example("gamma-probe")),
             ("camera_probe", example("camera-probe")),
+            ("self_probe", example("self-probe")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
         ];
@@ -295,6 +298,121 @@ fn swing_anim_flows_and_the_scale_is_clamped_and_dropped() {
     assert_eq!(mods.swing_scale(), 1.0);
 }
 
+/// Capability `game-read`'s self reads (API 18): the snapshot's
+/// effects and self-state reach the mod verbatim — an infinite
+/// effect's -1 among them, and the mount's health —, both read
+/// empty/none from a snapshot that carries neither, and the
+/// movement toggle write drains as its own output.
+#[test]
+fn effects_and_self_state_flow_and_the_toggles_queue() {
+    let mut mods = load("horizon_mods_test_guest.kmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let mut snapshot = player();
+    snapshot.effects = vec![
+        ModEffect {
+            id: "minecraft:speed".into(),
+            amplifier: 1,
+            duration: 1234,
+            ambient: false,
+            show_particles: true,
+            show_icon: true,
+        },
+        ModEffect {
+            id: "minecraft:regeneration".into(),
+            amplifier: 0,
+            duration: -1,
+            ambient: true,
+            show_particles: false,
+            show_icon: true,
+        },
+    ];
+    snapshot.self_state = Some(ModSelfState {
+        sprinting: true,
+        sneaking: false,
+        flying: false,
+        gliding: false,
+        mount: Some(ModMount {
+            id: 42,
+            kind: "minecraft:horse".into(),
+            health: 24.5,
+            max_health: 30.0,
+        }),
+        sprint_toggled: true,
+        sneak_toggled: false,
+    });
+    mods.set_snapshot(snapshot);
+    assert!(mods.command("effects"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "effects [minecraft:speed amp 1 1234 ticks ambient false particles true \
+                   icon true; minecraft:regeneration amp 0 -1 ticks ambient true particles \
+                   false icon true]"
+                .into(),
+            error: false,
+        }]
+    );
+    assert!(mods.command("selfstate"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "self sprint true sneak false fly false glide false mount 42 \
+                   minecraft:horse 24.5/30.0 toggles true false"
+                .into(),
+            error: false,
+        }]
+    );
+    // No snapshot data (the title screen's shape): no effects, no self.
+    mods.set_snapshot(player());
+    assert!(mods.command("effects"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "effects []".into(),
+            error: false,
+        }]
+    );
+    assert!(mods.command("selfstate"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "self none".into(),
+            error: false,
+        }]
+    );
+    // The toggle write: each half set or left, drained as one output
+    // ahead of the command's feedback (as a `give` lands before the
+    // feedback of the command that asked for it).
+    assert!(mods.command("toggles on keep"));
+    assert_eq!(
+        mods.drain(),
+        [
+            Output::SetMovementToggles {
+                sprint: Some(true),
+                sneak: None,
+            },
+            Output::Feedback {
+                text: "toggled".into(),
+                error: false,
+            },
+        ]
+    );
+    assert!(mods.command("toggles off on"));
+    assert_eq!(
+        mods.drain(),
+        [
+            Output::SetMovementToggles {
+                sprint: Some(false),
+                sneak: Some(true),
+            },
+            Output::Feedback {
+                text: "toggled".into(),
+                error: false,
+            },
+        ]
+    );
+}
+
 #[test]
 fn coords_hud_draws_and_answers() {
     let mut mods = load("coords_hud.kmod");
@@ -426,6 +544,8 @@ experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audi
     assert_eq!(level("gamma_probe.kmod"), 13);
     // The camera probe moves the camera (`render.set-camera`, level 14).
     assert_eq!(level("camera_probe.kmod"), 14);
+    // The self probe reads the player's own effects (`game.get-effects`, level 18).
+    assert_eq!(level("self_probe.kmod"), 18);
 }
 
 #[test]

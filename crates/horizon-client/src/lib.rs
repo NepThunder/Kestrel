@@ -144,6 +144,7 @@ pub use horizon_client_core::fastutil_order;
 pub use horizon_client_core::gamerules;
 pub use horizon_client_core::lang;
 pub use horizon_client_core::nbt_path;
+pub use horizon_client_core::potions;
 pub use horizon_client_core::scoreboard;
 pub use horizon_client_core::snbt;
 pub use horizon_client_core::text;
