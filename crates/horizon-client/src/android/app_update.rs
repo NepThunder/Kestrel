@@ -9,7 +9,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 /// The repo whose releases carry Kestrel builds.
-pub const REPO: &str = "NepThunder/horizon-android";
+pub const REPO: &str = "NepThunder/Kestrel";
 /// Release tags are `kestrel-build-<run number>-attempt-<attempt>`.
 const TAG_PREFIX: &str = "kestrel-build-";
 const APK_NAME: &str = "kestrel-arm64-v8a.apk";
