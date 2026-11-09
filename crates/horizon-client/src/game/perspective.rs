@@ -5,7 +5,7 @@
 use super::{Game, Screen, shoulders::shoulder_variants};
 use horizon_client::{
     blocks::BlockFacts,
-    camera::{CameraEntity, LivingCamera},
+    camera::{Camera, CameraEntity, LivingCamera},
     collisions::SceneCollisions,
 };
 use horizon_client::{
@@ -257,42 +257,147 @@ impl Game<'_> {
             CameraType::ThirdPersonBack => horizon_client::camera::CameraType::ThirdPersonBack,
             CameraType::ThirdPersonFront => horizon_client::camera::CameraType::ThirdPersonFront,
         };
-        let context = CollisionContext::for_entity(
-            CollisionEntity {
-                identity: EntityIdentity(0),
-                y: entity.position[1],
-                descending,
-                main_hand: Some(CollisionItem::EMPTY),
-            },
-            false,
-        );
-        let mut rays = VisualRays {
-            scene: SceneCollisions {
-                world: &self.world,
-                binding: self.collision,
-                subject: None,
-            },
-            facts: self.res.facts(),
-            context,
+        // The rays (and the clip closure over them) borrow the world, so
+        // the mod camera's state is only stored back after they die: the
+        // application reads `&self`, the write-back takes `&mut self`.
+        let mod_state = {
+            let context = CollisionContext::for_entity(
+                CollisionEntity {
+                    identity: EntityIdentity(0),
+                    y: entity.position[1],
+                    descending,
+                    main_hand: Some(CollisionItem::EMPTY),
+                },
+                false,
+            );
+            let mut rays = VisualRays {
+                scene: SceneCollisions {
+                    world: &self.world,
+                    binding: self.collision,
+                    subject: None,
+                },
+                facts: self.res.facts(),
+                context,
+            };
+            // Named, so a mod camera can reuse the same visual-shape rays
+            // for its wall-clip after the entity alignment.
+            let mut clip = |from: [f64; 3], to: [f64; 3]| {
+                let hit = clip_world(
+                    &mut rays,
+                    Vec3::new(from[0], from[1], from[2]),
+                    Vec3::new(to[0], to[1], to[2]),
+                    RayBlockMode::Visual,
+                    RayFluidMode::None,
+                    4096,
+                )
+                .ok()?;
+                (!hit.miss).then_some([hit.hit.location.x, hit.hit.location.y, hit.hit.location.z])
+            };
+            view.align_with_entity(&entity, partial, kind, &mut clip);
+            // A mod camera override, when one is active and the view is not
+            // a spectator's: the override's position (wall-clamped) and
+            // look. A spectator's camera wins, and the override's
+            // per-frame state restarts from the eye when spectating ends.
+            if self.camera_mob().is_none() {
+                self.apply_mod_camera(&mut view, &mut clip)
+            } else {
+                None
+            }
         };
-        view.align_with_entity(&entity, partial, kind, |from, to| {
-            let hit = clip_world(
-                &mut rays,
-                Vec3::new(from[0], from[1], from[2]),
-                Vec3::new(to[0], to[1], to[2]),
-                RayBlockMode::Visual,
-                RayFluidMode::None,
-                4096,
-            )
-            .ok()?;
-            (!hit.miss).then_some([hit.hit.location.x, hit.hit.location.y, hit.hit.location.z])
-        });
+        self.mod_camera_state = mod_state;
         self.view = view;
         Some((
             glam::DVec3::from_array(view.position),
             view.y_rot,
             view.x_rot,
         ))
+    }
+    /// The mod camera's per-frame state, re-started from the override
+    /// when the mod called `set-camera` again or changed its values.
+    /// None while no override is active. A pure read: the caller stores
+    /// the state back, after any borrow of the world (the wall-clip rays)
+    /// has ended.
+    fn next_mod_camera_state(&self) -> Option<super::mod_input::ModCameraState> {
+        let (camera, seq) = self.mod_camera()?;
+        Some(match self.mod_camera_state {
+            Some(state) if state.seq == seq && state.last == camera => state,
+            _ => super::mod_input::ModCameraState {
+                look: (camera.yaw, camera.pitch),
+                seq,
+                last: camera,
+                prev: self.view.position,
+                prev_player: (
+                    self.player
+                        .as_ref()
+                        .map(|p| [p.position.x, p.position.y, p.position.z])
+                        .unwrap_or(self.view.position),
+                    self.dim,
+                ),
+            },
+        })
+    }
+    /// A mod camera override on `view`, when one is active: the
+    /// override's position (a freecam, wall-clamped) and look (the
+    /// mouse-driven one, re-taken whenever the mod calls `set-camera`
+    /// again). Returns the state for the caller to store, or None when no
+    /// override is active, so the player's own camera returns within a
+    /// frame.
+    fn apply_mod_camera(
+        &self,
+        view: &mut Camera,
+        clip: &mut impl FnMut([f64; 3], [f64; 3]) -> Option<[f64; 3]>,
+    ) -> Option<super::mod_input::ModCameraState> {
+        let mut state = self.next_mod_camera_state()?;
+        let camera = state.last;
+        let (yaw, pitch) = state.look;
+        let position = match camera.position {
+            // Freelook: the camera stays at the eye `align_with_entity`
+            // left it at, and only the look changes.
+            None => view.position,
+            Some(requested) => {
+                // The wall-clip ray, from the previous frame's camera:
+                // the camera stops at the first visual-shape hit, a
+                // breath short of the face, and never enters a wall. A
+                // teleport (or a dimension change) resets the ray to
+                // the requested position for one frame, so the camera
+                // is never stranded at a wall the player teleported past.
+                let feet = self
+                    .player
+                    .as_ref()
+                    .map(|p| [p.position.x, p.position.y, p.position.z]);
+                let teleported = feet.is_some_and(|feet| {
+                    let (prev_feet, prev_dim) = state.prev_player;
+                    prev_dim != self.dim
+                        || (feet[0] - prev_feet[0]).abs() > 32.0
+                        || (feet[1] - prev_feet[1]).abs() > 32.0
+                        || (feet[2] - prev_feet[2]).abs() > 32.0
+                });
+                if teleported {
+                    requested
+                } else {
+                    match clip(state.prev, requested) {
+                        Some(hit) => pull_back_camera(state.prev, hit),
+                        None => requested,
+                    }
+                }
+            }
+        };
+        state.prev = position;
+        if let Some(feet) = self
+            .player
+            .as_ref()
+            .map(|p| [p.position.x, p.position.y, p.position.z])
+        {
+            state.prev_player = (feet, self.dim);
+        }
+        view.position = position;
+        view.set_rotation(yaw, pitch);
+        // A freecam detaches the camera, so the player's own model
+        // renders and the hand hides; a freelook stays at the eye.
+        if camera.position.is_some() {
+            view.detached = true;
+        }
+        Some(state)
     }
     /// The player as `Camera.alignWithEntity` sees it.
     fn player_camera_entity(&mut self) -> Option<CameraEntity> {
@@ -529,6 +634,16 @@ impl Game<'_> {
     /// The model's old pitch is the player's `xRotO`, which the turn moves
     /// with `xRot` (`turn_rotation`).
     pub(super) fn turn_player(&mut self, xo: f64, yo: f64) {
+        // While a mod camera is active the look inputs turn the camera,
+        // not the player: the player's yaw and pitch freeze, so the player
+        // keeps walking, aiming and mining in the direction they faced.
+        // The boat clamp below is the player's, not the camera's.
+        if let Some(mut state) = self.next_mod_camera_state() {
+            let rotation = turn_rotation(state.look.0, state.look.1, None, xo, yo);
+            state.look = (rotation.y_rot, rotation.x_rot);
+            self.mod_camera_state = Some(state);
+            return;
+        }
         let pitch_o = self.player_model.as_ref().map(|m| m.previous_head_pitch);
         let rotation = turn_rotation(self.yaw, self.pitch, pitch_o, xo, yo);
         self.yaw = rotation.y_rot;
@@ -560,8 +675,9 @@ impl Game<'_> {
     }
     /// `LevelExtractor`'s skip of the camera entity: the player's own body
     /// is drawn unless the camera is in first person, or while it sleeps.
+    /// A mod freecam detaches the camera the same way third person does.
     pub(super) fn own_body_in_view(&self) -> bool {
-        !self.camera_type.first_person() || self.sleeping.is_some()
+        !self.camera_type.first_person() || self.sleeping.is_some() || self.mod_camera_detached()
     }
     /// Whether the player's own model shows in the world view (its body or,
     /// while invisible, only its armour and held items).
@@ -1155,6 +1271,23 @@ pub(super) fn player_preview_quads(
 /// easing in over a tick (#3844), while a change the tick made itself (the
 /// pitch a sleeper lies at) still eases in. `pitch_o` is the model's old
 /// pitch; without a model the old pitch is the pitch.
+/// A wall-clipped camera position pulled back from the hit face toward
+/// where the camera came from, so the camera sits a breath in front of
+/// the wall instead of exactly on its face (where the near plane would
+/// clip the face away and show through it). The third-person back-off
+/// has the same margin built in: its eight rays start 0.1 out from the
+/// eye.
+fn pull_back_camera(from: [f64; 3], hit: [f64; 3]) -> [f64; 3] {
+    let d = [hit[0] - from[0], hit[1] - from[1], hit[2] - from[2]];
+    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    if len <= 0.1 {
+        from
+    } else {
+        let s = (len - 0.1) / len;
+        [from[0] + d[0] * s, from[1] + d[1] * s, from[2] + d[2] * s]
+    }
+}
+
 fn turn_rotation(yaw: f32, pitch: f32, pitch_o: Option<f32>, xo: f64, yo: f64) -> Rotation {
     let mut rotation = Rotation {
         x_rot: pitch,
