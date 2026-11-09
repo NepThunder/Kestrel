@@ -159,6 +159,14 @@ pub struct AppUpdate {
     check: Option<mpsc::Receiver<Option<ReleaseInfo>>>,
     download: Option<mpsc::Receiver<Result<PathBuf, String>>>,
     progress: Arc<Mutex<f32>>,
+    /// Build the player dismissed with Later; the launch check will not
+    /// offer it again. A manual check ignores this.
+    dismissed_build: Option<u64>,
+    /// Whether the check currently in flight was started by hand.
+    manual: bool,
+    /// Outcome of the last manual check: Some(true) found an update,
+    /// Some(false) found none. None until a manual check completes.
+    manual_outcome: Option<bool>,
 }
 
 impl AppUpdate {
@@ -171,6 +179,9 @@ impl AppUpdate {
             check: None,
             download: None,
             progress: Arc::new(Mutex::new(0.0)),
+            dismissed_build: None,
+            manual: false,
+            manual_outcome: None,
         }
     }
 
@@ -194,17 +205,50 @@ impl AppUpdate {
         *self.progress.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// The build the player dismissed with Later, if any.
+    pub fn dismissed_build(&self) -> Option<u64> {
+        self.dismissed_build
+    }
+
+    /// Restore the dismissed build (loaded from the launcher config).
+    pub fn set_dismissed_build(&mut self, build: Option<u64>) {
+        self.dismissed_build = build;
+    }
+
+    /// Outcome of the last manual check: Some(true) found an update,
+    /// Some(false) found none. None until a manual check completes.
+    pub fn manual_outcome(&self) -> Option<bool> {
+        self.manual_outcome
+    }
+
     /// Start the launch check (once; a no-op for a local build, which has no
     /// build number embedded). The check runs on a background thread and
     /// never blocks launch.
     pub fn start_check(&mut self) {
-        if !matches!(self.state, State::Idle) || self.check.is_some() {
+        self.begin_check(false);
+    }
+
+    /// Start a manual check, e.g. from the "Check for updates" button.
+    /// Unlike the launch check, it runs even after the player dismissed an
+    /// offer, and it offers the dismissed build again.
+    pub fn recheck(&mut self) {
+        self.begin_check(true);
+    }
+
+    fn begin_check(&mut self, manual: bool) {
+        if !matches!(
+            self.state,
+            State::Idle | State::Dismissed | State::Failed
+        ) || self.check.is_some()
+        {
             return;
         }
         if own_build_number().is_none() {
             return;
         }
         self.state = State::Checking;
+        self.manual = manual;
+        self.manual_outcome = None;
         let (tx, rx) = mpsc::channel();
         self.check = Some(rx);
         std::thread::spawn(move || {
@@ -218,13 +262,27 @@ impl AppUpdate {
             && let Ok(found) = rx.try_recv()
         {
             self.check = None;
+            let manual = std::mem::replace(&mut self.manual, false);
             if matches!(self.state, State::Checking) {
+                if manual {
+                    self.manual_outcome = Some(found.is_some());
+                }
                 match found {
                     Some(info) => {
-                        self.release = Some(info);
-                        self.state = State::Available;
+                        if !manual && self.dismissed_build == Some(info.build) {
+                            // Dismissed with Later: do not offer this build
+                            // again on launch. A manual check still shows it.
+                            self.release = None;
+                            self.state = State::Idle;
+                        } else {
+                            self.release = Some(info);
+                            self.state = State::Available;
+                        }
                     }
-                    None => self.state = State::Idle,
+                    None => {
+                        self.release = None;
+                        self.state = State::Idle;
+                    }
                 }
             }
         }
@@ -274,7 +332,12 @@ impl AppUpdate {
 
     /// Dismiss the offer for this launch. A download already running is
     /// abandoned; its partial file is overwritten by the next download.
+    /// The offered build is remembered so the launch check does not offer
+    /// it again; a manual check still offers it.
     pub fn dismiss(&mut self) {
+        if let Some(info) = &self.release {
+            self.dismissed_build = Some(info.build);
+        }
         self.state = State::Dismissed;
         self.check = None;
         self.download = None;
@@ -305,5 +368,70 @@ mod tests {
         // `KESTREL_BUILD_NUMBER` is only set by CI; a local build (this
         // test) has none, so the check must stay off.
         assert_eq!(own_build_number(), None);
+    }
+
+    fn release(build: u64) -> ReleaseInfo {
+        ReleaseInfo {
+            build,
+            apk_url: "https://example.com/kestrel-arm64-v8a.apk".into(),
+            apk_size: 1,
+        }
+    }
+
+    /// Drive a check result into `poll` without touching the network.
+    fn with_check_result(update: &mut AppUpdate, manual: bool, found: Option<ReleaseInfo>) {
+        let (tx, rx) = mpsc::channel();
+        update.state = State::Checking;
+        update.manual = manual;
+        update.check = Some(rx);
+        tx.send(found).unwrap();
+        update.poll();
+    }
+
+    #[test]
+    fn dismiss_records_the_offered_build() {
+        let mut update = AppUpdate::new();
+        update.release = Some(release(21));
+        update.state = State::Available;
+        update.dismiss();
+        assert_eq!(update.dismissed_build(), Some(21));
+        assert_eq!(update.state(), State::Dismissed);
+    }
+
+    #[test]
+    fn auto_check_skips_the_dismissed_build() {
+        let mut update = AppUpdate::new();
+        update.dismissed_build = Some(21);
+        with_check_result(&mut update, false, Some(release(21)));
+        assert_eq!(update.state(), State::Idle);
+        assert!(update.release().is_none());
+        assert_eq!(update.manual_outcome(), None);
+    }
+
+    #[test]
+    fn auto_check_still_offers_a_newer_build() {
+        let mut update = AppUpdate::new();
+        update.dismissed_build = Some(21);
+        with_check_result(&mut update, false, Some(release(22)));
+        assert_eq!(update.state(), State::Available);
+        assert_eq!(update.release().unwrap().build, 22);
+    }
+
+    #[test]
+    fn manual_check_offers_the_dismissed_build() {
+        let mut update = AppUpdate::new();
+        update.dismissed_build = Some(21);
+        with_check_result(&mut update, true, Some(release(21)));
+        assert_eq!(update.state(), State::Available);
+        assert_eq!(update.release().unwrap().build, 21);
+        assert_eq!(update.manual_outcome(), Some(true));
+    }
+
+    #[test]
+    fn manual_check_with_no_update_reports_up_to_date() {
+        let mut update = AppUpdate::new();
+        with_check_result(&mut update, true, None);
+        assert_eq!(update.state(), State::Idle);
+        assert_eq!(update.manual_outcome(), Some(false));
     }
 }

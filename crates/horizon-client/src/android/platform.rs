@@ -503,11 +503,87 @@ pub fn install_apk(path: &std::path::Path) -> bool {
         )?;
         // FLAG_GRANT_READ_URI_PERMISSION | FLAG_ACTIVITY_NEW_TASK: the
         // installer reads the APK through the provider, from a new task.
+        // (addFlags returns the Intent, so its JNI signature is
+        // `(I)Landroid/content/Intent;` — the `(I)V` form looks the method up
+        // with the wrong return type and throws, so the installer never
+        // opens.)
         env.call_method(
             &intent,
             "addFlags",
-            "(I)V",
+            "(I)Landroid/content/Intent;",
             &[JValue::Int(0x0000_0001 | 0x1000_0000)],
+        )?;
+        env.call_method(
+            activity,
+            "startActivity",
+            "(Landroid/content/Intent;)V",
+            &[JValue::Object(&intent)],
+        )?;
+        Ok(())
+    })
+    .is_some()
+}
+
+/// Whether Android lets this app trigger an APK install: the per-app
+/// "Install unknown apps" grant (`PackageManager.canRequestPackageInstalls`).
+/// Firing the install intent without it silently does nothing on Android 8+,
+/// so check this before `install_apk`. Unknown (JNI failure) reads as false.
+pub fn can_install_packages() -> bool {
+    with_context(|env, activity| {
+        let pm = env
+            .call_method(
+                activity,
+                "getPackageManager",
+                "()Landroid/content/pm/PackageManager;",
+                &[],
+            )?
+            .l()?;
+        let allowed = env
+            .call_method(&pm, "canRequestPackageInstalls", "()Z", &[])?
+            .z()?;
+        Ok(allowed)
+    })
+    .unwrap_or(false)
+}
+
+/// Open the system "Install unknown apps" screen for this app, so the
+/// player can allow Kestrel to install APKs. Returns false when the
+/// settings screen could not be opened.
+pub fn open_install_permission_settings() -> bool {
+    let Some(package) = package_name() else {
+        return false;
+    };
+    with_context(|env, activity| {
+        let action = JObject::from(env.new_string(
+            "android.settings.action.MANAGE_UNKNOWN_APP_SOURCES",
+        )?);
+        let intent = env.new_object(
+            "android/content/Intent",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&action)],
+        )?;
+        let uri_text = format!("package:{package}");
+        let address = JObject::from(env.new_string(uri_text)?);
+        let uri = env
+            .call_static_method(
+                "android/net/Uri",
+                "parse",
+                "(Ljava/lang/String;)Landroid/net/Uri;",
+                &[JValue::Object(&address)],
+            )?
+            .l()?;
+        env.call_method(
+            &intent,
+            "setData",
+            "(Landroid/net/Uri;)Landroid/content/Intent;",
+            &[JValue::Object(&uri)],
+        )?;
+        // FLAG_ACTIVITY_NEW_TASK: the settings open from a new task.
+        env.call_method(
+            &intent,
+            "addFlags",
+            "(I)Landroid/content/Intent;",
+            &[JValue::Int(0x1000_0000)],
         )?;
         env.call_method(
             activity,

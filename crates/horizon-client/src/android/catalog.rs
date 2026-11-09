@@ -105,6 +105,10 @@ pub struct Config {
     pub custom_profile_desc: String,
     #[serde(default)]
     pub preset_edit_mode: String,
+    /// Kestrel build dismissed with Later in the update prompt; the launch
+    /// check does not offer it again (a manual check still does).
+    #[serde(default)]
+    pub dismissed_update_build: Option<u64>,
     #[serde(default)]
     pub theme: horizon_client::ui_theme::LauncherThemeConfig,
 }

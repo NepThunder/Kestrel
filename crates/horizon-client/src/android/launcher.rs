@@ -255,6 +255,10 @@ impl Launcher {
         };
         // Kestrel's own update check: a background thread asks GitHub for a
         // newer release; nothing downloads until the player taps Download.
+        // A build dismissed with Later is not offered again on launch.
+        launcher
+            .app_update
+            .set_dismissed_build(launcher.catalog.config.dismissed_update_build);
         launcher.app_update.start_check();
         launcher
     }

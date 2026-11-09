@@ -252,6 +252,7 @@ pub(super) enum Action {
     AppUpdateDownload,
     AppUpdateInstall,
     AppUpdateDismiss,
+    AppUpdateCheck,
     Import(horizon_client::content_files::Kind),
     OpenFolder(horizon_client::content_files::Kind),
     ToggleSection(usize),
@@ -3547,15 +3548,31 @@ impl Launcher {
                 "Cancel",
                 Action::AppUpdateDismiss,
             ),
-            State::Ready => (
-                "Download complete".to_owned(),
-                format!(
-                    "Build {} is ready to install. Android will ask you to confirm the install.",
-                    info.build
-                ),
-                "Install",
-                Action::AppUpdateInstall,
-            ),
+            State::Ready => {
+                if crate::platform::can_install_packages() {
+                    (
+                        "Download complete".to_owned(),
+                        format!(
+                            "Build {} is ready to install. Android will ask you to confirm the install.",
+                            info.build
+                        ),
+                        "Install",
+                        Action::AppUpdateInstall,
+                    )
+                } else {
+                    // No "Install unknown apps" grant yet: the button opens
+                    // the system screen for Kestrel instead of the installer.
+                    (
+                        "Download complete".to_owned(),
+                        format!(
+                            "Build {} is ready, but Kestrel needs permission to install apps. Tap Allow, turn it on in Settings, then come back and tap Install.",
+                            info.build
+                        ),
+                        "Allow install",
+                        Action::AppUpdateInstall,
+                    )
+                }
+            }
             State::Failed => (
                 "Download failed".to_owned(),
                 self.app_update
@@ -4206,7 +4223,7 @@ impl Launcher {
             }
             SettingsCategory::Launcher => {
                 let c = &self.catalog.config;
-                let count = 12;
+                let count = 13;
                 let extra_ime = if ime_top_dp.is_some() { 180.0 } else { 0.0 };
                 let max_scroll =
                     (count as f32 * step_y + extra_ime - (list_bottom - list_top)).max(0.0);
@@ -4243,7 +4260,33 @@ impl Launcher {
                 };
                 let game_anim_off = c.disable_game_animations || touch_cfg.disable_game_animations;
 
-                let rows: [(&str, &str, SettingControl<'_>); 12] = [
+                // "Check for updates" row: its subtitle reports the last
+                // check so the player can see the result at a glance.
+                let update_sub = match crate::app_update::own_build_number() {
+                    None => "Update checks run on CI builds only".to_owned(),
+                    Some(own) => match self.app_update.state() {
+                        crate::app_update::State::Checking => {
+                            "Checking for updates…".to_owned()
+                        }
+                        crate::app_update::State::Available
+                        | crate::app_update::State::Downloading
+                        | crate::app_update::State::Ready => self
+                            .app_update
+                            .release()
+                            .map_or("An update is available".to_owned(), |r| {
+                                format!("Build {} is available", r.build)
+                            }),
+                        crate::app_update::State::Failed => {
+                            "Update check failed — tap Check to retry".to_owned()
+                        }
+                        _ => match self.app_update.manual_outcome() {
+                            Some(false) => format!("You're up to date (build {own})"),
+                            _ => format!("You have build {own} — tap Check for the latest"),
+                        },
+                    },
+                };
+
+                let rows: [(&str, &str, SettingControl<'_>); 13] = [
                     (
                         "APPEARANCE, DPI SCALING & MOTION",
                         "Material 3 Expressive theme studio, adaptive phone DPI scaling & animation toggles",
@@ -4316,6 +4359,11 @@ impl Launcher {
                         "Open game & world folders",
                         "Manage saves, resource packs and mods in Android Files",
                         SettingControl::Button("Open Files", Action::GameFiles, false),
+                    ),
+                    (
+                        "Check for updates",
+                        &update_sub,
+                        SettingControl::Button("Check", Action::AppUpdateCheck, false),
                     ),
                 ];
 
@@ -5639,15 +5687,36 @@ impl Launcher {
                     self.app_update.start_download(&cache);
                 }
             }
+            Some(Action::AppUpdateCheck) => {
+                self.app_update.recheck();
+            }
             Some(Action::AppUpdateInstall) => {
-                if let Some(path) = self.app_update.downloaded().cloned()
+                if !crate::platform::can_install_packages() {
+                    // No "Install unknown apps" grant: firing the install
+                    // intent would silently do nothing, so send the player
+                    // to the system screen for Kestrel instead and keep
+                    // the prompt, so they can tap Install again after
+                    // allowing it.
+                    if crate::platform::open_install_permission_settings() {
+                        self.catalog.status = "Allow Kestrel to install apps in Settings, then tap Install again.".into();
+                    } else {
+                        self.catalog.status =
+                            "Could not open the install-permission screen.".into();
+                    }
+                } else if let Some(path) = self.app_update.downloaded().cloned()
                     && crate::platform::install_apk(&path)
                 {
                     self.app_update.dismiss();
+                    self.catalog.config.dismissed_update_build =
+                        self.app_update.dismissed_build();
+                    self.catalog.config.save(&self.home)?;
                 }
             }
             Some(Action::AppUpdateDismiss) => {
                 self.app_update.dismiss();
+                self.catalog.config.dismissed_update_build =
+                    self.app_update.dismissed_build();
+                self.catalog.config.save(&self.home)?;
             }
             Some(Action::UiScale) => self.open_chooser(chooser::Kind::UiScale),
             Some(Action::ChooseUiScale(pct)) => {
