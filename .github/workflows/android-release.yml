@@ -1,4 +1,5 @@
-# Official Kestrel release build: arm64 public distribution APK.
+# Official Kestrel release build: public distribution APKs for all
+# four Android architectures the builder supports.
 # Runs manually on the android branch of this fork. Builds a public,
 # non-debuggable release candidate with tools/android_prepare.py tables
 # (original resources download from Mojang), signed with the dedicated
@@ -33,6 +34,12 @@ jobs:
         include:
           - abi: arm64-v8a
             target: aarch64-linux-android
+          - abi: armeabi-v7a
+            target: armv7-linux-androideabi
+          - abi: x86
+            target: i686-linux-android
+          - abi: x86_64
+            target: x86_64-linux-android
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -115,13 +122,22 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: apks
-      - name: Create official release with APK
+      - name: Publish official release with all APKs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -R apks
-          cp apks/apk-arm64-v8a/*.apk kestrel-arm64-v8a.apk
-          gh release create "v${{ inputs.version }}" --latest --target "${{ github.sha }}" \
-            --title "Kestrel ${{ inputs.version }}" \
-            --notes "Official release. Built from android commit ${{ github.sha }}. Package com.kestrel.android, arm64-v8a." \
-            kestrel-arm64-v8a.apk
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            cp "apks/apk-$abi"/*.apk "kestrel-$abi.apk"
+          done
+          # Re-running for an existing version tops the release up with
+          # the full architecture set instead of failing on the tag.
+          if gh release view "v${{ inputs.version }}" > /dev/null 2>&1; then
+            gh release upload "v${{ inputs.version }}" --clobber \
+              kestrel-arm64-v8a.apk kestrel-armeabi-v7a.apk kestrel-x86.apk kestrel-x86_64.apk
+          else
+            gh release create "v${{ inputs.version }}" --latest --target "${{ github.sha }}" \
+              --title "Kestrel ${{ inputs.version }}" \
+              --notes "Official release. Built from android commit ${{ github.sha }}. Package com.kestrel.android. One APK per architecture: arm64-v8a, armeabi-v7a, x86, x86_64 — pick the one matching your device." \
+              kestrel-arm64-v8a.apk kestrel-armeabi-v7a.apk kestrel-x86.apk kestrel-x86_64.apk
+          fi
