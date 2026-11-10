@@ -560,10 +560,10 @@ pub fn open_install_permission_settings() -> bool {
         return false;
     };
     open_settings_screen(
-        "android.settings.action.MANAGE_UNKNOWN_APP_SOURCES",
+        "android.settings.MANAGE_UNKNOWN_APP_SOURCES",
         Some(&package),
     ) || open_settings_screen(
-        "android.settings.action.MANAGE_UNKNOWN_APP_SOURCES",
+        "android.settings.MANAGE_UNKNOWN_APP_SOURCES",
         None,
     ) || open_settings_screen(
         "android.settings.APPLICATION_DETAILS_SETTINGS",
