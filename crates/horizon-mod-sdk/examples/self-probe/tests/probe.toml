@@ -18,10 +18,10 @@ id = "minecraft:regeneration"
 duration = -1
 ambient = true
 show-particles = false
-[step.self]
+[step.self-state]
 sprinting = true
 sprint-toggled = true
-[step.self.mount]
+[step.self-state.mount]
 id = 42
 kind = "minecraft:horse"
 health = 24.5
