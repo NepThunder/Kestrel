@@ -167,6 +167,59 @@ impl ChatOptions {
         (9.0 * (self.line_spacing + 1.0)) as i32
     }
 }
+/// How the chat's lines are decorated, as a mod declared it
+/// (capability `chat-decoration`, API 27): the game's own
+/// rendering of the district's `line-decoration` record. The
+/// game maps the mod runtime's aggregate onto this; nothing
+/// about mods reaches further in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineDecoration {
+    pub sender_head: bool,
+}
+
+/// How the chat box moves, as a mod declared it (capability
+/// `chat-decoration`, API 27): the district's
+/// `chat-animation` record, its durations already clamped
+/// by the host. Every value at its default is vanilla.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChatAnimation {
+    pub message_ms: u32,
+    pub fade_in: bool,
+    pub input_ms: u32,
+    pub hide_indicator: bool,
+}
+impl ChatAnimation {
+    /// The input field's downward offset this long after the
+    /// chat opened: [`INPUT_RISE`] at 0, easing to nothing —
+    /// the field rises into exactly its vanilla place.
+    pub fn input_offset(&self, age_ms: u64) -> i32 {
+        ((1.0 - animation_progress(age_ms, self.input_ms)) * INPUT_RISE as f32).round() as i32
+    }
+}
+
+/// The strip a sender head reserves at a headed message's
+/// left (capability `chat-decoration`): the 8px face and a
+/// 4px gap — the gap the icon reservation counts in, so the
+/// two reservations share one rhythm.
+pub const HEAD_INDENT: i32 = 12;
+/// How far below its place the input field starts when the
+/// chat opens (capability `chat-decoration`): its own 12px
+/// band, the height the field's background spans.
+pub const INPUT_RISE: i32 = 12;
+
+/// The chat animations' ease (capability `chat-decoration`):
+/// smoothstep over the age's fraction of the duration — 0 at
+/// the start, 1 at and past the end, and 1 outright when the
+/// duration is 0 (off). Both animations land exactly where
+/// vanilla puts things; this only shapes the arrival.
+fn animation_progress(age_ms: u64, duration_ms: u32) -> f32 {
+    if duration_ms == 0 {
+        return 1.0;
+    }
+    let t = (age_ms as f32 / duration_ms as f32).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 #[derive(Clone, Debug)]
 struct Message {
     added: u64,
@@ -175,6 +228,18 @@ struct Message {
     source: ChatSource,
     /// `GuiMessage.signature`: a signed player message's, for deletion.
     signature: Option<Box<Signature>>,
+    /// The sender's head skin (capability `chat-decoration`,
+    /// API 27): the texture reference the game resolved for
+    /// the authenticated sender at the packet, when the line
+    /// is that player's own. The face texture the tab list
+    /// draws; identity never leaves the game.
+    head_skin: Option<String>,
+    /// The arrival on the game's millisecond clock (capability
+    /// `chat-decoration`, API 27): the last clock the game
+    /// noted before the message arrived (`Chat::note_ms`),
+    /// stamped in `push_message`. The tick clock stays the
+    /// fade's; this one is the message animation's.
+    added_ms: u64,
 }
 /// A wrapped line (`GuiMessage.Line`).
 #[derive(Clone, Debug)]
@@ -182,6 +247,19 @@ struct Line {
     added: u64,
     content: Text,
     tag: Option<std::sync::Arc<Tag>>,
+    /// The message's head skin (capability `chat-decoration`,
+    /// API 27), on its first wrapped line only: continuations
+    /// carry none.
+    head_skin: Option<String>,
+    /// The strip the message's head reserves at its lines'
+    /// left ([`HEAD_INDENT`] when the message carries a head,
+    /// else 0): dealt at wrap time, so the layout and the
+    /// click geometry shift together or not at all.
+    indent: i32,
+    /// The message's arrival on the millisecond clock
+    /// (capability `chat-decoration`, API 27), shared by all
+    /// of its wrapped lines.
+    added_ms: u64,
 }
 
 /// `GuiMessageTag`: the bar at the left of a message's lines, the tooltip
@@ -265,6 +343,11 @@ pub struct Chat {
     /// `ChatComponent.messageDeletionQueue`: deletions of messages still
     /// too new to replace, with the tick from which they may be.
     deletions: Vec<(Box<Signature>, u64)>,
+    /// The last millisecond clock the game noted (`note_ms`,
+    /// capability `chat-decoration`, API 27): arrivals stamp
+    /// their `added_ms` from it. The component never reads a
+    /// clock itself.
+    last_ms: u64,
 }
 impl Chat {
     pub fn lines_per_page(&self, focused: bool) -> usize {
@@ -288,18 +371,30 @@ impl Chat {
         let tag = indicator.map(|color| std::sync::Arc::new(Tag::system_single_player(color)));
         self.add_message(&atlas.font, content, tag, source, ticks, focused);
     }
+    /// Notes the game's millisecond clock (capability
+    /// `chat-decoration`, API 27): the message animation ages
+    /// arrivals from the last clock noted here. The game
+    /// calls this every frame it draws the chat; nothing in
+    /// the component reads a clock itself.
+    pub fn note_ms(&mut self, now_ms: u64) {
+        self.last_ms = now_ms;
+    }
     /// `add` of a player message with its signature, which a server's
-    /// deletion names it by (`GuiMessage.signature`).
+    /// deletion names it by (`GuiMessage.signature`). `head` is the
+    /// sender's head skin as the game resolved it for the
+    /// authenticated sender (capability `chat-decoration`, API 27) —
+    /// a decoration record, consulted only when a mod asks for heads.
     pub fn add_signed(
         &mut self,
         atlas: &HudAtlas,
         content: Text,
         signature: Option<Signature>,
         tag: Option<Tag>,
+        head: Option<String>,
         ticks: u64,
         focused: bool,
     ) {
-        self.add_player_message(&atlas.font, content, signature, tag, ticks, focused);
+        self.add_player_message(&atlas.font, content, signature, tag, head, ticks, focused);
     }
     #[cfg(test)]
     fn add_signed_message(
@@ -310,7 +405,7 @@ impl Chat {
         ticks: u64,
         focused: bool,
     ) {
-        self.add_player_message(font, content, signature, None, ticks, focused);
+        self.add_player_message(font, content, signature, None, None, ticks, focused);
     }
     /// `ChatComponent.addPlayerMessage`: the tag the message's trust level made.
     fn add_player_message(
@@ -319,6 +414,7 @@ impl Chat {
         content: Text,
         signature: Option<Signature>,
         tag: Option<Tag>,
+        head: Option<String>,
         ticks: u64,
         focused: bool,
     ) {
@@ -330,6 +426,8 @@ impl Chat {
                 tag: tag.map(std::sync::Arc::new),
                 source: ChatSource::Player,
                 signature: signature.map(Box::new),
+                head_skin: head,
+                added_ms: 0,
             },
             focused,
         );
@@ -351,14 +449,19 @@ impl Chat {
                 tag,
                 source,
                 signature: None,
+                head_skin: None,
+                added_ms: 0,
             },
             focused,
         );
     }
-    fn push_message(&mut self, font: &crate::font::Font, message: Message, focused: bool) {
+    fn push_message(&mut self, font: &crate::font::Font, mut message: Message, focused: bool) {
         if !self.abilities.shows(message.source) {
             return;
         }
+        // The arrival joins the millisecond clock (capability
+        // `chat-decoration`, API 27): the last one the game noted.
+        message.added_ms = self.last_ms;
         // ChatComponent.logChatMessage: every message shown is in the log.
         let plain = message.content.plain();
         crate::logging::write_only(log::Level::Info, &format!("[CHAT] {plain}"));
@@ -378,7 +481,19 @@ impl Chat {
             0
         };
         let width = self.max_width() - icon;
+        // A headed message wraps narrower by its strip
+        // (capability `chat-decoration`, API 27): the
+        // reservation is dealt here, at wrap time, so the
+        // text never reflows when the policy comes and goes —
+        // only the layout's shift does.
+        let indent = if message.head_skin.is_some() {
+            HEAD_INDENT
+        } else {
+            0
+        };
+        let width = width - indent;
         let content = self.displayed(&message.content);
+        let mut first = true;
         for line in font.wrap_components(&content, width) {
             if focused && self.scroll > 0 {
                 self.new_since_scroll = true;
@@ -390,8 +505,18 @@ impl Chat {
                     added: message.added,
                     content: line,
                     tag: message.tag.clone(),
+                    // The head rides the first wrapped line
+                    // only; continuations carry none.
+                    head_skin: if first {
+                        message.head_skin.clone()
+                    } else {
+                        None
+                    },
+                    indent,
+                    added_ms: message.added_ms,
                 },
             );
+            first = false;
         }
         self.lines.truncate(100);
     }
@@ -491,6 +616,10 @@ impl Chat {
             ))),
             source: ChatSource::Server,
             signature: None,
+            // The marker is the game's line, not the sender's:
+            // no head (capability `chat-decoration`, API 27).
+            head_skin: None,
+            added_ms: message.added_ms,
         };
         // refreshTrimmedMessages.
         self.rewrap(font);
@@ -555,7 +684,19 @@ impl Chat {
     }
     /// `ChatComponent.extractRenderState` (background mode unless `focused`)
     /// on a screen `height` GUI pixels tall at `Hud.tickCount` `ticks`.
-    pub fn layout(&self, height: i32, ticks: u64, focused: bool) -> Vec<GuiDraw> {
+    /// `now_ms` is the game's millisecond clock, `heads` whether a mod's
+    /// line decoration asks for sender heads and `animation` its chat
+    /// animation (capability `chat-decoration`, API 27): with no
+    /// decoration and no animation the draws are vanilla's, exactly.
+    pub fn layout(
+        &self,
+        height: i32,
+        ticks: u64,
+        focused: bool,
+        now_ms: u64,
+        heads: bool,
+        animation: Option<ChatAnimation>,
+    ) -> Vec<GuiDraw> {
         let total = self.lines.len();
         if total == 0 {
             return Vec::new();
@@ -585,9 +726,29 @@ impl Chat {
             .map(|(i, line)| (i, line, alpha_of(line)))
             .filter(|(_, _, alpha)| *alpha > 1.0e-5)
             .collect();
+        // The chat animation (capability `chat-decoration`,
+        // API 27): the indicator's bar hides whenever the
+        // standing animation asks, at any scroll; the message
+        // slide and fade run only at rest (scroll 0), aged
+        // from the newest line's arrival — a scrolled view is
+        // history, and history does not move. At progress 1
+        // every number here is vanilla's.
+        let hide_indicator = animation.is_some_and(|a| a.hide_indicator);
+        let newest_ms = self.lines.get(self.scroll).map(|line| line.added_ms);
+        let (slide, fade) = match animation {
+            Some(a) if self.scroll == 0 && a.message_ms > 0 => {
+                let age = newest_ms.map_or(0, |ms| now_ms.saturating_sub(ms));
+                let p = animation_progress(age, a.message_ms);
+                (
+                    ((1.0 - p) * entry_height as f32).round() as i32,
+                    if a.fade_in { p } else { 1.0 },
+                )
+            }
+            _ => (0, 1.0),
+        };
         let mut out = vec![GuiDraw::Push(vec![
             PoseOp::Scale(scale, scale),
-            PoseOp::Translate(4.0, 0.0),
+            PoseOp::Translate(4.0, slide as f32),
         ])];
         for &(i, _, alpha) in &lines {
             let bottom = chat_bottom - i as i32 * entry_height;
@@ -601,26 +762,58 @@ impl Chat {
         }
         for &(i, line, alpha) in &lines {
             let bottom = chat_bottom - i as i32 * entry_height;
-            let opacity = alpha * text_opacity;
+            // The arriving message's lines fade in with its
+            // slide (capability `chat-decoration`, API 27):
+            // every line stamped with the newest arrival
+            // shares the factor.
+            let opacity = if fade < 1.0 && Some(line.added_ms) == newest_ms {
+                alpha * fade * text_opacity
+            } else {
+                alpha * text_opacity
+            };
             let color = hud_layout::white(opacity);
+            // The line's text shifts right by its strip while
+            // heads are asked for; the reservation was dealt
+            // at wrap time either way, so nothing reflows.
+            let indent = if heads { line.indent } else { 0 };
             if color >> 24 != 0 {
+                if heads && let Some(skin) = &line.head_skin {
+                    // The sender's face, as the player list
+                    // draws it, in the strip at the row's
+                    // left, fading with its line.
+                    crate::tab_list::face(
+                        &mut out,
+                        skin,
+                        0,
+                        bottom - bottom_to_text,
+                        8,
+                        true,
+                        false,
+                        color,
+                    );
+                }
                 out.push(GuiDraw::Text {
                     text: line.content.clone(),
-                    x: 0,
+                    x: indent,
                     y: bottom - bottom_to_text,
                     color,
                     shadow: true,
                 });
             }
             if let Some(tag) = &line.tag {
-                let color = hud_layout::as8(opacity) << 24 | tag.color & 0xFF_FFFF;
-                out.push(hud_layout::fill(
-                    -4,
-                    bottom - entry_height,
-                    -2,
-                    bottom,
-                    color,
-                ));
+                // `hide-indicator` fences to this bar alone:
+                // the modified icon and the tag's tooltip are
+                // drawn elsewhere and stay.
+                if !hide_indicator {
+                    let color = hud_layout::as8(opacity) << 24 | tag.color & 0xFF_FFFF;
+                    out.push(hud_layout::fill(
+                        -4,
+                        bottom - entry_height,
+                        -2,
+                        bottom,
+                        color,
+                    ));
+                }
             }
         }
         if focused {
@@ -657,9 +850,27 @@ impl Chat {
         out
     }
     /// Draws [`Chat::layout`] into the HUD batch, and with the chat screen
-    /// open the restricted prompt above the lines.
-    pub fn draw(&self, batch: &mut HudBatch, atlas: &HudAtlas, ticks: u64, focused: bool) {
-        let draws = self.layout(batch.height as i32, ticks, focused);
+    /// open the restricted prompt above the lines. The clock and the
+    /// decoration are [`Chat::layout`]'s (capability `chat-decoration`,
+    /// API 27).
+    pub fn draw(
+        &self,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        ticks: u64,
+        focused: bool,
+        now_ms: u64,
+        heads: bool,
+        animation: Option<ChatAnimation>,
+    ) {
+        let draws = self.layout(
+            batch.height as i32,
+            ticks,
+            focused,
+            now_ms,
+            heads,
+            animation,
+        );
         hud_layout::paint(batch, atlas, &draws);
         if focused && self.abilities.any_restriction() {
             let prompt = self.restricted_prompt(&atlas.font, batch.height as i32);
@@ -723,23 +934,36 @@ impl Chat {
         ]
     }
     /// The click action under a GUI-space cursor while chat is focused.
+    /// `heads` is the standing line decoration (capability
+    /// `chat-decoration`, API 27): the geometry shifts with the layout.
     pub fn click_at(
         &self,
         font: &crate::font::Font,
         height: i32,
         x: f64,
         y: f64,
+        heads: bool,
     ) -> Option<ClickEvent> {
-        self.style_at(font, height, x, y)?.click
+        self.style_at(font, height, x, y, heads)?.click
     }
     /// The hover text under a GUI-space cursor while chat is focused
     /// (ChatScreen.render's `renderComponentHoverEffect`).
-    pub fn hover_at(&self, font: &crate::font::Font, height: i32, x: f64, y: f64) -> Option<Text> {
-        self.style_at(font, height, x, y)?.hover.map(|h| *h)
+    pub fn hover_at(
+        &self,
+        font: &crate::font::Font,
+        height: i32,
+        x: f64,
+        y: f64,
+        heads: bool,
+    ) -> Option<Text> {
+        self.style_at(font, height, x, y, heads)?.hover.map(|h| *h)
     }
     /// The wrapped line under a GUI-space cursor while chat is focused, and
-    /// the cursor's x within it (the text starts at 0).
-    fn line_at(&self, height: i32, x: f64, y: f64) -> Option<(&Line, f64)> {
+    /// the cursor's x within its text (the text starts at 0 — or at the
+    /// line's head strip while heads are asked for, capability
+    /// `chat-decoration`, API 27: a cursor in the strip reads as before
+    /// the text, so no style answers there).
+    fn line_at(&self, height: i32, x: f64, y: f64, heads: bool) -> Option<(&Line, f64)> {
         let scale = self.options.scale as f32;
         let x = x / f64::from(scale) - 4.0;
         let bottom = hud_layout::floor((height - 40) as f32 / scale);
@@ -751,7 +975,9 @@ impl Chat {
         if row >= self.lines_per_page(true) {
             return None;
         }
-        Some((self.lines.get(self.scroll + row)?, x))
+        let line = self.lines.get(self.scroll + row)?;
+        let indent = if heads { line.indent } else { 0 };
+        Some((line, x - f64::from(indent)))
     }
     /// ChatComponent.getClickedComponentStyleAt.
     pub fn style_at(
@@ -760,8 +986,9 @@ impl Chat {
         height: i32,
         x: f64,
         y: f64,
+        heads: bool,
     ) -> Option<crate::text::Style> {
-        let (line, mut x) = self.line_at(height, x, y)?;
+        let (line, mut x) = self.line_at(height, x, y, heads)?;
         if x < 0.0 {
             return None;
         }
@@ -784,6 +1011,7 @@ impl Chat {
         height: i32,
         x: f64,
         y: f64,
+        heads: bool,
     ) -> (Option<Text>, Vec<GuiDraw>) {
         let o = &self.options;
         let scale = o.scale as f32;
@@ -812,7 +1040,12 @@ impl Chat {
             let bottom = chat_bottom - i as i32 * entry_height;
             let top = bottom - entry_height;
             let width = font.width_text(&line.content).ceil() as i32;
-            hovered_message |= inside(0, top, width, bottom);
+            // The message's span shifts with its head strip
+            // (capability `chat-decoration`, API 27), as the
+            // layout and `line_at` do; the bar's place at the
+            // far left does not move.
+            let indent = if heads { line.indent } else { 0 };
+            hovered_message |= inside(indent, top, width + indent, bottom);
             // GuiMessage.Line.endOfEntry: the next newer line is another message's.
             let end_of_entry = index == 0
                 || match (&line.tag, &self.lines[index - 1].tag) {
@@ -829,7 +1062,7 @@ impl Chat {
                 tooltip = Some(tag.text.clone());
             }
             if tag.icon {
-                let (left, text_bottom) = (width + 4, bottom - bottom_to_text + 9);
+                let (left, text_bottom) = (width + indent + 4, bottom - bottom_to_text + 9);
                 let icon_top = text_bottom - 9 - 1;
                 let over = inside(left, icon_top, left + 9, text_bottom);
                 if over {
@@ -1705,21 +1938,29 @@ impl ChatScreen {
     }
     /// `ChatScreen.extractRenderState` without the chat lines: the input's
     /// background (`background`, `Options.getBackgroundColor`), the input,
-    /// then the suggestion list or the usage lines.
+    /// then the suggestion list or the usage lines. `input_rise` is the
+    /// opening animation's offset for the field and its background
+    /// (capability `chat-decoration`, API 27 — [`ChatAnimation::input_offset`]):
+    /// the field slides up from that far below its place; the suggestion
+    /// list and usage lines never move. 0 is vanilla.
     pub fn draw(
         &mut self,
         m: &Measure,
         mouse: (i32, i32),
         blink_ms: u64,
         background: i32,
+        input_rise: i32,
     ) -> Vec<Draw> {
         let (w, h) = (self.width, self.height);
         let mut out = Vec::new();
+        let mut field = Vec::new();
         if self.layout.anchor_to_bottom {
-            d::fill(&mut out, 2, h - 14, w - 2, h - 2, background);
+            d::fill(&mut field, 2, h - 14, w - 2, h - 2, background);
         }
         let format = |s: &str, o: usize| self.format(s, o);
-        self.input.draw(&mut out, m, blink_ms, Some(&format));
+        self.input.draw(&mut field, m, blink_ms, Some(&format));
+        shift_draws(&mut field, input_rise);
+        out.extend(field);
         if let Some(mut l) = self.suggestions.take() {
             self.draw_list(&mut out, m, &mut l, mouse);
             self.suggestions = Some(l);
@@ -1832,5 +2073,27 @@ impl ChatScreen {
             (false, true) => "narration.suggestion.usage.fill.hidable",
             (false, false) => "narration.suggestion.usage.fill.fixed",
         })
+    }
+}
+
+/// Moves screen draws down by `dy` (capability `chat-decoration`,
+/// API 27): every variant's y fields, nothing else — the input
+/// field's background, text, cursor and scissor rise together.
+fn shift_draws(draws: &mut [Draw], dy: i32) {
+    if dy == 0 {
+        return;
+    }
+    for draw in draws {
+        match draw {
+            Draw::Sprite { y, .. } | Draw::Blit { y, .. } | Draw::Text { y, .. } => *y += dy,
+            Draw::Fill { y0, y1, .. }
+            | Draw::Highlight { y0, y1, .. }
+            | Draw::Scissor { y0, y1, .. } => {
+                *y0 += dy;
+                *y1 += dy;
+            }
+            Draw::Tooltip { y, .. } => *y += dy,
+            Draw::NoScissor => {}
+        }
     }
 }

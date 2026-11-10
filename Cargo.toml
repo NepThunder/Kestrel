@@ -54,6 +54,7 @@ members = [
     "crates/horizon-mod-sdk/examples/inventory-actions-probe",
     "crates/horizon-mod-sdk/examples/map-probe",
     "crates/horizon-mod-sdk/examples/particles-probe",
+    "crates/horizon-mod-sdk/examples/chat-decoration-probe",
     "crates/horizon-mod-sdk/examples/predator-missile",
     "crates/horizon-mod-sdk/examples/welcome",
     "crates/horizon-mod-sdk/examples/beacons",

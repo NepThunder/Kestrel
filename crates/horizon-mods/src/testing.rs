@@ -10,11 +10,12 @@
 use crate::{
     BlockPos, Clock, Container, Corner, Entity, GameMode, InvStack, ItemModelIndex, MapTileData,
     MapView, ModAction, ModActionTarget, ModArmPose, ModBlockDisplay, ModBlockTarget, ModBurst,
-    ModClickKind, ModDragButton, ModEffect, ModEmitter, ModEmitterAnchor, ModEntityPoseState,
-    ModEntityTarget, ModFace, ModFlatDisplay, ModHand, ModItemUse, ModMapContext, ModMapLayer,
-    ModPoseSwingAnim, ModPosition, ModPositionEvent, ModScreenEvent, ModScreenState, ModSelfState,
-    ModSlotMove, ModTradeList, ModTradeOffer, ModTradeStack, ModWheelEvent, Mods, Output, Panel,
-    Player, PlayerInventory, ServerPlayer, Snapshot, Status, Target, WorldDrawLine,
+    ModChatAnimation, ModClickKind, ModDragButton, ModEffect, ModEmitter, ModEmitterAnchor,
+    ModEntityPoseState, ModEntityTarget, ModFace, ModFlatDisplay, ModHand, ModItemUse,
+    ModLineDecoration, ModMapContext, ModMapLayer, ModPoseSwingAnim, ModPosition, ModPositionEvent,
+    ModScreenEvent, ModScreenState, ModSelfState, ModSlotMove, ModTradeList, ModTradeOffer,
+    ModTradeStack, ModWheelEvent, Mods, Output, Panel, Player, PlayerInventory, ServerPlayer,
+    Snapshot, Status, Target, WorldDrawLine,
 };
 use serde::Deserialize;
 use std::{
@@ -1081,6 +1082,25 @@ fn burst_line(burst: &ModBurst) -> String {
 /// it (API 26): its anchor (`self`, `entity <id>` or
 /// `at <x> <y> <z>`), its burst's particle and count, its
 /// rate and its offset — `self end_rod x1 @40/s offset 1 1 0`.
+/// The standing line decoration as a script's
+/// `expect.chat-decoration` names it (API 27): the one
+/// toggle spelled out — `sender-head true`.
+fn decoration_line(decoration: &ModLineDecoration) -> String {
+    format!("sender-head {}", decoration.sender_head)
+}
+
+/// The standing chat animation as a script's
+/// `expect.chat-animation` names it (API 27): both
+/// durations as the host clamped them, then the two
+/// toggles — `message 150ms fade-in true input 170ms
+/// hide-indicator false`.
+fn animation_line(animation: &ModChatAnimation) -> String {
+    format!(
+        "message {}ms fade-in {} input {}ms hide-indicator {}",
+        animation.message_ms, animation.fade_in, animation.input_ms, animation.hide_indicator
+    )
+}
+
 fn emitter_line(emitter: &ModEmitter) -> String {
     let anchor = match &emitter.anchor {
         ModEmitterAnchor::SelfPlayer => "self".to_string(),
@@ -1584,6 +1604,14 @@ pub struct Expect {
     /// The harness never steps them — stepping is the game's
     /// side, against the drawn world.
     emitters: Option<Vec<String>>,
+    /// The standing line decoration after the step, in the
+    /// spelling `decoration_line` gives it (capability
+    /// `chat-decoration`, API 27): `none` once cleared.
+    chat_decoration: Option<String>,
+    /// The standing chat animation after the step, in the
+    /// spelling `animation_line` gives it (capability
+    /// `chat-decoration`, API 27): `none` once cleared.
+    chat_animation: Option<String>,
     /// The mod is turned off during this step, for a reason holding this text.
     /// Without it, a mod that stops fails the test.
     stopped: Option<String>,
@@ -2093,6 +2121,22 @@ impl Step {
                 .map(|(_, emitter)| emitter_line(emitter))
                 .collect();
             same("emitters", want, &got)?;
+        }
+        if let Some(want) = &e.chat_decoration {
+            let got = game
+                .mods
+                .chat_line_decoration()
+                .as_ref()
+                .map_or_else(|| "none".to_string(), decoration_line);
+            same("chat-decoration", &Some(want.clone()), &Some(got))?;
+        }
+        if let Some(want) = &e.chat_animation {
+            let got = game
+                .mods
+                .chat_animation()
+                .as_ref()
+                .map_or_else(|| "none".to_string(), animation_line);
+            same("chat-animation", &Some(want.clone()), &Some(got))?;
         }
         let feedback = |error: bool| {
             out.iter().rev().find_map(|o| match o {

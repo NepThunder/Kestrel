@@ -698,9 +698,10 @@ impl Game<'_> {
         s.command.resize(&m, &c, w as i32, h as i32);
         let mouse = (self.cursor.0.floor() as i32, self.cursor.1.floor() as i32);
         let blink = s.opened.elapsed().as_millis() as u64;
-        // The command box is added first.
+        // The command box is added first. (The chat's opening
+        // animation is the chat screen's own: no rise here.)
         let mark = horizon_client::widgets::narratables_mark();
-        let draws = s.command.draw(&m, mouse, blink, 0);
+        let draws = s.command.draw(&m, mouse, blink, 0, 0);
         horizon_client::widgets::move_narratables(mark, 0);
         horizon_client::screen_draw::paint(batch, atlas, &draws);
         self.command_block_screen = Some(s);

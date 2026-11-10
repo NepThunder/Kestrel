@@ -10,6 +10,8 @@
 //! counts what `recipes` reads; `/recipes ID` describes that recipe.
 //! `/hide_hud`, `/hand_fov` and `/fps_cap` are the second mod's
 //! `render` setters (API 19), for the aggregates' two-mod tests;
+//! `/chat_head` and `/chat_anim` are its `chat-decoration`
+//! setters (API 27), for the same district's two-mod test;
 //! `/keys N` registers N keys and reports the first refusal, for the
 //! registered-key cap. `/browser ID...` fills `browser`'s panel (`/browser N`: the first N
 //! items, `/browser` alone empties it) and registers the keys `recipe` (R)
@@ -19,7 +21,8 @@
 //! with `recipes.place`; `/recipe_give ITEM [COUNT]` gives with
 //! `recipes.give`.
 use horizon_mod_sdk::{
-    HandFov, HandFovMode, Mod, Registration, browser, chat, command, game,
+    ChatAnimation, HandFov, HandFovMode, LineDecoration, Mod, Registration, browser, chat,
+    chat_decoration, command, game,
     input::{self, Event},
     recipes,
     render::{self, FillShape, ItemShape, Point, QuadShape, Rect, Shape, SpriteShape, TextShape},
@@ -130,6 +133,8 @@ impl Mod for Guest {
             "hide_hud",
             "hand_fov",
             "fps_cap",
+            "chat_head",
+            "chat_anim",
             "keys",
         ]
         .into_iter()
@@ -273,6 +278,32 @@ impl Mod for Guest {
                     render::set_fps_cap(None);
                 } else if let Ok(fps) = args.parse() {
                     render::set_fps_cap(Some(fps));
+                }
+            }
+            // The second mod's API 27 setters, under this
+            // guest's own names: a decoration asking for no
+            // heads, and an animation unlike the test guest's,
+            // so the latest-writer aggregate can be told
+            // apart from either mod alone.
+            "chat_head" => {
+                if args == "off" {
+                    chat_decoration::set_line_decoration(None);
+                } else {
+                    chat_decoration::set_line_decoration(Some(LineDecoration {
+                        sender_head: false,
+                    }));
+                }
+            }
+            "chat_anim" => {
+                if args == "off" {
+                    chat_decoration::set_animation(None);
+                } else {
+                    chat_decoration::set_animation(Some(ChatAnimation {
+                        message_ms: 250,
+                        fade_in: false,
+                        input_ms: 300,
+                        hide_indicator: false,
+                    }));
                 }
             }
             // Registers keys k0..k(N-1) on the letters a..z then the

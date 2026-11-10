@@ -1471,6 +1471,14 @@ impl Game<'_> {
     pub(super) fn return_client_world(&mut self) {}
     /// API 26: no mod runs, so no emitter ever stands to end.
     pub(super) fn clear_mod_particle_emitters(&mut self) {}
+    /// API 27: no mod runs, so no chat decoration stands.
+    pub(super) fn mod_chat_line_decoration(&self) -> Option<horizon_client::chat::LineDecoration> {
+        None
+    }
+    /// API 27: no mod runs, so no chat animation stands.
+    pub(super) fn mod_chat_animation(&self) -> Option<horizon_client::chat::ChatAnimation> {
+        None
+    }
     /// API 25: no mod runs, so no tile view is ever lent.
     pub(super) fn lend_client_map(&mut self) -> bool {
         false
@@ -2957,6 +2965,33 @@ impl Game<'_> {
     /// the close fans out to the server or the save.
     pub(super) fn clear_mod_particle_emitters(&mut self) {
         self.mods.mods.clear_particle_emitters();
+    }
+    /// The standing line decoration (capability
+    /// `chat-decoration`, API 27): the runtime's aggregate,
+    /// mapped field for field onto the chat component's own
+    /// record — the one translation site. `None`: vanilla chat.
+    pub(super) fn mod_chat_line_decoration(&self) -> Option<horizon_client::chat::LineDecoration> {
+        self.mods
+            .mods
+            .chat_line_decoration()
+            .map(|d| horizon_client::chat::LineDecoration {
+                sender_head: d.sender_head,
+            })
+    }
+    /// The standing chat animation (capability
+    /// `chat-decoration`, API 27), mapped as
+    /// [`Game::mod_chat_line_decoration`] maps the decoration.
+    /// `None`: vanilla chat.
+    pub(super) fn mod_chat_animation(&self) -> Option<horizon_client::chat::ChatAnimation> {
+        self.mods
+            .mods
+            .chat_animation()
+            .map(|a| horizon_client::chat::ChatAnimation {
+                message_ms: a.message_ms,
+                fade_in: a.fade_in,
+                input_ms: a.input_ms,
+                hide_indicator: a.hide_indicator,
+            })
     }
     /// Collects one queued slot verb (capability
     /// `inventory-actions`, API 24): at most

@@ -26,6 +26,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `screen` | [`screen`](#screen) | see which of the game's screens is open and what it holds, put its buttons on those screens for you to press, highlight slots, stand in for the debug screen, and choose a villager's trade for you — a trade moves your items, as clicking the trade yourself would |
 | `inventory-actions` | [`inventory-actions`](#inventory-actions) | move your items for you in your inventory and open containers: click and drag over slots, as your own clicks in them would — a server sees ordinary clicks and may refuse any of them |
 | `map` | [`map`](#map) | read the game's map tiles of the ground around you, show its own minimap and a full-screen map, and know where you died and where you came back |
+| `chat-decoration` | [`chat-decoration`](#chat-decoration) | restyle the game's chat: put a player's own head beside the chat lines they wrote, and animate the chat box as messages arrive and as it opens |
 
 ## World `horizon-mod`
 
@@ -45,7 +46,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `audio`, `hand`, `entity-pose`, `item-model`, `particles`, `actions`, `screen`, `inventory-actions`, `map`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `audio`, `hand`, `entity-pose`, `item-model`, `particles`, `actions`, `screen`, `inventory-actions`, `map`, `chat-decoration`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
 - Exports (what the mod provides): `ui-events`, `audio-events`, `events`
 
 ## World `ui-host`
@@ -64,9 +65,9 @@ The game's side of capability `audio` (API 15) beyond `horizon-mod`: a second wo
 
 ## World `render-host`
 
-The game's side of capability `render` (imports only). API 16's `hand` rides along: it is a render extension, checked against the `render` capability, not one of its own. API 20's `entity-pose` rides along the same way. API 21's `actions` is hosted here too — the frame/tick-adjacent client surfaces live in this world — but it is its own capability, not render's: acting is not presentation. API 22's `screen` likewise: its reads are presentation, but `select-trade` spends items, so the interface is its own capability with a consent line that names both halves. API 23's `item-model` rides along with the hand and the poses: its writes are display only — a stack's picture, marks on its slots, dropped items' lie — so it is render's, with no consent line of its own. API 24's `inventory-actions` is hosted here too, as the actions and the screens are, and is its own capability, not `inventory`'s: reading an inventory and moving its stacks are different consents, and a shipped `inventory` mod's line said only the reading. API 25's `map` is hosted here too, and is its own capability as well: its heart is a survey — the game's tiles of the ground around the player, and where they died and came back — not drawing, though its full-screen map and its own minimap ride along. API 26's `particles` rides along with the hand, the poses and the item models: a burst is a picture in the world, drawn by the game's own engine — nothing spent, moved or read — so it is render's, with no consent line of its own.
+The game's side of capability `render` (imports only). API 16's `hand` rides along: it is a render extension, checked against the `render` capability, not one of its own. API 20's `entity-pose` rides along the same way. API 21's `actions` is hosted here too — the frame/tick-adjacent client surfaces live in this world — but it is its own capability, not render's: acting is not presentation. API 22's `screen` likewise: its reads are presentation, but `select-trade` spends items, so the interface is its own capability with a consent line that names both halves. API 23's `item-model` rides along with the hand and the poses: its writes are display only — a stack's picture, marks on its slots, dropped items' lie — so it is render's, with no consent line of its own. API 24's `inventory-actions` is hosted here too, as the actions and the screens are, and is its own capability, not `inventory`'s: reading an inventory and moving its stacks are different consents, and a shipped `inventory` mod's line said only the reading. API 25's `map` is hosted here too, and is its own capability as well: its heart is a survey — the game's tiles of the ground around the player, and where they died and came back — not drawing, though its full-screen map and its own minimap ride along. API 26's `particles` rides along with the hand, the poses and the item models: a burst is a picture in the world, drawn by the game's own engine — nothing spent, moved or read — so it is render's, with no consent line of its own. API 27's `chat-decoration` is hosted here too, as the frame-adjacent client surfaces are, and is its own capability, not `chat`'s or `render`'s: it supplies no content of its own — it asks the game to restyle the game's own chat — and one of its toggles is trust-adjacent, so the restyle gets a consent line of its own.
 
-- Imports (what the game offers): `render`, `input`, `hand`, `entity-pose`, `item-model`, `particles`, `actions`, `screen`, `inventory-actions`, `map`
+- Imports (what the game offers): `render`, `input`, `hand`, `entity-pose`, `item-model`, `particles`, `actions`, `screen`, `inventory-actions`, `map`, `chat-decoration`
 - Exports (what the mod provides): 
 
 ## World `recipes-host`
@@ -1376,6 +1377,36 @@ A standing stream of particles, stepped by the game every tick until replaced or
 | --- | --- | --- |
 | `emit` | `func(burst: burst)` | Emits one burst, to be drawn after this call returns. Bursts are weighed against the mod's budget: at most 1024 particles a tick across its bursts and its emitters together; past the budget the rest of the tick's bursts spawn nothing, and nothing is held over. A burst too far from the camera (past 32 blocks, as the game's own particles are), a burst on the title screen, and a burst of a type that does not spawn, all quietly spawn nothing. Malformed numbers (a non-finite position, spread or speed) refuse the whole burst, as the native line refuses them. |
 | `set-emitters` | `func(emitters: option<list<emitter>>)` | Replaces the mod's emitters: at most 8. They live until replaced, cleared (none), or the mod stops — a stopped mod's streams end with it, mid-flight particles living out their own lives as the game's do. Nothing here survives the world closing, either: anchors are the open world's, and a reopened world starts with no emitters until the mod declares them again. |
+
+## `chat-decoration`
+
+Access: capability `chat-decoration`.
+
+Capability `chat-decoration` (experimental: the manifest needs `experimental = ["chat-decoration"]`): the game's own chat, restyled as the game allows. A mod declares how the chat is decorated and animated; the game does all of the drawing, with its own data. A mod cannot draw over the chat, add, remove or change a line, or choose what appears beside one: a player's head beside their line is that player's, resolved by the game from the skin it holds for them, and the mod never names a player, a line or a picture. Nothing here reads anything: what a mod learns from chat still comes through `events.chat`, as plain text, unchanged.
+
+### record `line-decoration`
+
+How the chat's lines are decorated.
+
+| Field | Type | |
+| --- | --- | --- |
+| `sender-head` | `bool` | A player's own head — their skin's face, as the player list draws it — in the strip left of the first wrapped line of each chat line they wrote. Only lines the game received as that player's: system lines, disguised lines, `/me` lines, wrapped continuations and a mod's own `chat.show` lines get none. The head fades with its line, as its line does, and hides with the chat (F1). |
+
+### record `chat-animation`
+
+How the chat box itself moves. Every duration is milliseconds, 0 to 1000 (a larger value is cut to 1000); 0 is off. The game eases each animation with its own curve and always lands exactly where vanilla puts things: these numbers change how the chat arrives, never where it rests.
+
+| Field | Type | |
+| --- | --- | --- |
+| `message-ms` | `u32` | A new message eases the chat up into place over this long, the stack starting one line lower. |
+| `fade-in` | `bool` | The new message also fades in over `message-ms`. Off: it slides at its line's own opacity. |
+| `input-ms` | `u32` | Opening the chat slides the input field up from the bottom of the screen over this long. |
+| `hide-indicator` | `bool` | Hides the coloured bar at the left of a message's lines (the indicator the game's trust tags draw). The bar only: a modified message keeps the icon after its lines, and hovering the bar's place still shows the tag's tooltip. |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `set-line-decoration` | `func(decoration: option<line-decoration>)` | Replaces the mod's line decoration (none clears it). It lasts until replaced, cleared, or the mod stops: a stopped mod's styling ends with it, on the next frame. When several running mods declare one, the last-loaded one's stands (the hand district's latest-writer rule); when it stops, an earlier declaration stands again. |
+| `set-animation` | `func(animation: option<chat-animation>)` | Replaces the mod's chat animation (none clears it), with the same lifetime and the same latest-writer rule as `set-line-decoration` — the two records are independent: one mod's heads and another's animation stand together. |
 
 ## `audio-events`
 

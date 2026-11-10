@@ -34,6 +34,9 @@ fn add(chat: &mut Chat, font: &Font, content: Text) {
                 added: 0,
                 content,
                 tag: None,
+                head_skin: None,
+                indent: 0,
+                added_ms: 0,
             },
         );
     }
@@ -53,8 +56,8 @@ fn clicking_seed_copies_the_raw_value_only_inside_the_link() {
         let expected = Some(ClickEvent::CopyToClipboard(seed.to_string()));
         let start = 4.0 + f64::from(font.width("Seed: ["));
         let end = start + f64::from(font.width(&seed.to_string()));
-        assert_eq!(chat.click_at(&font, 360, start, 315.0), expected);
-        assert_eq!(chat.click_at(&font, 360, end - 0.5, 315.0), expected);
+        assert_eq!(chat.click_at(&font, 360, start, 315.0, false), expected);
+        assert_eq!(chat.click_at(&font, 360, end - 0.5, 315.0, false), expected);
         for (x, y) in [
             (start - 0.5, 315.0),
             (end, 315.0),
@@ -62,7 +65,7 @@ fn clicking_seed_copies_the_raw_value_only_inside_the_link() {
             (start, 320.0),
             (start, 310.0),
         ] {
-            assert_eq!(chat.click_at(&font, 360, x, y), None, "{x}, {y}");
+            assert_eq!(chat.click_at(&font, 360, x, y, false), None, "{x}, {y}");
         }
     }
 }
@@ -95,7 +98,7 @@ fn click_targets_match_rendered_spans_when_scaled_wrapped_and_scrolled() {
             for scroll in [0, 3, 12] {
                 chat.scroll = scroll;
                 let mut links = 0;
-                for draw in chat.layout(361, 0, true) {
+                for draw in chat.layout(361, 0, true, 0, false, None) {
                     if let GuiDraw::Text { text, x, y, .. } = draw {
                         let mut at = x as f64;
                         for (c, style) in text.chars() {
@@ -103,7 +106,7 @@ fn click_targets_match_rendered_spans_when_scaled_wrapped_and_scrolled() {
                             let cursor_x = (4.0 + at + width / 2.0) * scale;
                             let cursor_y = (y as f64 + 3.0) * scale;
                             assert_eq!(
-                                chat.click_at(&font, 361, cursor_x, cursor_y),
+                                chat.click_at(&font, 361, cursor_x, cursor_y, false),
                                 style.click,
                                 "scale={scale}, spacing={line_spacing}, scroll={scroll}, char={c}"
                             );
@@ -117,7 +120,7 @@ fn click_targets_match_rendered_spans_when_scaled_wrapped_and_scrolled() {
                 let top = ((361 - 40) as f64 / scale).floor()
                     - chat.lines_per_page(true) as f64 * chat.options.line_height() as f64;
                 assert_eq!(
-                    chat.click_at(&font, 361, 10.0 * scale, (top - 1.0) * scale),
+                    chat.click_at(&font, 361, 10.0 * scale, (top - 1.0) * scale, false),
                     None
                 );
             }
@@ -147,7 +150,8 @@ fn locate_coordinates_fill_chat_with_teleport_without_submitting() {
         let mut screen = ChatScreen::new(&m, &commands, "draft", 0, 640, 360, full());
         let x = 4.0 + f64::from(font.width("Found at "));
         assert!(!screen.click(&m, &commands, x, 315.0));
-        let Some(ClickEvent::SuggestCommand(command)) = chat.click_at(&font, 360, x, 315.0) else {
+        let Some(ClickEvent::SuggestCommand(command)) = chat.click_at(&font, 360, x, 315.0, false)
+        else {
             panic!("locate coordinates must suggest a command");
         };
         screen.suggest_command(&m, &commands, &command);
@@ -381,16 +385,19 @@ fn a_server_component_keeps_its_click_and_hover_events() {
     let mut chat = Chat::default();
     add(&mut chat, &font, line);
     let x = 4.0 + f64::from(font.width("CL"));
-    let Some(ClickEvent::SuggestCommand(command)) = chat.click_at(&font, 360, x, 315.0) else {
+    let Some(ClickEvent::SuggestCommand(command)) = chat.click_at(&font, 360, x, 315.0, false)
+    else {
         panic!("the line must suggest its command");
     };
     assert_eq!(command, "/say clicked");
-    let hover = chat.hover_at(&font, 360, x, 315.0).expect("a hover text");
+    let hover = chat
+        .hover_at(&font, 360, x, 315.0, false)
+        .expect("a hover text");
     assert_eq!(hover.plain(), "Tip");
     assert_eq!(hover.spans[0].style.color, Some(text::AQUA));
     // Past the (bold, so wider) text, nothing.
     let past = 4.0 + f64::from(font.width("CLICK")) + 20.0;
-    assert!(chat.hover_at(&font, 360, past, 315.0).is_none());
+    assert!(chat.hover_at(&font, 360, past, 315.0, false).is_none());
 }
 
 /// `ChatVisiblity`: Commands Only keeps the chat out, Hidden takes the
@@ -645,4 +652,207 @@ fn a_chat_message_is_cut_to_the_256_utf16_units_the_packet_holds() {
     // A cut between the halves of a pair keeps the character below it.
     let mixed = format!("{}\u{1f600}", "b".repeat(255));
     assert_eq!(normalize_chat_message(&mixed), "b".repeat(255));
+}
+
+#[test]
+fn a_headed_message_wraps_narrower_and_deals_its_head_to_the_first_line() {
+    let font = font();
+    let content =
+        Text::literal("alpha beta gamma delta epsilon zeta alpha beta gamma delta epsilon zeta");
+    let mut plain = Chat::default();
+    plain.options.width = 0.0;
+    plain.add_player_message(&font, content.clone(), None, None, None, 0, true);
+    let mut headed = Chat::default();
+    headed.options.width = 0.0;
+    headed.note_ms(1000);
+    headed.add_player_message(&font, content, None, None, Some("skin.png".into()), 0, true);
+    // The strip is reserved at wrap time: the same words take
+    // more, narrower lines, every one shifted by the strip.
+    assert!(headed.lines.len() > plain.lines.len());
+    assert!(headed.lines.iter().all(|l| l.indent == HEAD_INDENT));
+    assert!(plain.lines.iter().all(|l| l.indent == 0));
+    // Exactly one line carries the head: the first wrapped
+    // line, which the prepend order leaves deepest.
+    let carriers: Vec<&Line> = headed
+        .lines
+        .iter()
+        .filter(|l| l.head_skin.is_some())
+        .collect();
+    assert_eq!(carriers.len(), 1);
+    assert_eq!(carriers[0].head_skin.as_deref(), Some("skin.png"));
+    assert!(carriers[0].content.plain().starts_with("alph"));
+    // The arrival joined the noted millisecond clock.
+    assert!(headed.lines.iter().all(|l| l.added_ms == 1000));
+}
+
+#[test]
+fn heads_draw_in_the_strip_and_shift_the_text_and_the_clicks() {
+    let font = font();
+    let mut chat = Chat::default();
+    chat.add_player_message(
+        &font,
+        Text::literal("Seed: ").append(Text::copyable("42".to_string()).with_color(text::GOLD)),
+        None,
+        None,
+        Some("skin.png".into()),
+        0,
+        true,
+    );
+    let draws = chat.layout(361, 0, true, 0, true, None);
+    // The face and its hat layer, in the strip at x 0.
+    let faces: Vec<&GuiDraw> = draws
+        .iter()
+        .filter(|d| matches!(d, GuiDraw::Blit { texture, .. } if texture == "skin.png"))
+        .collect();
+    assert_eq!(faces.len(), 2);
+    assert!(matches!(faces[0], GuiDraw::Blit { x: 0, w: 8, .. }));
+    // Every text starts after the strip.
+    assert!(
+        draws
+            .iter()
+            .all(|d| !matches!(d, GuiDraw::Text { x, .. } if *x != HEAD_INDENT))
+    );
+    // Without the ask, no head is drawn and nothing shifts.
+    let draws = chat.layout(361, 0, true, 0, false, None);
+    assert!(
+        !draws
+            .iter()
+            .any(|d| matches!(d, GuiDraw::Blit { texture, .. } if texture == "skin.png"))
+    );
+    assert!(
+        draws
+            .iter()
+            .all(|d| !matches!(d, GuiDraw::Text { x, .. } if *x != 0))
+    );
+    // The click geometry shifts with the layout: a click in
+    // the strip answers nothing, a click over the link still
+    // answers it, and the same strip click with heads off
+    // lands in the text.
+    let start = 4.0 + f64::from(HEAD_INDENT) + f64::from(font.width("Seed: ["));
+    assert_eq!(
+        chat.click_at(&font, 360, start, 315.0, true),
+        Some(ClickEvent::CopyToClipboard("42".to_string()))
+    );
+    assert_eq!(chat.click_at(&font, 360, 9.0, 315.0, true), None);
+    assert!(chat.click_at(&font, 360, 9.0, 315.0, false).is_none());
+    assert_eq!(
+        chat.click_at(&font, 360, start - f64::from(HEAD_INDENT), 315.0, false),
+        Some(ClickEvent::CopyToClipboard("42".to_string()))
+    );
+}
+
+#[test]
+fn hide_indicator_fences_to_the_bar_alone() {
+    let font = font();
+    let tag = Tag {
+        color: 0xFF0000,
+        icon: true,
+        text: Text::literal("Modified"),
+    };
+    let mut chat = Chat::default();
+    chat.add_player_message(
+        &font,
+        Text::literal("a modified message"),
+        None,
+        Some(tag),
+        None,
+        0,
+        true,
+    );
+    let bar = |draws: &[GuiDraw]| {
+        draws
+            .iter()
+            .any(|d| matches!(d, GuiDraw::Fill { x0: -4, x1: -2, .. }))
+    };
+    assert!(bar(&chat.layout(361, 0, true, 0, false, None)));
+    let animation = ChatAnimation {
+        hide_indicator: true,
+        ..ChatAnimation::default()
+    };
+    assert!(!bar(&chat.layout(361, 0, true, 0, false, Some(animation))));
+    // The icon and the tooltip stay: hovering the message
+    // draws the modified icon, hovering the bar's place
+    // still answers the tag's text.
+    let (_, icons) = chat.focused_tags(&font, 360, 10.0, 315.0, false);
+    assert!(!icons.is_empty());
+    let (tooltip, _) = chat.focused_tags(&font, 360, 1.0, 315.0, false);
+    assert_eq!(tooltip.map(|t| t.plain()), Some("Modified".into()));
+}
+
+#[test]
+fn the_animation_ease_and_offsets_land_on_vanilla() {
+    assert_eq!(animation_progress(0, 200), 0.0);
+    assert_eq!(animation_progress(100, 200), 0.5);
+    assert_eq!(animation_progress(200, 200), 1.0);
+    assert_eq!(animation_progress(900, 200), 1.0);
+    assert_eq!(animation_progress(0, 0), 1.0);
+    let open = ChatAnimation {
+        input_ms: 170,
+        ..ChatAnimation::default()
+    };
+    assert_eq!(open.input_offset(0), INPUT_RISE);
+    assert_eq!(open.input_offset(85), INPUT_RISE / 2);
+    assert_eq!(open.input_offset(170), 0);
+    assert_eq!(open.input_offset(900), 0);
+    assert_eq!(ChatAnimation::default().input_offset(0), 0);
+}
+
+#[test]
+fn a_new_message_slides_and_fades_only_at_rest() {
+    let font = font();
+    let mut chat = Chat::default();
+    chat.note_ms(1000);
+    chat.add_player_message(&font, Text::literal("hello"), None, None, None, 0, true);
+    let animation = ChatAnimation {
+        message_ms: 200,
+        fade_in: true,
+        ..ChatAnimation::default()
+    };
+    let slide = |draws: &[GuiDraw]| -> f32 {
+        match &draws[0] {
+            GuiDraw::Push(ops) => ops
+                .iter()
+                .find_map(|op| match op {
+                    PoseOp::Translate(_, y) => Some(*y),
+                    _ => None,
+                })
+                .expect("a translate"),
+            other => panic!("the layout opens with a push, got {other:?}"),
+        }
+    };
+    let text_color = |draws: &[GuiDraw]| -> u32 {
+        draws
+            .iter()
+            .find_map(|d| match d {
+                GuiDraw::Text { color, .. } => Some(*color),
+                _ => None,
+            })
+            .expect("a text draw")
+    };
+    // At arrival the stack sits one line lower and the new
+    // message is faded out; halfway it is half of each; at
+    // the end every number is vanilla's.
+    let draws = chat.layout(361, 0, true, 1000, false, Some(animation));
+    assert_eq!(slide(&draws), 9.0);
+    let draws = chat.layout(361, 0, true, 1100, false, Some(animation));
+    assert_eq!(slide(&draws), 5.0);
+    assert_eq!(text_color(&draws), 0x7FFF_FFFF);
+    let draws = chat.layout(361, 0, true, 1200, false, Some(animation));
+    assert_eq!(slide(&draws), 0.0);
+    assert_eq!(text_color(&draws), 0xFFFF_FFFF);
+    // Without fade-in the slide still runs at full opacity.
+    let slide_only = ChatAnimation {
+        message_ms: 200,
+        ..ChatAnimation::default()
+    };
+    let draws = chat.layout(361, 0, true, 1100, false, Some(slide_only));
+    assert_eq!(slide(&draws), 5.0);
+    assert_eq!(text_color(&draws), 0xFFFF_FFFF);
+    // A scrolled view does not move, whatever arrives.
+    for _ in 0..30 {
+        chat.add_player_message(&font, Text::literal("history"), None, None, None, 0, true);
+    }
+    chat.scroll = 2;
+    let draws = chat.layout(361, 0, true, 1000, false, Some(animation));
+    assert_eq!(slide(&draws), 0.0);
 }

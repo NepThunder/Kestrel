@@ -1929,6 +1929,73 @@ interface particles {
     set-emitters: func(emitters: option<list<emitter>>);
 }
 
+/// Capability `chat-decoration` (experimental: the manifest
+/// needs `experimental = ["chat-decoration"]`): the game's
+/// own chat, restyled as the game allows. A mod declares how
+/// the chat is decorated and animated; the game does all of
+/// the drawing, with its own data. A mod cannot draw over
+/// the chat, add, remove or change a line, or choose what
+/// appears beside one: a player's head beside their line is
+/// that player's, resolved by the game from the skin it
+/// holds for them, and the mod never names a player, a line
+/// or a picture. Nothing here reads anything: what a mod
+/// learns from chat still comes through `events.chat`, as
+/// plain text, unchanged.
+interface chat-decoration {
+    /// How the chat's lines are decorated.
+    record line-decoration {
+        /// A player's own head — their skin's face, as the
+        /// player list draws it — in the strip left of the
+        /// first wrapped line of each chat line they wrote.
+        /// Only lines the game received as that player's:
+        /// system lines, disguised lines, `/me` lines,
+        /// wrapped continuations and a mod's own `chat.show`
+        /// lines get none. The head fades with its line, as
+        /// its line does, and hides with the chat (F1).
+        sender-head: bool,
+    }
+
+    /// Replaces the mod's line decoration (none clears it).
+    /// It lasts until replaced, cleared, or the mod stops:
+    /// a stopped mod's styling ends with it, on the next
+    /// frame. When several running mods declare one, the
+    /// last-loaded one's stands (the hand district's
+    /// latest-writer rule); when it stops, an earlier
+    /// declaration stands again.
+    set-line-decoration: func(decoration: option<line-decoration>);
+
+    /// How the chat box itself moves. Every duration is
+    /// milliseconds, 0 to 1000 (a larger value is cut to
+    /// 1000); 0 is off. The game eases each animation with
+    /// its own curve and always lands exactly where vanilla
+    /// puts things: these numbers change how the chat
+    /// arrives, never where it rests.
+    record chat-animation {
+        /// A new message eases the chat up into place over
+        /// this long, the stack starting one line lower.
+        message-ms: u32,
+        /// The new message also fades in over `message-ms`.
+        /// Off: it slides at its line's own opacity.
+        fade-in: bool,
+        /// Opening the chat slides the input field up from
+        /// the bottom of the screen over this long.
+        input-ms: u32,
+        /// Hides the coloured bar at the left of a message's
+        /// lines (the indicator the game's trust tags draw).
+        /// The bar only: a modified message keeps the icon
+        /// after its lines, and hovering the bar's place
+        /// still shows the tag's tooltip.
+        hide-indicator: bool,
+    }
+
+    /// Replaces the mod's chat animation (none clears it),
+    /// with the same lifetime and the same latest-writer
+    /// rule as `set-line-decoration` — the two records are
+    /// independent: one mod's heads and another's animation
+    /// stand together.
+    set-animation: func(animation: option<chat-animation>);
+}
+
 /// What the game calls for sounds (API 15). Only the first mod in
 /// load order with this export is asked; mods built before API 15
 /// have no such export and simply never hear sounds. The call must
@@ -2550,6 +2617,7 @@ world horizon-ui-mod {
     import screen;
     import inventory-actions;
     import %map;
+    import chat-decoration;
     export ui-events;
     export audio-events;
 }
@@ -2595,6 +2663,12 @@ world audio-host {
 /// and the item models: a burst is a picture in the world,
 /// drawn by the game's own engine — nothing spent, moved or
 /// read — so it is render's, with no consent line of its own.
+/// API 27's `chat-decoration` is hosted here too, as the
+/// frame-adjacent client surfaces are, and is its own
+/// capability, not `chat`'s or `render`'s: it supplies no
+/// content of its own — it asks the game to restyle the
+/// game's own chat — and one of its toggles is trust-adjacent,
+/// so the restyle gets a consent line of its own.
 world render-host {
     import render;
     import input;
@@ -2606,6 +2680,7 @@ world render-host {
     import screen;
     import inventory-actions;
     import %map;
+    import chat-decoration;
 }
 
 /// The game's side of capability `recipes` (imports only).

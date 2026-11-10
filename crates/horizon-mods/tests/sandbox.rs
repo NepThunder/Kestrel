@@ -20,16 +20,16 @@ id = "test_guest"
 name = "Test Guest"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "storage", "audio", "render", "input", "actions", "screen", "inventory-actions", "map"]
-experimental = ["audio", "render", "input", "actions", "screen", "inventory-actions", "map"]
+capabilities = ["game-read", "chat", "storage", "audio", "render", "input", "actions", "screen", "inventory-actions", "map", "chat-decoration"]
+experimental = ["audio", "render", "input", "actions", "screen", "inventory-actions", "map", "chat-decoration"]
 "#;
 const UI_MANIFEST: &str = r#"
 id = "test_ui_guest"
 name = "Test UI Guest"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "command", "ui", "render", "input", "recipes"]
-experimental = ["ui", "render", "input", "recipes"]
+capabilities = ["game-read", "chat", "command", "ui", "render", "input", "recipes", "chat-decoration"]
+experimental = ["ui", "render", "input", "recipes", "chat-decoration"]
 "#;
 
 /// Builds the mods once and writes their `.kmod` files; returns the folder.
@@ -83,6 +83,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "particles-probe",
                 "-p",
+                "chat-decoration-probe",
+                "-p",
                 "horizon-mods-test-guest",
                 "-p",
                 "horizon-mods-test-ui-guest",
@@ -126,6 +128,7 @@ fn mods_dir() -> &'static Path {
             ),
             ("map_probe", example("map-probe")),
             ("particles_probe", example("particles-probe")),
+            ("chat_decoration_probe", example("chat-decoration-probe")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
         ];
@@ -1143,6 +1146,122 @@ fn particle_bursts_clamp_budget_and_drop() {
     );
 }
 
+/// Capability `chat-decoration` (API 27): the two policies
+/// aggregate independently under the latest-writer rule —
+/// the newest set of each record stands, whatever mod set
+/// the other — durations clamp to 1000 at the door, a clear
+/// drops a mod's own declaration, and a stopped mod's
+/// styling ends with it: the earlier writer stands again.
+#[test]
+fn chat_decoration_clamps_and_latest_writer_wins() {
+    use horizon_mods::{ModChatAnimation, ModLineDecoration};
+    let paths = [
+        mods_dir().join("horizon_mods_test_guest.kmod"),
+        mods_dir().join("horizon_mods_test_ui_guest.kmod"),
+    ];
+    let mut mods = Mods::load(&paths, |_| true, |_| false);
+    assert_eq!(mods.chat_line_decoration(), None);
+    assert_eq!(mods.chat_animation(), None);
+    // The guest declares heads and an over-long animation:
+    // both durations arrive clamped to 1000.
+    assert!(mods.command("chathead"));
+    assert!(mods.command("chatanim"));
+    mods.drain();
+    assert_eq!(
+        mods.chat_line_decoration(),
+        Some(ModLineDecoration { sender_head: true })
+    );
+    assert_eq!(
+        mods.chat_animation(),
+        Some(ModChatAnimation {
+            message_ms: 1000,
+            fade_in: true,
+            input_ms: 1000,
+            hide_indicator: true,
+        })
+    );
+    // The UI guest's animation is the newer set: it stands —
+    // while the decoration, which it never set, still stands
+    // from the guest. The records aggregate independently.
+    assert!(mods.command("chat_anim"));
+    mods.drain();
+    assert_eq!(
+        mods.chat_animation(),
+        Some(ModChatAnimation {
+            message_ms: 250,
+            fade_in: false,
+            input_ms: 300,
+            hide_indicator: false,
+        })
+    );
+    assert_eq!(
+        mods.chat_line_decoration(),
+        Some(ModLineDecoration { sender_head: true })
+    );
+    // The UI guest's decoration is the newer set of that
+    // record: it stands over the guest's.
+    assert!(mods.command("chat_head"));
+    mods.drain();
+    assert_eq!(
+        mods.chat_line_decoration(),
+        Some(ModLineDecoration { sender_head: false })
+    );
+    // The guest clears both of its declarations: the UI
+    // guest's animation still stands, and its decoration is
+    // now the only one.
+    assert!(mods.command("chatstyleclear"));
+    mods.drain();
+    assert_eq!(
+        mods.chat_animation(),
+        Some(ModChatAnimation {
+            message_ms: 250,
+            fade_in: false,
+            input_ms: 300,
+            hide_indicator: false,
+        })
+    );
+    assert_eq!(
+        mods.chat_line_decoration(),
+        Some(ModLineDecoration { sender_head: false })
+    );
+    // The guest declares an animation again — the newest
+    // set — then stops: its styling ends with it and the UI
+    // guest's standing animation is what remains.
+    assert!(mods.command("chatanim"));
+    mods.drain();
+    assert_eq!(
+        mods.chat_animation(),
+        Some(ModChatAnimation {
+            message_ms: 1000,
+            fade_in: true,
+            input_ms: 1000,
+            hide_indicator: true,
+        })
+    );
+    assert!(mods.command("panic"));
+    mods.drain();
+    assert!(matches!(mods.entries()[0].status, Status::Failed(_)));
+    assert_eq!(
+        mods.chat_animation(),
+        Some(ModChatAnimation {
+            message_ms: 250,
+            fade_in: false,
+            input_ms: 300,
+            hide_indicator: false,
+        })
+    );
+    assert_eq!(
+        mods.chat_line_decoration(),
+        Some(ModLineDecoration { sender_head: false })
+    );
+    // The last writer lets go of both records: vanilla chat.
+    assert!(mods.command("chat_anim off"));
+    assert!(mods.command("chat_head off"));
+    mods.drain();
+    assert_eq!(mods.chat_animation(), None);
+    assert_eq!(mods.chat_line_decoration(), None);
+}
+
 /// Capability `screen` (API 22): the snapshot's screen state and
 /// merchant offers reach the mod verbatim, at the charged counts;
 /// button declarations clamp at the store and resolve per
@@ -1981,8 +2100,8 @@ id = "too_new"
 name = "Too New"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world", "inventory", "entity", "audio", "actions", "screen", "inventory-actions", "map"]
-experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audio", "actions", "screen", "inventory-actions", "map"]
+capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world", "inventory", "entity", "audio", "actions", "screen", "inventory-actions", "map", "chat-decoration"]
+experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audio", "actions", "screen", "inventory-actions", "map", "chat-decoration"]
 "#;
     std::fs::write(dir.join("horizon-mod.toml"), manifest).unwrap();
     std::fs::write(dir.join("mod.wasm"), wasm).unwrap();
@@ -1995,8 +2114,8 @@ experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audi
         needed(imports(&wasm).unwrap().iter().map(String::as_str)).0
     };
     assert_eq!(level("coords_hud.kmod"), 0);
-    // The UI guest sets the hand FOV (`render.set-hand-fov`, level 19).
-    assert_eq!(level("horizon_mods_test_ui_guest.kmod"), 19);
+    // The UI guest restyles the chat (`chat-decoration.set-animation`, level 27).
+    assert_eq!(level("horizon_mods_test_ui_guest.kmod"), 27);
     // The world probe reads blocks (`world.get-blocks`, level 8).
     assert_eq!(level("world_probe.kmod"), 8);
     // The inventory probe reads its inventory (`inventory.inventory`, level 9).
@@ -2029,6 +2148,8 @@ experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audi
     assert_eq!(level("map_probe.kmod"), 25);
     // The particles probe emits bursts (`particles.emit`, level 26).
     assert_eq!(level("particles_probe.kmod"), 26);
+    // The chat decoration probe restyles the chat (`chat-decoration.set-line-decoration`, level 27).
+    assert_eq!(level("chat_decoration_probe.kmod"), 27);
 }
 
 #[test]

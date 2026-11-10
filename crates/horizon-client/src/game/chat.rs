@@ -156,6 +156,12 @@ pub struct UiState {
     pub chat_draft_shown: bool,
     /// When the chat screen opened (its input took the focus: the cursor blink).
     pub chat_opened: Option<std::time::Instant>,
+    /// The chat's millisecond clock (capability `chat-decoration`,
+    /// API 27): started the first time the chat is drawn, so a
+    /// message's animation age counts from the same origin the
+    /// frame that draws it reads. Millisecond ages only — the
+    /// chat's fade keeps the tick clock; nothing here is saved.
+    pub chat_clock: Option<std::time::Instant>,
     /// The chat screen is `InBedChatScreen`: the sleeper's, with a Leave Bed button.
     pub in_bed_chat: bool,
     pub registries: Registries,
@@ -195,6 +201,14 @@ impl UiState {
             ui.chat.load_history(&dir);
         }
         ui
+    }
+    /// The chat's millisecond clock, started on first use
+    /// (capability `chat-decoration`, API 27): milliseconds
+    /// since it started, the clock arrivals are stamped from
+    /// and the message animation is aged by.
+    pub fn chat_now_ms(&mut self) -> u64 {
+        let start = *self.chat_clock.get_or_insert_with(std::time::Instant::now);
+        start.elapsed().as_millis() as u64
     }
 }
 
@@ -968,11 +982,15 @@ impl Game<'_> {
         } else {
             return;
         }
+        let heads = self
+            .mod_chat_line_decoration()
+            .is_some_and(|d| d.sender_head);
         let Some(style) = self.ui.chat.style_at(
             &self.gui.atlas.font,
             height as i32,
             cursor.0 as f64,
             cursor.1 as f64,
+            heads,
         ) else {
             return;
         };
@@ -1138,9 +1156,26 @@ impl Game<'_> {
         if focused {
             batch.height = Self::visible_chat_height(batch);
         }
-        self.ui
-            .chat
-            .draw(batch, &self.gui.atlas, self.ticks, focused);
+        // The chat's millisecond clock and the standing mod
+        // policies (capability `chat-decoration`, API 27): the
+        // clock is noted before the draw so an arrival between
+        // frames ages from the last frame's reading; with no
+        // policy standing the draw is vanilla's, exactly.
+        let now_ms = self.ui.chat_now_ms();
+        self.ui.chat.note_ms(now_ms);
+        let heads = self
+            .mod_chat_line_decoration()
+            .is_some_and(|d| d.sender_head);
+        let animation = self.mod_chat_animation();
+        self.ui.chat.draw(
+            batch,
+            &self.gui.atlas,
+            self.ticks,
+            focused,
+            now_ms,
+            heads,
+            animation,
+        );
         batch.height = original_height;
     }
     /// `HoverEvent.EntityTooltipInfo.getTooltipLines`: the name when the
@@ -1216,7 +1251,15 @@ impl Game<'_> {
             .ui
             .chat_opened
             .map_or(0, |t| t.elapsed().as_millis() as u64);
-        let draws = screen.draw(&m, mouse, blink, background);
+        // The opening animation (capability `chat-decoration`,
+        // API 27): the input field rises from below its place
+        // over the standing animation's input duration, aged
+        // from the same opening the blink counts from. No
+        // animation standing: no rise.
+        let rise = self
+            .mod_chat_animation()
+            .map_or(0, |animation| animation.input_offset(blink));
+        let draws = screen.draw(&m, mouse, blink, background, rise);
         horizon_client::screen_draw::paint(batch, &self.gui.atlas, &draws);
         self.ui.chat_screen = Some(screen);
         if in_bed {
@@ -1245,12 +1288,22 @@ impl Game<'_> {
         let (cx, cy) = (f64::from(self.cursor.0), f64::from(self.cursor.1));
         let wrap = (batch.width as i32 / 2).max(200);
         // handleTagIcon: the chat-modified icons over the cursor or its message.
+        // The tag and style geometry shifts with the standing
+        // decoration's heads, as the layout does (capability
+        // `chat-decoration`, API 27).
+        let heads = self
+            .mod_chat_line_decoration()
+            .is_some_and(|d| d.sender_head);
         let (tag_tooltip, tag_icons) =
             self.ui
                 .chat
-                .focused_tags(&self.gui.atlas.font, height, cx, cy);
+                .focused_tags(&self.gui.atlas.font, height, cx, cy, heads);
         horizon_client::hud_layout::paint(batch, &self.gui.atlas, &tag_icons);
-        if let Some(style) = self.ui.chat.style_at(&self.gui.atlas.font, height, cx, cy) {
+        if let Some(style) = self
+            .ui
+            .chat
+            .style_at(&self.gui.atlas.font, height, cx, cy, heads)
+        {
             // ActiveTextCollector.ClickableStyleFinder: a click event, or an
             // insertion while Shift is held (ChatScreen.includeInsertions).
             if style.click.is_some() || (style.insertion.is_some() && self.has_shift_down()) {

@@ -113,6 +113,15 @@ pub use render_bindings::horizon::mods::actions::{
     BlockTarget as ModBlockTarget, CrosshairTarget as ModActionTarget,
     EntityTarget as ModEntityTarget, Face as ModFace, Hand as ModHand,
 };
+use render_bindings::horizon::mods::chat_decoration;
+/// The game's own chat, restyled (WIT `interface
+/// chat-decoration`, API 27): its own capability, hosted with
+/// the render world as the actions and the screens are. The
+/// mod declares two policies and nothing else — no name, no
+/// line, no picture crosses — and the game draws.
+pub use render_bindings::horizon::mods::chat_decoration::{
+    ChatAnimation as ModChatAnimation, LineDecoration as ModLineDecoration,
+};
 use render_bindings::horizon::mods::entity_pose;
 /// Player models' pose states and the offsets a mod sets on them
 /// (WIT `interface entity-pose`, API 20): a `render` extension,
@@ -321,6 +330,11 @@ pub const PARTICLE_BUDGET_PER_TICK: usize = 1024;
 /// or a campfire, not a weather system.
 pub const PARTICLE_EMITTERS: usize = 8;
 pub const PARTICLE_EMITTER_RATE_MAX: f32 = 200.0;
+/// The longest chat animation a mod may ask for, in
+/// milliseconds (capability `chat-decoration`, API 27): a
+/// larger duration is cut to it at the door — an arrival or
+/// an opening may ease for a second, never longer.
+pub const CHAT_ANIMATION_MS_MAX: u32 = 1000;
 /// A particle type name's length cap (API 26): no loaded
 /// type's name is near it, and a longer one spawns nothing.
 const PARTICLE_NAME_CHARS: usize = 128;
@@ -911,6 +925,25 @@ struct StoredEmitter {
     accumulator: f32,
 }
 
+/// What capability `chat-decoration` holds for one mod (API
+/// 27): its two policies, each stamped with the order its set
+/// happened in ([`CHAT_DECORATION_SEQ`]) so the aggregates
+/// can run the latest-writer rule per record. No outputs, no
+/// queues, no budget — a policy set is not an action; the
+/// call replaces state, in the `set-hud` discipline, and the
+/// store drops with the mod on stop, as every stateful
+/// surface's state does.
+#[derive(Default)]
+struct ChatDecorationStore {
+    /// The mod's line decoration (`chat-decoration.
+    /// set-line-decoration`), sanitized by the call.
+    line_decoration: Option<(u64, ModLineDecoration)>,
+    /// The mod's chat animation (`chat-decoration.
+    /// set-animation`), its durations clamped by the call
+    /// ([`CHAT_ANIMATION_MS_MAX`]).
+    animation: Option<(u64, ModChatAnimation)>,
+}
+
 /// A stack match with its values parsed (WIT `item-model`, API
 /// 23): a declaration's SNBT, run through the core SNBT parser
 /// once, at set time, into the JSON shape the game's component
@@ -1385,6 +1418,11 @@ static ITEM_DISPLAY_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 /// wins, as with the dropped display; a `set-minimap-image`
 /// stamp tells the game when the shown image changed.
 static MAP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// The order `chat-decoration` sets happened in, across mods
+/// (API 27): the game's chat carries one decoration and one
+/// animation, so the newest stamp of each record wins, as
+/// with the hand's offset.
+static CHAT_DECORATION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// Items a panel may hold, and events kept for `browser.poll`.
 const BROWSER_ITEMS: usize = 8192;
 /// `recipes.place` and `give` calls a hook call may make.
@@ -1509,6 +1547,11 @@ struct State {
     /// spawn count. A stopped mod's streams die with its
     /// store, as its map does.
     particles: ParticleStore,
+    /// Capability `chat-decoration`'s two policies (API 27):
+    /// how the game's own chat is decorated and animated when
+    /// this mod's declarations stand. A stopped mod's styling
+    /// ends with its store, as its emitters do.
+    chat_decoration: ChatDecorationStore,
     /// The tick the game last began ([`Mods::tick`]): the
     /// particle budget keys its count on it, so a call
     /// between ticks weighs against the last tick's spends.
@@ -1851,6 +1894,7 @@ impl Mods {
             screen: ScreenStore::default(),
             map: MapStore::default(),
             particles: ParticleStore::default(),
+            chat_decoration: ChatDecorationStore::default(),
             tick: 0,
             wheel: std::collections::VecDeque::new(),
             model_rules: Vec::new(),
@@ -3029,6 +3073,50 @@ impl Mods {
         }
     }
 
+    /// The line decoration that applies to the game's chat
+    /// (capability `chat-decoration`, API 27): the newest set
+    /// among running mods that set one — the latest-writer
+    /// rule the hand's offset runs, per record. A stopped
+    /// mod's declaration is gone with its store; when the
+    /// winner stops, an earlier declaration stands again.
+    /// `None`: vanilla chat.
+    pub fn chat_line_decoration(&self) -> Option<ModLineDecoration> {
+        self.entries
+            .iter()
+            .filter_map(|e| {
+                e.run
+                    .as_ref()?
+                    .store
+                    .data()
+                    .chat_decoration
+                    .line_decoration
+                    .as_ref()
+            })
+            .max_by_key(|(seq, _)| *seq)
+            .map(|(_, decoration)| *decoration)
+    }
+
+    /// The chat animation that applies (capability
+    /// `chat-decoration`, API 27), aggregated exactly like
+    /// [`Mods::chat_line_decoration`] and independent of it:
+    /// one mod's heads and another's animation stand
+    /// together. `None`: vanilla chat.
+    pub fn chat_animation(&self) -> Option<ModChatAnimation> {
+        self.entries
+            .iter()
+            .filter_map(|e| {
+                e.run
+                    .as_ref()?
+                    .store
+                    .data()
+                    .chat_decoration
+                    .animation
+                    .as_ref()
+            })
+            .max_by_key(|(seq, _)| *seq)
+            .map(|(_, animation)| *animation)
+    }
+
     /// The running mods' model rules as one evaluation index
     /// (WIT `item-model`, API 23): rebuilt only when a running
     /// mod's rule version moves — a set, a start, a stop — and
@@ -4050,6 +4138,33 @@ impl particles::Host for State {
             .take(PARTICLE_EMITTERS)
             .filter_map(sanitize_emitter)
             .collect();
+    }
+}
+
+impl chat_decoration::Host for State {
+    fn set_line_decoration(&mut self, decoration: Option<ModLineDecoration>) {
+        // A policy set, not an action: the declaration is
+        // stamped with the order it happened in and stored
+        // whole, as the hand's offset is — the aggregate
+        // ([`Mods::chat_line_decoration`]) runs the
+        // latest-writer rule per record. None clears.
+        self.chat_decoration.line_decoration = decoration.map(|decoration| {
+            let seq = CHAT_DECORATION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            (seq, decoration)
+        });
+    }
+    fn set_animation(&mut self, animation: Option<ModChatAnimation>) {
+        // The durations are clamped at the door
+        // ([`CHAT_ANIMATION_MS_MAX`]): an arrival or an
+        // opening may ease for a second, never longer. The
+        // record is otherwise the mod's own, stored whole
+        // and stamped as the decoration is.
+        self.chat_decoration.animation = animation.map(|mut animation| {
+            animation.message_ms = animation.message_ms.min(CHAT_ANIMATION_MS_MAX);
+            animation.input_ms = animation.input_ms.min(CHAT_ANIMATION_MS_MAX);
+            let seq = CHAT_DECORATION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            (seq, animation)
+        });
     }
 }
 

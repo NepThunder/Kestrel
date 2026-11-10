@@ -1,0 +1,9 @@
+id = "chat_decoration_probe"
+name = "Chat Decoration Probe"
+version = "0.1.0"
+description = "Prototype probe for chat-decoration: /style puts a player's own head beside the chat lines they wrote and animates the chat box as messages arrive (150 ms) and as it opens (170 ms); /style off restores vanilla chat."
+authors = ["Horizon"]
+api = "0.2"
+side = "client"
+capabilities = ["chat-decoration"]
+experimental = ["chat-decoration"]

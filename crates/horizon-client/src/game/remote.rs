@@ -165,13 +165,16 @@ fn menu_title(tag: &Tag) -> horizon_client::text::Text {
 }
 
 /// A player message Chat Delay holds back, its signature and trust level,
-/// and what the narrator says of it once it shows.
+/// what the narrator says of it once it shows, and its sender's head skin
+/// (capability `chat-decoration`, API 27: resolved at the packet, the one
+/// place the sender is authenticated; it rides the queue with its message).
 type QueuedChat = (
     horizon_client::text::Text,
     horizon_client::chat::ChatSource,
     Option<Signature>,
     ChatTrust,
     String,
+    Option<String>,
 );
 
 /// `ChatTrustLevel`; a modified message keeps the signed content it was
@@ -1324,16 +1327,20 @@ impl Game<'_> {
         content: horizon_client::text::Text,
         source: horizon_client::chat::ChatSource,
     ) -> bool {
-        self.signed_chat_line(content, source, None, ChatTrust::Secure)
+        self.signed_chat_line(content, source, None, ChatTrust::Secure, None)
     }
     /// `chat_line` of a player message, keeping its signature for a
-    /// deletion (`GuiMessage.signature`).
+    /// deletion (`GuiMessage.signature`). `head` is the sender's head
+    /// skin (capability `chat-decoration`, API 27), resolved by the
+    /// packet handler from the authenticated sender; only a player
+    /// line carries one.
     fn signed_chat_line(
         &mut self,
         content: horizon_client::text::Text,
         source: horizon_client::chat::ChatSource,
         signature: Option<Signature>,
         trust: ChatTrust,
+        head: Option<String>,
     ) -> bool {
         // ChatListener.showMessageToPlayer: Only Show Secure Chat drops what is not secure.
         if matches!(trust, ChatTrust::NotSecure) && self.settings.file.bool("onlyShowSecureChat") {
@@ -1350,6 +1357,7 @@ impl Game<'_> {
                 content,
                 signature,
                 trust.tag(),
+                head,
                 self.ticks,
                 focused,
             );
@@ -1388,15 +1396,16 @@ impl Game<'_> {
         signature: Option<Signature>,
         trust: ChatTrust,
         narration: String,
+        head: Option<String>,
     ) {
         let source = horizon_client::chat::ChatSource::Player;
         if self.chat_delay_ms() > 0 {
             if let Some(r) = self.remote.as_mut() {
                 r.chat_queue
-                    .push_back((line, source, signature, trust, narration));
+                    .push_back((line, source, signature, trust, narration, head));
             }
         } else {
-            self.accept_chat(line, source, signature, trust, &narration);
+            self.accept_chat(line, source, signature, trust, &narration, head);
         }
     }
 
@@ -1424,7 +1433,7 @@ impl Game<'_> {
         let narration = self
             .decorate_chat(chat_type, &error, Decoration::Narration)
             .plain();
-        self.handle_player_chat(line, None, ChatTrust::Error, narration);
+        self.handle_player_chat(line, None, ChatTrust::Error, narration, None);
     }
 
     /// `ChatTrustLevel.evaluate` of a player message, with
@@ -1490,7 +1499,7 @@ impl Game<'_> {
         r.secure_chat.ignore_pending(&signature);
         let queued = r.chat_queue.len();
         r.chat_queue
-            .retain(|(_, _, s, _, _)| s.as_ref() != Some(&signature));
+            .retain(|(_, _, s, _, _, _)| s.as_ref() != Some(&signature));
         if r.chat_queue.len() == queued {
             self.ui
                 .chat
@@ -1508,8 +1517,9 @@ impl Game<'_> {
         signature: Option<Signature>,
         trust: ChatTrust,
         narration: &str,
+        head: Option<String>,
     ) -> bool {
-        let shown = self.player_chat_line(line, source, signature, trust, narration);
+        let shown = self.player_chat_line(line, source, signature, trust, narration, head);
         if let Some(signature) = &signature {
             self.mark_message_processed(signature, shown);
         }
@@ -1529,10 +1539,11 @@ impl Game<'_> {
         signature: Option<Signature>,
         trust: ChatTrust,
         narration: &str,
+        head: Option<String>,
     ) -> bool {
         // handleChatMessageError says its line as system chat.
         let error = matches!(trust, ChatTrust::Error);
-        let shown = self.signed_chat_line(line, source, signature, trust);
+        let shown = self.signed_chat_line(line, source, signature, trust, head);
         if shown && error {
             self.say_system_chat_queued(&horizon_client::text::Text::literal(narration));
         } else if shown {
@@ -1580,10 +1591,10 @@ impl Game<'_> {
         }
         // A message the Chat option hides is dropped and the next one is tried,
         // until one shows.
-        while let Some((line, source, signature, trust, narration)) =
+        while let Some((line, source, signature, trust, narration, head)) =
             self.remote.as_mut().and_then(|r| r.chat_queue.pop_front())
         {
-            if self.accept_chat(line, source, signature, trust, &narration) {
+            if self.accept_chat(line, source, signature, trust, &narration, head) {
                 break;
             }
         }
@@ -1599,8 +1610,8 @@ impl Game<'_> {
         else {
             return;
         };
-        for (line, source, signature, trust, narration) in queue {
-            self.accept_chat(line, source, signature, trust, &narration);
+        for (line, source, signature, trust, narration, head) in queue {
+            self.accept_chat(line, source, signature, trust, &narration, head);
         }
         if let Some(r) = self.remote.as_mut() {
             r.chat_previous = None;
@@ -4407,7 +4418,28 @@ impl Game<'_> {
                     p.unsigned_content.as_ref(),
                     &line,
                 );
-                self.handle_player_chat(line, signature, trust, narration);
+                // The sender's head skin (capability `chat-decoration`,
+                // API 27): resolved here, the one place the sender is
+                // authenticated — the skin the game holds for them, the
+                // tab list's own resolution, so a downloaded skin and
+                // the default agree with the list's faces. A `/me` line
+                // is decorated as its sender but is not their message
+                // line: no head. Nothing else in the game resolves a
+                // sender; a line's content or its displayed name never
+                // names one.
+                let head = self.remote.as_ref().and_then(|r| {
+                    if r.registries
+                        .name("minecraft:chat_type", p.chat_type.chat_type)
+                        == Some("minecraft:emote_command")
+                    {
+                        None
+                    } else {
+                        Some(r.skins.get(&p.sender).cloned().unwrap_or_else(|| {
+                            horizon_client::tab_list::default_skin(p.sender).to_owned()
+                        }))
+                    }
+                });
+                self.handle_player_chat(line, signature, trust, narration, head);
             }
             C::DisguisedChat(p) => {
                 let content = horizon_client::scoreboard::tag_to_json(&p.message);
@@ -4415,7 +4447,9 @@ impl Game<'_> {
                     .decorate_chat(&p.chat_type, &content, Decoration::Narration)
                     .plain();
                 let line = self.decorate_chat(&p.chat_type, &content, Decoration::Chat);
-                self.handle_player_chat(line, None, ChatTrust::Secure, narration);
+                // A disguised line claims an author it is not: no head
+                // (capability `chat-decoration`, API 27).
+                self.handle_player_chat(line, None, ChatTrust::Secure, narration, None);
             }
             C::DeleteChat(p) => self.handle_delete_chat(&p.signature)?,
             C::PlayerInfoUpdate(p) => {

@@ -1,0 +1,18 @@
+# Chat decoration (API 27): /style declares the probe's
+# two policies — sender heads on, and the animation at its
+# shipped durations — and /style off clears both, back to
+# vanilla chat. The aggregates are all the harness can pin:
+# the drawing is the game's side, against the real chat.
+[[step]]
+command = "style"
+[step.expect]
+feedback = "chat styled"
+chat-decoration = "sender-head true"
+chat-animation = "message 150ms fade-in true input 170ms hide-indicator false"
+
+[[step]]
+command = "style off"
+[step.expect]
+feedback = "chat cleared"
+chat-decoration = "none"
+chat-animation = "none"

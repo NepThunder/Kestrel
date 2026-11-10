@@ -146,9 +146,19 @@ pub enum Capability {
     /// been, and where they died — and a coherent, sensitive
     /// read set gets its own line, as `screen`'s did.
     Map,
+    /// The game's own chat, restyled (interface
+    /// `chat-decoration`, API 27): a player's own head beside
+    /// the lines they wrote, drawn by the game from the skin
+    /// it holds for them, and the chat box's arrival and
+    /// opening animations. Its own capability, not `chat`'s
+    /// or `render`'s: the mod supplies no content of its own —
+    /// it asks the game to restyle the game's own component —
+    /// and its indicator toggle is trust-adjacent, so the
+    /// restyle is named on the consent screen.
+    ChatDecoration,
 }
 impl Capability {
-    pub const ALL: [Capability; 19] = [
+    pub const ALL: [Capability; 20] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -168,6 +178,7 @@ impl Capability {
         Capability::Screen,
         Capability::InventoryActions,
         Capability::Map,
+        Capability::ChatDecoration,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -198,6 +209,7 @@ impl Capability {
             Capability::Screen => "screen",
             Capability::InventoryActions => "inventory-actions",
             Capability::Map => "map",
+            Capability::ChatDecoration => "chat-decoration",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -216,6 +228,7 @@ impl Capability {
                 | Capability::Screen
                 | Capability::InventoryActions
                 | Capability::Map
+                | Capability::ChatDecoration
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -259,6 +272,9 @@ impl Capability {
             }
             Capability::Map => {
                 "read the game's map tiles of the ground around you, show its own minimap and a full-screen map, and know where you died and where you came back"
+            }
+            Capability::ChatDecoration => {
+                "restyle the game's chat: put a player's own head beside the chat lines they wrote, and animate the chat box as messages arrive and as it opens"
             }
         }
     }
@@ -331,6 +347,15 @@ impl Capability {
         if interface == "map" {
             return Ok(Some(Capability::Map));
         }
+        // The game's own chat, restyled (API 27), is its own
+        // capability too, not `chat`'s or `render`'s: the mod
+        // supplies no content — the game restyles its own
+        // component — and one of its toggles is
+        // trust-adjacent, so folding it into either shipped
+        // line would widen what those mods were consented to.
+        if interface == "chat-decoration" {
+            return Ok(Some(Capability::ChatDecoration));
+        }
         Capability::ALL
             .into_iter()
             .filter(|c| *c != Capability::Registries)
@@ -361,6 +386,7 @@ impl fmt::Display for Capability {
             Capability::Screen => "screen",
             Capability::InventoryActions => "inventory-actions",
             Capability::Map => "map",
+            Capability::ChatDecoration => "chat-decoration",
         };
         f.write_str(name)
     }

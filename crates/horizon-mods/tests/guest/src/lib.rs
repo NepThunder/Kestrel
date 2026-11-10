@@ -27,17 +27,19 @@
 //! image (API 25); `/emitburst`, `/emitdust`, `/emitbad`,
 //! `/emitblock`, `/setemitter` and `/clearemitter`
 //! capability `render`'s particles — bursts and emitters
-//! (API 26); `tick` and
+//! (API 26); `/chathead`, `/chatanim` and
+//! `/chatstyleclear` capability `chat-decoration`'s line
+//! decoration and chat animation (API 27); `tick` and
 //! `frame` do nothing, to measure the cost of a call.
 use horizon_mod_sdk::{
-    ActionHand, ActionTarget, Anchor, BlockDisplay, BlockTarget, Burst, ChunkPos, ClickKind,
-    ComponentMatch, Corner, Decoration, DecorationPlace, DecorationTarget, DisplayContext,
-    DragButton, DroppedDisplay, Emitter, EmitterAnchor, Face, FlatDisplay, HandFov, HandFovMode,
-    HandTransform, Highlight, MapEvent, MapImage, MapLayer, MapMarker, MapScreen, MinimapImage,
-    Mod, ModelMatch, ModelRule, PartOffset, ParticleParams, PoseOffset, PoseTarget, PositionEvent,
-    Registration, ScreenButton, ScreenEvent, SoundAdjustment, SoundQuery, SwingAnim, WorldPoint,
-    actions, audio, chat, entity_pose, game, hand, input, inventory_actions, item_model, map,
-    particles, render, screen, storage,
+    ActionHand, ActionTarget, Anchor, BlockDisplay, BlockTarget, Burst, ChatAnimation, ChunkPos,
+    ClickKind, ComponentMatch, Corner, Decoration, DecorationPlace, DecorationTarget,
+    DisplayContext, DragButton, DroppedDisplay, Emitter, EmitterAnchor, Face, FlatDisplay, HandFov,
+    HandFovMode, HandTransform, Highlight, LineDecoration, MapEvent, MapImage, MapLayer, MapMarker,
+    MapScreen, MinimapImage, Mod, ModelMatch, ModelRule, PartOffset, ParticleParams, PoseOffset,
+    PoseTarget, PositionEvent, Registration, ScreenButton, ScreenEvent, SoundAdjustment,
+    SoundQuery, SwingAnim, WorldPoint, actions, audio, chat, chat_decoration, entity_pose, game,
+    hand, input, inventory_actions, item_model, map, particles, render, screen, storage,
 };
 
 struct Guest {
@@ -112,6 +114,9 @@ impl Mod for Guest {
             "emitblock",
             "setemitter",
             "clearemitter",
+            "chathead",
+            "chatanim",
+            "chatstyleclear",
         ]
         .into_iter()
         .fold(Registration::new(), Registration::command)
@@ -1048,6 +1053,26 @@ impl Mod for Guest {
             }
             "clearemitter" => {
                 particles::set_emitters(None);
+                Ok(Some("cleared".into()))
+            }
+            "chathead" => {
+                chat_decoration::set_line_decoration(Some(LineDecoration { sender_head: true }));
+                Ok(Some("headed".into()))
+            }
+            "chatanim" => {
+                // Both durations sit past the host's clamp
+                // and are cut to 1000 at the door.
+                chat_decoration::set_animation(Some(ChatAnimation {
+                    message_ms: 5000,
+                    fade_in: true,
+                    input_ms: 5000,
+                    hide_indicator: true,
+                }));
+                Ok(Some("animated".into()))
+            }
+            "chatstyleclear" => {
+                chat_decoration::set_line_decoration(None);
+                chat_decoration::set_animation(None);
                 Ok(Some("cleared".into()))
             }
             _ => {

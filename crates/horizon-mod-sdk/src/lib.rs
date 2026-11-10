@@ -98,6 +98,18 @@
 //! stepped by the game every tick. Everything is drawn by
 //! the game's own particle engine on this client: nothing
 //! reaches the server and nothing in the world changes.
+//! `chat_decoration` (its own capability, API level 27,
+//! experimental) restyles the game's own chat:
+//! [`chat_decoration::set_line_decoration`] puts a player's
+//! own head — the skin's face, as the player list draws it —
+//! beside the lines that player wrote, resolved and drawn by
+//! the game (the mod never names a player, a line or a
+//! picture), and [`chat_decoration::set_animation`] declares
+//! how the chat box arrives and opens: a new message's slide
+//! and fade, the input field's rise, and the trust
+//! indicator's bar hidden. Nothing is read and nothing is
+//! drawn by the mod: it declares a policy, the game applies
+//! it, and stopping the mod restores vanilla chat.
 //! Server mods: [`server`].
 //!
 //! Widgets (capability `ui`): a mod shows a screen it owns with
@@ -121,6 +133,7 @@ pub use exports::horizon::mods::ui_events::Guest as __UiEventsGuest;
 pub use horizon::mods::actions::{
     BlockTarget, CrosshairTarget as ActionTarget, EntityTarget, Face, Hand as ActionHand,
 };
+pub use horizon::mods::chat_decoration::{ChatAnimation, LineDecoration};
 pub use horizon::mods::entity_pose::{
     ArmPose, EntityPoseState, ItemUse, PartOffset, PoseOffset, PoseTarget,
 };
@@ -141,9 +154,9 @@ pub use horizon::mods::screen::{
     Anchor, Highlight, ScreenButton, ScreenEvent, ScreenState, TradeList, TradeOffer, TradeStack,
 };
 pub use horizon::mods::{
-    actions, audio, browser, chat, command, entity, entity_pose, game, hand, hud, input, inventory,
-    inventory_actions, item_model, log, map, particles, recipes, render, screen, storage, ui,
-    world,
+    actions, audio, browser, chat, chat_decoration, command, entity, entity_pose, game, hand, hud,
+    input, inventory, inventory_actions, item_model, log, map, particles, recipes, render, screen,
+    storage, ui, world,
 };
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for
