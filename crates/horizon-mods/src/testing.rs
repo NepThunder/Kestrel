@@ -9,10 +9,11 @@
 //! saying what happens and what the mod must have shown by then.
 use crate::{
     BlockPos, Clock, Container, Corner, Entity, GameMode, InvStack, ItemModelIndex, ModAction,
-    ModActionTarget, ModArmPose, ModBlockDisplay, ModBlockTarget, ModEffect, ModEntityPoseState,
-    ModEntityTarget, ModFace, ModFlatDisplay, ModHand, ModItemUse, ModPoseSwingAnim,
-    ModScreenEvent, ModScreenState, ModSelfState, ModTradeList, ModTradeOffer, ModTradeStack, Mods,
-    Output, Panel, Player, PlayerInventory, ServerPlayer, Snapshot, Status, Target, WorldDrawLine,
+    ModActionTarget, ModArmPose, ModBlockDisplay, ModBlockTarget, ModClickKind, ModDragButton,
+    ModEffect, ModEntityPoseState, ModEntityTarget, ModFace, ModFlatDisplay, ModHand, ModItemUse,
+    ModPoseSwingAnim, ModScreenEvent, ModScreenState, ModSelfState, ModSlotMove, ModTradeList,
+    ModTradeOffer, ModTradeStack, ModWheelEvent, Mods, Output, Panel, Player, PlayerInventory,
+    ServerPlayer, Snapshot, Status, Target, WorldDrawLine,
 };
 use serde::Deserialize;
 use std::{
@@ -107,6 +108,11 @@ pub struct TestGame {
     /// `expect.actions` spelling: the log of what the game would
     /// have performed, for a test to read back.
     pub actions: Vec<String>,
+    /// Every slot move the mod queued, oldest first, in the
+    /// `expect.slot-moves` spelling (capability
+    /// `inventory-actions`, API 24): the log of what the game
+    /// would have performed, for a test to read back.
+    pub slot_moves: Vec<String>,
 }
 
 /// The world a script's mod reads: [`TestGame::world`] and
@@ -237,6 +243,7 @@ impl TestGame {
             },
             trades: None,
             actions: Vec::new(),
+            slot_moves: Vec::new(),
         };
         copy_mod(kmod, &copy)?;
         game.start()?;
@@ -1020,6 +1027,48 @@ fn action_line(action: &ModAction) -> String {
     }
 }
 
+/// One queued slot verb as a script's `expect.slot-moves` names
+/// it (API 24): the click or drag the game would have
+/// performed. A click is `click <slot|-> <button> <kind>`; a
+/// drag is `drag <button> <slot>...`.
+fn slot_move_line(verb: &ModSlotMove) -> String {
+    match verb {
+        ModSlotMove::Click(click) => {
+            let kind = match click.kind {
+                ModClickKind::Pickup => "pickup",
+                ModClickKind::QuickMove => "quick-move",
+                ModClickKind::Swap => "swap",
+                ModClickKind::Clone => "clone",
+                ModClickKind::Throw => "throw",
+                ModClickKind::PickupAll => "pickup-all",
+            };
+            match click.slot {
+                Some(slot) => format!("click {slot} {} {kind}", click.button),
+                None => format!("click - {} {kind}", click.button),
+            }
+        }
+        ModSlotMove::Drag(drag) => {
+            let button = match drag.button {
+                ModDragButton::Left => "left",
+                ModDragButton::Right => "right",
+                ModDragButton::Middle => "middle",
+            };
+            let slots: Vec<String> = drag.slots.iter().map(u32::to_string).collect();
+            format!("drag {button} {}", slots.join(" "))
+        }
+    }
+}
+
+/// One wheel turn over the open screen for a step (API 24), in
+/// the WIT record's shape: the slot the pointer rested on
+/// (absent: over no slot) and the whole steps turned.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct WheelSet {
+    slot: Option<u32>,
+    steps: i32,
+}
+
 /// The open screen for a step (API 22), in the WIT record's
 /// shape: its id, the open menu's type and title, the panel's
 /// rect, the hovered slot and the debug overlay's state, and
@@ -1180,7 +1229,7 @@ impl EntitySet {
 /// `blocks`, `lights`, `join`, `player`, `clock`, `inventory`, `container`,
 /// `close-container`, `dead`, `entities`, `effects`, `self`, `can-zoom`,
 /// `spyglass`, `idle-ms`, `poses`, `target`, `screen`, `press-button`,
-/// `middle-click`, `middle-click-none`, `multiplayer`, `ticks`,
+/// `middle-click`, `middle-click-none`, `wheel`, `multiplayer`, `ticks`,
 /// `frames`, `chat`, `command`, `break`, `place`, `leave`; then the blocks the mod set are made, and `expect`
 /// is checked against what the mod showed and changed during the step.
 /// For a server mod, `player`, `chat`, `command`, `break` and `place` are
@@ -1249,6 +1298,11 @@ pub struct Step {
     /// The middle button goes down over no slot (API 22).
     #[serde(default)]
     middle_click_none: bool,
+    /// The wheel turns over the open screen (API 24): pushed
+    /// to the mod's `inventory-actions.poll-wheel` queue before
+    /// the step's ticks, as the game reports a real turn.
+    #[serde(default)]
+    wheel: Vec<WheelSet>,
     /// Multiplayer from this step on (capability `entity`): the list
     /// reads empty and health reads None, while the crosshair target
     /// still answers.
@@ -1312,6 +1366,10 @@ pub struct Expect {
     /// The trade indices the mod chose during the step, in
     /// order (capability `screen`, API 22).
     select_trades: Option<Vec<u32>>,
+    /// The slot moves the mod queued during the step, in
+    /// order, in the spelling `slot_move_line` gives them
+    /// (capability `inventory-actions`, API 24).
+    slot_moves: Option<Vec<String>>,
     /// The running mods' model rules after the step, in
     /// evaluation order, each as `ItemModelIndex`'s rule
     /// spelling names it (capability `render`'s `item-model`,
@@ -1436,6 +1494,9 @@ impl Step {
         }
         if self.middle_click.is_some() || self.middle_click_none {
             parts.push("middle click".to_string());
+        }
+        if !self.wheel.is_empty() {
+            parts.push(count(self.wheel.len() as u64, "wheel turn"));
         }
         if self.multiplayer {
             parts.push("multiplayer".to_string());
@@ -1571,6 +1632,12 @@ impl Step {
         if self.middle_click_none {
             game.mods.screen_middle_click(None);
         }
+        for turn in &self.wheel {
+            game.mods.push_wheel(ModWheelEvent {
+                slot: turn.slot,
+                steps: turn.steps,
+            });
+        }
         if self.multiplayer {
             game.multiplayer = true;
         }
@@ -1616,6 +1683,14 @@ impl Step {
             }
             if let Output::Action { action, .. } = o {
                 game.actions.push(action_line(action));
+            }
+            if let Output::SlotClick { click, .. } = o {
+                game.slot_moves
+                    .push(slot_move_line(&ModSlotMove::Click(click.clone())));
+            }
+            if let Output::SlotDrag { drag, .. } = o {
+                game.slot_moves
+                    .push(slot_move_line(&ModSlotMove::Drag(drag.clone())));
             }
         }
         let stopped = out.iter().find_map(|o| match o {
@@ -1673,6 +1748,21 @@ impl Step {
                 })
                 .collect();
             same("select-trades", want, &got)?;
+        }
+        if let Some(want) = &e.slot_moves {
+            let got: Vec<String> = out
+                .iter()
+                .filter_map(|o| match o {
+                    Output::SlotClick { click, .. } => {
+                        Some(slot_move_line(&ModSlotMove::Click(click.clone())))
+                    }
+                    Output::SlotDrag { drag, .. } => {
+                        Some(slot_move_line(&ModSlotMove::Drag(drag.clone())))
+                    }
+                    _ => None,
+                })
+                .collect();
+            same("slot-moves", want, &got)?;
         }
         if let Some(want) = &e.item_rules {
             let index = game.mods.item_model_index();

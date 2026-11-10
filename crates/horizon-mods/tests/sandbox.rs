@@ -20,8 +20,8 @@ id = "test_guest"
 name = "Test Guest"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "storage", "audio", "render", "input", "actions", "screen"]
-experimental = ["audio", "render", "input", "actions", "screen"]
+capabilities = ["game-read", "chat", "storage", "audio", "render", "input", "actions", "screen", "inventory-actions"]
+experimental = ["audio", "render", "input", "actions", "screen", "inventory-actions"]
 "#;
 const UI_MANIFEST: &str = r#"
 id = "test_ui_guest"
@@ -77,6 +77,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "item-probe",
                 "-p",
+                "inventory-actions-probe",
+                "-p",
                 "horizon-mods-test-guest",
                 "-p",
                 "horizon-mods-test-ui-guest",
@@ -114,6 +116,10 @@ fn mods_dir() -> &'static Path {
             ("action_probe", example("action-probe")),
             ("screen_probe", example("screen-probe")),
             ("item_probe", example("item-probe")),
+            (
+                "inventory_actions_probe",
+                example("inventory-actions-probe"),
+            ),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
         ];
@@ -833,6 +839,157 @@ fn actions_queue_in_order_clamp_and_drop() {
     assert_eq!(mods.held_buttons(), (false, false));
 }
 
+/// Capability `inventory-actions` (API 24): clicks and drags queue
+/// as outputs in call order with their kind, button and slots;
+/// the malformed errs at call time and queues nothing — a button
+/// the kind does not take, a slot past 999, a drag of 0 or 65
+/// slots; one call keeps 32 weighed verbs, a drag weighing 8
+/// (four drags fill a call, the fifth dropped); the wheel queue
+/// returns its turns in order behind the 256 cap, the oldest
+/// dropped.
+#[test]
+fn slot_moves_queue_clamp_and_drop() {
+    use horizon_mods::{
+        ModClickKind, ModDragButton, ModSlotClick, ModSlotDrag, ModSlotMove, ModWheelEvent,
+    };
+    let mut mods = load("horizon_mods_test_guest.kmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    mods.set_snapshot(player());
+    let moves = |mods: &mut Mods| -> Vec<ModSlotMove> {
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::SlotClick { click, .. } => Some(ModSlotMove::Click(click)),
+                Output::SlotDrag { drag, .. } => Some(ModSlotMove::Drag(drag)),
+                _ => None,
+            })
+            .collect()
+    };
+    let feedback = |mods: &mut Mods| -> Vec<(String, bool)> {
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Feedback { text, error } => Some((text, error)),
+                _ => None,
+            })
+            .collect()
+    };
+    // A click queues with its slot, button and kind, ahead of
+    // the command's success feedback.
+    assert!(mods.command("invclick"));
+    assert_eq!(
+        mods.drain(),
+        [
+            Output::SlotClick {
+                mod_id: "test_guest".into(),
+                click: ModSlotClick {
+                    slot: Some(9),
+                    button: 0,
+                    kind: ModClickKind::Pickup,
+                },
+            },
+            Output::Feedback {
+                text: "clicked".into(),
+                error: false,
+            },
+        ]
+    );
+    // A swap with button 9 errs at call time and queues nothing;
+    // button 3 queues.
+    assert!(mods.command("invswap"));
+    let out = mods.drain();
+    assert_eq!(
+        out.iter()
+            .filter_map(|o| match o {
+                Output::Feedback { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        ["bad swap takes a hotbar slot, 0 to 8 or 40, not button 9; queued"]
+    );
+    assert_eq!(
+        out.iter()
+            .filter_map(|o| match o {
+                Output::SlotClick { click, .. } => Some(click.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        [ModSlotClick {
+            slot: Some(9),
+            button: 3,
+            kind: ModClickKind::Swap,
+        }]
+    );
+    // A throw queues; a drag queues whole, in slot order.
+    assert!(mods.command("invthrow"));
+    assert!(mods.command("invdrag"));
+    assert_eq!(
+        moves(&mut mods),
+        [
+            ModSlotMove::Click(ModSlotClick {
+                slot: Some(9),
+                button: 0,
+                kind: ModClickKind::Throw,
+            }),
+            ModSlotMove::Drag(ModSlotDrag {
+                button: ModDragButton::Right,
+                slots: vec![9, 10, 11],
+            }),
+        ]
+    );
+    // The malformed three err at call time; nothing queues.
+    assert!(mods.command("invbad"));
+    assert_eq!(
+        feedback(&mut mods),
+        [(
+            "bad slot 1000 is past 999; a drag names no slots; \
+             a drag names 65 slots, past 64"
+                .to_string(),
+            false
+        )]
+    );
+    // The 33rd click in one call is dropped: 32 are kept.
+    assert!(mods.command("invspam"));
+    assert_eq!(
+        moves(&mut mods),
+        vec![
+            ModSlotMove::Click(ModSlotClick {
+                slot: Some(9),
+                button: 0,
+                kind: ModClickKind::Pickup,
+            });
+            32
+        ]
+    );
+    // A drag weighs 8: four fill a call's 32, the fifth drops.
+    assert!(mods.command("invdragspam"));
+    assert_eq!(
+        moves(&mut mods),
+        vec![
+            ModSlotMove::Drag(ModSlotDrag {
+                button: ModDragButton::Right,
+                slots: vec![9],
+            });
+            4
+        ]
+    );
+    // The wheel queue: 300 turns pushed, 256 kept, the oldest
+    // dropped, the rest in order; a second poll reads empty.
+    for steps in 0..300 {
+        mods.push_wheel(ModWheelEvent {
+            slot: Some(9),
+            steps,
+        });
+    }
+    assert!(mods.command("invwheel"));
+    let text = feedback(&mut mods).remove(0).0;
+    assert!(text.starts_with("wheel [9 44;"), "{text}");
+    assert!(text.ends_with("9 299]"), "{text}");
+    assert_eq!(text.matches("; ").count(), 255, "{text}");
+    assert!(mods.command("invwheel"));
+    assert_eq!(feedback(&mut mods), [("wheel []".to_string(), false)]);
+}
+
 /// Capability `screen` (API 22): the snapshot's screen state and
 /// merchant offers reach the mod verbatim, at the charged counts;
 /// button declarations clamp at the store and resolve per
@@ -1462,8 +1619,8 @@ id = "too_new"
 name = "Too New"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world", "inventory", "entity", "audio", "actions", "screen"]
-experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audio", "actions", "screen"]
+capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world", "inventory", "entity", "audio", "actions", "screen", "inventory-actions"]
+experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audio", "actions", "screen", "inventory-actions"]
 "#;
     std::fs::write(dir.join("horizon-mod.toml"), manifest).unwrap();
     std::fs::write(dir.join("mod.wasm"), wasm).unwrap();
@@ -1504,6 +1661,8 @@ experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audi
     assert_eq!(level("screen_probe.kmod"), 22);
     // The item probe swaps an item's model (`item-model.set-model-rules`, level 23).
     assert_eq!(level("item_probe.kmod"), 23);
+    // The inventory actions probe moves stacks (`inventory-actions.click`, level 24).
+    assert_eq!(level("inventory_actions_probe.kmod"), 24);
 }
 
 #[test]

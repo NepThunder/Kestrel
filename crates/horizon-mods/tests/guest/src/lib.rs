@@ -16,14 +16,18 @@
 //! `/scrndebug` and `/scrnpoll` capability `screen`'s reads,
 //! declarations and events (API 22); `/imrules`, `/immarks` and
 //! `/imdropped` capability `render`'s item models, slot marks
-//! and dropped display (API 23); `tick` and `frame` do
-//! nothing, to measure the cost of a call.
+//! and dropped display (API 23); `/invclick`, `/invswap`,
+//! `/invthrow`, `/invdrag`, `/invdragspam`, `/invbad`,
+//! `/invspam` and `/invwheel` capability `inventory-actions`'
+//! slot clicks, drags and wheel poll (API 24); `tick` and
+//! `frame` do nothing, to measure the cost of a call.
 use horizon_mod_sdk::{
-    ActionHand, ActionTarget, Anchor, BlockDisplay, BlockTarget, ComponentMatch, Decoration,
-    DecorationPlace, DecorationTarget, DisplayContext, DroppedDisplay, Face, FlatDisplay, HandFov,
-    HandFovMode, HandTransform, Highlight, Mod, ModelMatch, ModelRule, PartOffset, PoseOffset,
-    PoseTarget, Registration, ScreenButton, ScreenEvent, SoundAdjustment, SoundQuery, SwingAnim,
-    actions, audio, chat, entity_pose, game, hand, input, item_model, render, screen, storage,
+    ActionHand, ActionTarget, Anchor, BlockDisplay, BlockTarget, ClickKind, ComponentMatch,
+    Decoration, DecorationPlace, DecorationTarget, DisplayContext, DragButton, DroppedDisplay,
+    Face, FlatDisplay, HandFov, HandFovMode, HandTransform, Highlight, Mod, ModelMatch, ModelRule,
+    PartOffset, PoseOffset, PoseTarget, Registration, ScreenButton, ScreenEvent, SoundAdjustment,
+    SoundQuery, SwingAnim, actions, audio, chat, entity_pose, game, hand, input, inventory_actions,
+    item_model, render, screen, storage,
 };
 
 struct Guest {
@@ -74,6 +78,14 @@ impl Mod for Guest {
             "imrules",
             "immarks",
             "imdropped",
+            "invclick",
+            "invswap",
+            "invthrow",
+            "invdrag",
+            "invdragspam",
+            "invbad",
+            "invspam",
+            "invwheel",
         ]
         .into_iter()
         .fold(Registration::new(), Registration::command)
@@ -691,6 +703,60 @@ impl Mod for Guest {
                 };
                 item_model::set_dropped_display(display);
                 Ok(Some("dropped set".into()))
+            }
+            "invclick" => {
+                inventory_actions::click(Some(9), 0, ClickKind::Pickup)?;
+                Ok(Some("clicked".into()))
+            }
+            "invswap" => {
+                // Button 9 errs at call time; button 3 queues.
+                let bad = inventory_actions::click(Some(9), 9, ClickKind::Swap)
+                    .expect_err("swap takes a hotbar slot");
+                inventory_actions::click(Some(9), 3, ClickKind::Swap)?;
+                Ok(Some(format!("bad {bad}; queued")))
+            }
+            "invthrow" => {
+                inventory_actions::click(Some(9), 0, ClickKind::Throw)?;
+                Ok(Some("threw".into()))
+            }
+            "invdrag" => {
+                inventory_actions::drag(DragButton::Right, &[9, 10, 11])?;
+                Ok(Some("dragged".into()))
+            }
+            "invdragspam" => {
+                // Five drags in one call: each weighs 8, so the
+                // host keeps four (32) and drops the fifth.
+                for _ in 0..5 {
+                    inventory_actions::drag(DragButton::Right, &[9])?;
+                }
+                Ok(Some("drag spammed".into()))
+            }
+            "invbad" => {
+                // All malformed at call time: a slot past 999, an
+                // empty drag, a drag past 64 slots. Nothing queues.
+                let slot = inventory_actions::click(Some(1000), 0, ClickKind::Pickup)
+                    .expect_err("slot 1000 is past 999");
+                let empty = inventory_actions::drag(DragButton::Right, &[]).expect_err("no slots");
+                let many = inventory_actions::drag(DragButton::Left, &vec![9; 65])
+                    .expect_err("65 slots is past 64");
+                Ok(Some(format!("bad {slot}; {empty}; {many}")))
+            }
+            "invspam" => {
+                // 33 clicks in one call: the host keeps 32.
+                for _ in 0..33 {
+                    inventory_actions::click(Some(9), 0, ClickKind::Pickup)?;
+                }
+                Ok(Some("spammed".into()))
+            }
+            "invwheel" => {
+                let parts: Vec<String> = inventory_actions::poll_wheel()
+                    .iter()
+                    .map(|e| match e.slot {
+                        Some(slot) => format!("{slot} {}", e.steps),
+                        None => format!("none {}", e.steps),
+                    })
+                    .collect();
+                Ok(Some(format!("wheel [{}]", parts.join("; "))))
             }
             _ => {
                 chat::show(&format!("hello {args} after {} ticks", self.ticks));

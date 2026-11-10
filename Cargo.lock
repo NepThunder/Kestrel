@@ -2356,6 +2356,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "inventory-actions-probe"
+version = "0.1.0"
+dependencies = [
+ "horizon-mod-sdk",
+]
+
+[[package]]
 name = "inventory-probe"
 version = "0.1.0"
 dependencies = [

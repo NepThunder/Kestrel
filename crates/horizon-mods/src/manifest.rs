@@ -129,9 +129,17 @@ pub enum Capability {
     /// `ui`'s: `select-trade` spends items, and an item-moving
     /// verb sets the consent bar for the whole interface.
     Screen,
+    /// The player's own slot clicks, made by the game for the
+    /// mod (interface `inventory-actions`, API 24): clicks and
+    /// a drag over the slots of the inventory and the open
+    /// container, through the game's own menu logic. Its own
+    /// capability, not `inventory`'s: that one's consent line
+    /// is seeing the inventory, and moving its stacks is a
+    /// different consent.
+    InventoryActions,
 }
 impl Capability {
-    pub const ALL: [Capability; 17] = [
+    pub const ALL: [Capability; 18] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -149,6 +157,7 @@ impl Capability {
         Capability::Audio,
         Capability::Actions,
         Capability::Screen,
+        Capability::InventoryActions,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -177,6 +186,7 @@ impl Capability {
             Capability::Audio => "audio",
             Capability::Actions => "actions",
             Capability::Screen => "screen",
+            Capability::InventoryActions => "inventory-actions",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -193,6 +203,7 @@ impl Capability {
                 | Capability::Audio
                 | Capability::Actions
                 | Capability::Screen
+                | Capability::InventoryActions
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -230,6 +241,9 @@ impl Capability {
             }
             Capability::Screen => {
                 "see which of the game's screens is open and what it holds, put its buttons on those screens for you to press, highlight slots, stand in for the debug screen, and choose a villager's trade for you — a trade moves your items, as clicking the trade yourself would"
+            }
+            Capability::InventoryActions => {
+                "move your items for you in your inventory and open containers: click and drag over slots, as your own clicks in them would — a server sees ordinary clicks and may refuse any of them"
             }
         }
     }
@@ -279,6 +293,14 @@ impl Capability {
         if interface == "screen" {
             return Ok(Some(Capability::Screen));
         }
+        // The player's own slot clicks (API 24) are their own
+        // capability too, not `inventory`'s: that one's consent
+        // line is seeing the inventory, and folding the moving
+        // verbs into it would widen what every shipped
+        // `inventory` mod was consented to.
+        if interface == "inventory-actions" {
+            return Ok(Some(Capability::InventoryActions));
+        }
         Capability::ALL
             .into_iter()
             .filter(|c| *c != Capability::Registries)
@@ -307,6 +329,7 @@ impl fmt::Display for Capability {
             Capability::Audio => "audio",
             Capability::Actions => "actions",
             Capability::Screen => "screen",
+            Capability::InventoryActions => "inventory-actions",
         };
         f.write_str(name)
     }

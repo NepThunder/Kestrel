@@ -17597,6 +17597,13 @@ impl Game<'_> {
                     if self.screen == Screen::Creative && d != 0.0 && !bundle {
                         self.creative_screen.wheel(f64::from(d), &self.pack.names);
                     }
+                    if self.screen == Screen::Inventory && d != 0.0 {
+                        // Capability `inventory-actions` (API 24): the mods
+                        // observe the turn over the open screen — never
+                        // consumed, so the bundle, the wheel tweak and the
+                        // station scroll below run exactly as they did.
+                        self.mod_wheel_scroll(d);
+                    }
                     if self.screen == Screen::Inventory
                         && d != 0.0
                         && !bundle

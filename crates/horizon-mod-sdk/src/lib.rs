@@ -65,6 +65,17 @@
 //! lie in the world (`set_dropped_display`). A rule names a
 //! definition that already exists — the game's, a resource
 //! pack's, a content mod's — never a model the mod supplies.
+//! `inventory_actions` (its own capability, API level 24,
+//! experimental) makes the player's own slot clicks for the
+//! mod: [`inventory_actions::click`] and
+//! [`inventory_actions::drag`] queue clicks and a drag over
+//! the slots of the inventory and the open container, for the
+//! game to perform after the hook returns through its own
+//! menu logic — the server sees ordinary clicks and may
+//! refuse any of them. [`inventory_actions::poll_wheel`]
+//! reads the wheel turns over the open screen, observed never
+//! consumed. Reading an inventory is `inventory`'s consent;
+//! moving its stacks is this one's.
 //! Server mods: [`server`].
 //!
 //! Widgets (capability `ui`): a mod shows a screen it owns with
@@ -93,6 +104,7 @@ pub use horizon::mods::entity_pose::{
 };
 pub use horizon::mods::game::{Effect, Mount, SelfState};
 pub use horizon::mods::hand::{HandState, HandTransform, SwingAnim, SwingKind};
+pub use horizon::mods::inventory_actions::{ClickKind, DragButton, WheelEvent};
 pub use horizon::mods::item_model::{
     BlockDisplay, ComponentMatch, Decoration, DecorationPlace, DecorationTarget, DisplayContext,
     DroppedDisplay, FlatDisplay, ModelMatch, ModelRule,
@@ -103,7 +115,7 @@ pub use horizon::mods::screen::{
 };
 pub use horizon::mods::{
     actions, audio, browser, chat, command, entity, entity_pose, game, hand, hud, input, inventory,
-    item_model, log, recipes, render, screen, storage, ui, world,
+    inventory_actions, item_model, log, recipes, render, screen, storage, ui, world,
 };
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for

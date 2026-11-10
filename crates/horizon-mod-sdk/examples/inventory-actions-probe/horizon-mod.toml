@@ -1,0 +1,9 @@
+id = "inventory_actions_probe"
+name = "Inventory Actions Probe"
+version = "0.1.0"
+description = "Prototype for inventory-actions: on its key, quick-moves the first main-inventory stack and drags over the hotbar; shows wheel turns over the open screen."
+authors = ["Horizon"]
+api = "0.1"
+side = "client"
+capabilities = ["hud", "input", "inventory-actions"]
+experimental = ["input", "inventory-actions"]

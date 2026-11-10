@@ -24,6 +24,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `audio` | [`audio`](#audio) | change how sounds play around you |
 | `actions` | [`actions`](#actions) | act as you in the world: use and place with the item in your hand, attack, and choose your hotbar slot — only what your own clicks could do, at the speed your own clicks could do it |
 | `screen` | [`screen`](#screen) | see which of the game's screens is open and what it holds, put its buttons on those screens for you to press, highlight slots, stand in for the debug screen, and choose a villager's trade for you — a trade moves your items, as clicking the trade yourself would |
+| `inventory-actions` | [`inventory-actions`](#inventory-actions) | move your items for you in your inventory and open containers: click and drag over slots, as your own clicks in them would — a server sees ordinary clicks and may refuse any of them |
 
 ## World `horizon-mod`
 
@@ -43,7 +44,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `audio`, `hand`, `entity-pose`, `item-model`, `actions`, `screen`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `audio`, `hand`, `entity-pose`, `item-model`, `actions`, `screen`, `inventory-actions`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
 - Exports (what the mod provides): `ui-events`, `audio-events`, `events`
 
 ## World `ui-host`
@@ -62,9 +63,9 @@ The game's side of capability `audio` (API 15) beyond `horizon-mod`: a second wo
 
 ## World `render-host`
 
-The game's side of capability `render` (imports only). API 16's `hand` rides along: it is a render extension, checked against the `render` capability, not one of its own. API 20's `entity-pose` rides along the same way. API 21's `actions` is hosted here too — the frame/tick-adjacent client surfaces live in this world — but it is its own capability, not render's: acting is not presentation. API 22's `screen` likewise: its reads are presentation, but `select-trade` spends items, so the interface is its own capability with a consent line that names both halves. API 23's `item-model` rides along with the hand and the poses: its writes are display only — a stack's picture, marks on its slots, dropped items' lie — so it is render's, with no consent line of its own.
+The game's side of capability `render` (imports only). API 16's `hand` rides along: it is a render extension, checked against the `render` capability, not one of its own. API 20's `entity-pose` rides along the same way. API 21's `actions` is hosted here too — the frame/tick-adjacent client surfaces live in this world — but it is its own capability, not render's: acting is not presentation. API 22's `screen` likewise: its reads are presentation, but `select-trade` spends items, so the interface is its own capability with a consent line that names both halves. API 23's `item-model` rides along with the hand and the poses: its writes are display only — a stack's picture, marks on its slots, dropped items' lie — so it is render's, with no consent line of its own. API 24's `inventory-actions` is hosted here too, as the actions and the screens are, and is its own capability, not `inventory`'s: reading an inventory and moving its stacks are different consents, and a shipped `inventory` mod's line said only the reading.
 
-- Imports (what the game offers): `render`, `input`, `hand`, `entity-pose`, `item-model`, `actions`, `screen`
+- Imports (what the game offers): `render`, `input`, `hand`, `entity-pose`, `item-model`, `actions`, `screen`, `inventory-actions`
 - Exports (what the mod provides): 
 
 ## World `recipes-host`
@@ -864,6 +865,50 @@ What the player did on this mod's part of a screen.
 | `poll` | `func() -> list<screen-event>` | What the player did since the last poll, at most 256 kept. |
 | `select-trade` | `func(index: u32) -> result<_, string>` | Chooses the merchant's trade `index`, as clicking the offer on the merchant screen does: the game sends the selection and the server stages the payments and the result from the player's inventory. Taking the result is a slot click, and is not this call. Performed after the hook returns, in the next tick, only while the merchant screen is still open; dropped then if it is not, or the index names no offer. Errs only when no merchant screen is open as of this tick. |
 | `claim-debug` | `func(claimed: bool)` | Stands in for the game's debug overlay (F3): while any running mod claims it, the game does not draw its own debug entries, and whether it is open is `state`'s `debug-open` for every mod. The claiming mod draws its replacement with its own `hud`/`render` surfaces. The claim ends when the mod calls this with false or stops. |
+
+## `inventory-actions`
+
+Access: capability `inventory-actions`.
+
+Capability `inventory-actions` (experimental: the manifest needs `experimental = ["inventory-actions"]`): the player's own slot clicks, made by the game for the mod. Every click is performed as the player, in the menu that is open when it is performed, through the game's own menu logic — the server sees ordinary clicks, re-runs them itself, and corrects anything it sees differently. A click the game cannot perform when its tick comes (no menu it fits, the screen closed, the slot not one of the open menu's) is dropped, not queued for later; what a click did is read back from `inventory` on the next tick, never promised. Requests made in a hook are performed after the hook returns, in the next tick, in the order they were made; at most 32 are kept from one hook call and at most 64 from one mod at a time (a drag counts as 8).
+
+### enum `click-kind`
+
+A click's kind, as the game's menu engine names them (the ContainerClick packet's own list).
+
+| Case | |
+| --- | --- |
+| `pickup` | Left (button 0) or right (1) click: take, put, merge or swap, as the hand and the slot dictate. With no slot (outside the window) it drops what the hand carries: all of it (0) or one of it (1). The only kind that means anything with no slot. |
+| `quick-move` | Shift-click (button 0 or 1): move the slot's stack to the other side of the menu. |
+| `swap` | Swap the slot with a hotbar slot: the button is the hotbar slot, 0 to 8, or 40 for the off hand. |
+| `clone` | The pick-block click (button 0): a full copy of the slot's stack onto the empty hand. The game's menu engine only clones in creative mode; in survival the click does nothing, as the player's own would. |
+| `throw` | Drop from the slot (the hand must be empty): button 0 drops one, 1 drops the whole stack. |
+| `pickup-all` | The double click (button 0 or 1): gather stacks of the slot's item onto the hand from the menu's slots. |
+
+### enum `drag-button`
+
+The button a drag is made with: it also chooses how the hand's stack is shared out, as the player's own drags do — left spreads it evenly over the slots, right puts one in each, middle puts a full stack in each (creative only; the engine refuses it otherwise).
+
+| Case | |
+| --- | --- |
+| `left` |  |
+| `right` |  |
+| `middle` |  |
+
+### record `wheel-event`
+
+A turn of the mouse wheel over the open inventory or container screen since the last poll: the slot the pointer rested on, in `inventory`'s numbering (none over no slot), and the whole steps turned (positive: items move toward the inventory, the direction the game's own wheel tweak calls down). Observed, never consumed: the game's own uses of the wheel still happen.
+
+| Field | Type | |
+| --- | --- | --- |
+| `slot` | `option<u32>` |  |
+| `steps` | `s32` |  |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `click` | `func(slot: option<u32>, button: u32, kind: click-kind) -> result<_, string>` | One click on a slot of the open menu, in `inventory`'s numbering (0-8 hotbar, 9-35 main inventory, 100-108 crafting grid, 200 its result, 300+ the open container's own slots, 500-503 armour, 504 off hand; a workstation's inputs are 600 up and its result 650). `slot` is none for a click outside the window. Errs only on an argument that is malformed now: a slot past 999, or a button the kind does not take (pickup, quick-move, throw and pickup-all take 0 or 1; swap takes 0 to 8 or 40; clone takes 0). A dropped click is not an error. |
+| `drag` | `func(button: drag-button, slots: list<u32>) -> result<_, string>` | A drag of the hand's stack over `slots`, in the order given: the whole gesture is performed as one drag, as releasing the button over those slots would. At most 64 slots; empty errs. Slots the drag cannot take (a result slot, a slot of another item) are passed by, as the game's own drag passes them. Performed whole or dropped whole: a drag is one gesture in the game's menu logic and cannot be split across ticks. |
+| `poll-wheel` | `func() -> list<wheel-event>` | The wheel turns over the open screen since the last poll, at most 256 kept. |
 
 ## `entity-pose`
 

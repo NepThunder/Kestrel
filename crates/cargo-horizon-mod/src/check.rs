@@ -306,6 +306,26 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
                 ),
             },
             Output::SelectTrade { index, .. } => format!("chose trade {index}"),
+            Output::SlotClick { click, .. } => {
+                let kind = match click.kind {
+                    horizon_mods::ModClickKind::Pickup => "pickup",
+                    horizon_mods::ModClickKind::QuickMove => "quick-move",
+                    horizon_mods::ModClickKind::Swap => "swap",
+                    horizon_mods::ModClickKind::Clone => "clone",
+                    horizon_mods::ModClickKind::Throw => "throw",
+                    horizon_mods::ModClickKind::PickupAll => "pickup-all",
+                };
+                match click.slot {
+                    Some(slot) => format!("clicked slot {slot} ({kind}, button {})", click.button),
+                    None => format!(
+                        "clicked outside the window ({kind}, button {})",
+                        click.button
+                    ),
+                }
+            }
+            Output::SlotDrag { drag, .. } => {
+                format!("dragged over {} slot(s)", drag.slots.len())
+            }
         });
     }
     let shapes = mods.hud_shapes().count();

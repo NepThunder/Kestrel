@@ -136,6 +136,15 @@ pub use render_bindings::horizon::mods::hand::{
 use render_bindings::horizon::mods::input;
 /// Capability `input`'s records (WIT `interface input`).
 pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, ItemUse};
+use render_bindings::horizon::mods::inventory_actions;
+/// The player's own slot clicks (WIT `interface
+/// inventory-actions`, API 24): its own capability, hosted with
+/// the render world as the actions and the screens are — never
+/// folded into `inventory`, whose consent line is seeing the
+/// inventory, not moving its stacks.
+pub use render_bindings::horizon::mods::inventory_actions::{
+    ClickKind as ModClickKind, DragButton as ModDragButton, WheelEvent as ModWheelEvent,
+};
 use render_bindings::horizon::mods::item_model;
 /// How items themselves are shown (WIT `interface item-model`,
 /// API 23): a `render` extension, hosted with the render world,
@@ -232,6 +241,24 @@ pub const MODEL_MATCHES: usize = 4;
 /// the `screen` highlights' cap, for the same reason — a page
 /// of the game's slots, not a second inventory.
 pub const ITEM_DECORATIONS: usize = 256;
+/// Weighed slot verbs one hook call of a mod may queue
+/// (capability `inventory-actions`, API 24): a click weighs 1,
+/// a drag weighs 8 (four drags fill a call). The district's own
+/// constant, not `ACTIONS_PER_CALL`'s: the actions queue is hot
+/// (mid-look), this one is cold (between ticks, in menus), and
+/// the two budgets mean different things. The game caps the
+/// pending queue per mod on the same weighed count
+/// ([`SLOT_VERBS_PER_MOD`]).
+pub const SLOT_VERBS_PER_CALL: usize = 32;
+/// Weighed slot verbs one mod may have pending in the game at
+/// once (API 24): two hook calls' worth between ticks — a mod
+/// one tick behind is fine, a mod scripting a long sequence is
+/// not what the surface is for.
+pub const SLOT_VERBS_PER_MOD: usize = 64;
+/// Wheel events kept for one mod's `inventory-actions.poll-wheel`
+/// (API 24): the `screen` events' cap, for the same reason — a
+/// turn the mod never polls for is not kept forever.
+pub const WHEEL_EVENTS: usize = 256;
 /// How far `game.raycast` sees, in blocks.
 pub const RAYCAST_MAX: f32 = 1024.0;
 /// How far `entity.targeted` sees, in blocks.
@@ -469,6 +496,80 @@ pub enum ModAction {
     SelectSlot(u32),
 }
 
+/// One slot click a mod asked the game to make (capability
+/// `inventory-actions`, API 24), as an [`Output::SlotClick`]:
+/// performed as the player in the next tick, through the game's
+/// own menu logic, and dropped — never retried — when the game
+/// cannot perform it then. The arguments are the mod's own, in
+/// `inventory`'s slot numbering; the host call validated the
+/// malformed ones (a slot past 999, a button the kind does not
+/// take) and nothing else — whether the click means anything in
+/// the menu that is open is the menu's own judgement, made when
+/// it is performed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModSlotClick {
+    /// The slot in `inventory`'s numbering, or `None` for a
+    /// click outside the window.
+    pub slot: Option<u32>,
+    /// The click's button, as the kind takes it.
+    pub button: u32,
+    /// The click's kind.
+    pub kind: ModClickKind,
+}
+
+/// One drag of the hand's stack a mod asked the game to make
+/// (capability `inventory-actions`, API 24), as an
+/// [`Output::SlotDrag`]: performed whole, as one gesture,
+/// because a drag's state lives inside one menu session and
+/// cannot be split across ticks.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModSlotDrag {
+    /// The button the drag is made with: it also chooses how
+    /// the stack is shared out.
+    pub button: ModDragButton,
+    /// The slots dragged over, in the order given, 1 to 64.
+    pub slots: Vec<u32>,
+}
+
+/// A queued slot verb (API 24): a click or a drag, with the
+/// weighed count both queue caps charge for it — a click
+/// weighs 1, a drag weighs 8 (four drags fill a call's 32).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ModSlotMove {
+    Click(ModSlotClick),
+    Drag(ModSlotDrag),
+}
+
+impl ModSlotMove {
+    /// The weighed count this verb costs against the per-call
+    /// and per-mod caps.
+    pub fn weight(&self) -> usize {
+        match self {
+            ModSlotMove::Click(_) => 1,
+            ModSlotMove::Drag(_) => 8,
+        }
+    }
+
+    /// Whether the verb names a slot of the open menu itself —
+    /// a container's own slots (300 to 499) or a workstation's
+    /// inputs and result (600 up) — rather than one of the
+    /// player's own slots (0 to 35, 100 to 108, 200, 500 to
+    /// 504) or the outside of the window. The game's window
+    /// guard drops a verb naming the open menu's slots when the
+    /// window it was collected against is no longer the window
+    /// open at the drain; the player's own slots exist in every
+    /// menu, so those verbs still perform.
+    pub fn names_open_menu(&self) -> bool {
+        fn open_menu(slot: u32) -> bool {
+            (300..500).contains(&slot) || slot >= 600
+        }
+        match self {
+            ModSlotMove::Click(click) => click.slot.is_some_and(open_menu),
+            ModSlotMove::Drag(drag) => drag.slots.iter().any(|s| open_menu(*s)),
+        }
+    }
+}
+
 /// What mods asked the game to show since the last [`Mods::drain`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum Output {
@@ -540,6 +641,17 @@ pub enum Output {
     /// never a slot click. The game collects these beside the
     /// actions and drops one whose merchant has closed, silently.
     SelectTrade { mod_id: String, index: u32 },
+    /// `inventory-actions.click` (API 24): one slot click for
+    /// the game to perform as the player in the next tick,
+    /// through the game's own menu logic. The game collects
+    /// these instead of acting on them where they drain: slot
+    /// moves may only perform in the drain beside the actions,
+    /// under their own gate.
+    SlotClick { mod_id: String, click: ModSlotClick },
+    /// `inventory-actions.drag` (API 24): one drag of the hand's
+    /// stack for the game to perform whole in the next tick, as
+    /// one menu session's QuickCraft run.
+    SlotDrag { mod_id: String, drag: ModSlotDrag },
 }
 
 /// The game's world as capability `world` reads it during a call: the
@@ -977,6 +1089,8 @@ struct Running {
     reads_actions: bool,
     /// It imports capability `screen` (API 22).
     reads_screen: bool,
+    /// It imports capability `inventory-actions` (API 24).
+    reads_inventory_actions: bool,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -1168,6 +1282,11 @@ struct State {
     /// debug claim. A stopped mod's declarations die with its
     /// store, as its held buttons do.
     screen: ScreenStore,
+    /// The wheel turns over the open screen the game observed
+    /// for this mod (capability `inventory-actions`, API 24),
+    /// oldest first, capped like `screen`'s events: a turn the
+    /// mod never polls for is not kept forever.
+    wheel: std::collections::VecDeque<ModWheelEvent>,
     /// This mod's model rules (WIT `item-model`, API 23),
     /// sanitized at set time by the host call; the running
     /// mods' rules are indexed together for the game's swap
@@ -1480,6 +1599,7 @@ impl Mods {
             held: (false, false),
             held_latched: false,
             screen: ScreenStore::default(),
+            wheel: std::collections::VecDeque::new(),
             model_rules: Vec::new(),
             model_rules_version: 0,
             item_decorations: Vec::new(),
@@ -1567,6 +1687,9 @@ impl Mods {
                 .any(|f| f == "game.get-effects" || f == "game.get-self-state"),
             reads_actions: functions.iter().any(|f| f.starts_with("actions.")),
             reads_screen: functions.iter().any(|f| f.starts_with("screen.")),
+            reads_inventory_actions: functions
+                .iter()
+                .any(|f| f.starts_with("inventory-actions.")),
         }))
     }
 
@@ -1953,6 +2076,14 @@ impl Mods {
         self.entries
             .iter()
             .any(|e| e.run.as_ref().is_some_and(|r| r.reads_screen))
+    }
+    /// Some running mod imports capability `inventory-actions`
+    /// (API 24): the game observes the wheel over its screens
+    /// only then.
+    pub fn wants_inventory_actions(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.reads_inventory_actions))
     }
     /// Some running mod has a `frame` hook: the game refreshes the snapshot
     /// every frame for it.
@@ -2448,6 +2579,27 @@ impl Mods {
                 .data_mut()
                 .screen
                 .push(ModScreenEvent::MiddleClick(slot));
+        }
+    }
+    /// The wheel turned over the open inventory or container
+    /// screen (capability `inventory-actions`, API 24): every
+    /// running `inventory-actions` mod hears it, with the slot
+    /// under the pointer or none. Observed only — the turn
+    /// itself is the game's to use as it always has. Each mod's
+    /// queue keeps at most [`WHEEL_EVENTS`], the oldest dropped,
+    /// as `screen`'s events do.
+    pub fn push_wheel(&mut self, event: ModWheelEvent) {
+        for run in self
+            .entries
+            .iter_mut()
+            .filter_map(|e| e.run.as_mut())
+            .filter(|r| r.reads_inventory_actions)
+        {
+            let wheel = &mut run.store.data_mut().wheel;
+            if wheel.len() >= WHEEL_EVENTS {
+                wheel.pop_front();
+            }
+            wheel.push_back(event);
         }
     }
     /// Whether any running mod stands in for the game's debug
@@ -3035,6 +3187,40 @@ impl State {
             .filter(|o| matches!(o, Output::Action { .. } | Output::SelectTrade { .. }))
             .count()
     }
+    /// Queues one slot verb for the game to perform after this
+    /// hook returns (API 24), unless the call already queued
+    /// [`SLOT_VERBS_PER_CALL`] weighed verbs — the `command.run`
+    /// discipline again: past the cap the request is dropped,
+    /// never deferred. The count is this district's own, not
+    /// `actions`' shared one: slot moves are cold and drags are
+    /// heavy, so they weigh differently and cap separately.
+    fn queue_slot_move(&mut self, verb: ModSlotMove) {
+        if self.queued_slot_verbs() + verb.weight() <= SLOT_VERBS_PER_CALL {
+            let out = match verb {
+                ModSlotMove::Click(click) => Output::SlotClick {
+                    mod_id: self.id.clone(),
+                    click,
+                },
+                ModSlotMove::Drag(drag) => Output::SlotDrag {
+                    mod_id: self.id.clone(),
+                    drag,
+                },
+            };
+            self.out.push(out);
+        }
+    }
+    /// The weighed slot verbs this hook call has queued so far
+    /// (API 24): clicks weigh 1, drags weigh 8.
+    fn queued_slot_verbs(&self) -> usize {
+        self.out
+            .iter()
+            .map(|o| match o {
+                Output::SlotClick { .. } => 1,
+                Output::SlotDrag { .. } => 8,
+                _ => 0,
+            })
+            .sum()
+    }
 }
 
 impl actions::Host for State {
@@ -3073,6 +3259,61 @@ impl actions::Host for State {
         }
         self.queue_action(ModAction::SelectSlot(slot));
         Ok(())
+    }
+}
+
+impl inventory_actions::Host for State {
+    fn click(&mut self, slot: Option<u32>, button: u32, kind: ModClickKind) -> Result<(), String> {
+        // Call-time errors are only for the malformed: a slot
+        // past the numbering's end, or a button the kind does
+        // not take. Whether the click means anything in the
+        // menu open when it is performed is the menu's own
+        // judgement, and a dropped click is not an error.
+        if let Some(slot) = slot
+            && slot > 999
+        {
+            return Err(format!("slot {slot} is past 999"));
+        }
+        match kind {
+            ModClickKind::Pickup
+            | ModClickKind::QuickMove
+            | ModClickKind::Throw
+            | ModClickKind::PickupAll => {
+                if button > 1 {
+                    return Err(format!("button {button} is outside 0 to 1"));
+                }
+            }
+            ModClickKind::Swap => {
+                if button > 8 && button != 40 {
+                    return Err(format!(
+                        "swap takes a hotbar slot, 0 to 8 or 40, not button {button}"
+                    ));
+                }
+            }
+            ModClickKind::Clone => {
+                if button != 0 {
+                    return Err(format!("clone takes button 0, not button {button}"));
+                }
+            }
+        }
+        self.queue_slot_move(ModSlotMove::Click(ModSlotClick { slot, button, kind }));
+        Ok(())
+    }
+    fn drag(&mut self, button: ModDragButton, slots: Vec<u32>) -> Result<(), String> {
+        if slots.is_empty() {
+            return Err("a drag names no slots".into());
+        }
+        if slots.len() > 64 {
+            return Err(format!("a drag names {} slots, past 64", slots.len()));
+        }
+        if let Some(slot) = slots.iter().find(|s| **s > 999) {
+            return Err(format!("slot {slot} is past 999"));
+        }
+        self.queue_slot_move(ModSlotMove::Drag(ModSlotDrag { button, slots }));
+        Ok(())
+    }
+    fn poll_wheel(&mut self) -> Vec<ModWheelEvent> {
+        self.wheel.drain(..).collect()
     }
 }
 

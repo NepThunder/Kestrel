@@ -7972,10 +7972,24 @@ impl Game<'_> {
         };
         let mut input = std::mem::take(&mut r.input);
         let stop = std::mem::take(&mut r.stop_mining);
-        let ready = r.loaded_sent
+        let loaded = r.loaded_sent;
+        let ready = loaded
             && self.screen == Screen::Playing
             && self.sleeping.is_none()
             && !self.dialog_open();
+        // Capability `inventory-actions`' own gate (API 24):
+        // slot moves live in the opposite state from the actions
+        // — performed over the window-0 inventory menu while
+        // playing (pickup-all and the outside drop are world
+        // gestures) and over any open container, station or
+        // mount window, dead everywhere a plain click is nobody's
+        // business (chat, pause, options, death, creative).
+        let slot_ready = super::mods::slot_gate_performs(
+            self.screen,
+            loaded,
+            self.sleeping.is_some(),
+            self.dialog_open(),
+        );
         if stop || !ready {
             self.stop_remote_mining();
         }
@@ -7983,6 +7997,14 @@ impl Game<'_> {
             // Capability `actions` (API 21): a queued click whose
             // tick cannot act is dropped, never carried over.
             self.clear_mod_actions();
+            // The slot verbs drain under their own gate even
+            // here: an open container screen is exactly their
+            // home, and this step is their tick too.
+            if slot_ready {
+                self.perform_mod_slot_moves();
+            } else {
+                self.clear_mod_slot_moves();
+            }
             return;
         }
         // Capability `actions` (API 21): the mods' queued clicks
@@ -7990,6 +8012,11 @@ impl Game<'_> {
         // queue physical clicks use, a slot choice ahead of the
         // carried sync below, a use-on-block against a fresh pick.
         self.perform_mod_actions(&mut input);
+        // Capability `inventory-actions` (API 24): the slot
+        // verbs perform after the actions and the trades
+        // (`perform_mod_actions` performs the trades), in the
+        // same input step, one menu session per verb.
+        self.perform_mod_slot_moves();
         // MultiPlayerGameMode.tick syncs the carried slot before keybinds.
         let carried_changed = self.remote.as_mut().is_some_and(|r| {
             if r.carried == Some(self.selected) {

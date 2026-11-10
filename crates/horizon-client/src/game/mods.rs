@@ -31,8 +31,9 @@ use {
     horizon_mods::{
         Clock, ModAction, ModArmPose, ModBlockDisplay, ModBlockTarget, ModDisplayContext,
         ModEntityPoseState, ModFace, ModFlatDisplay, ModHand, ModHandState, ModItemUse, ModKey,
-        ModPoseSwingAnim, ModPoseTarget, ModSwingAnim, ModSwingKind, Mods, Output, Player, Runs,
-        ServerPlayer, Snapshot, SnapshotCamera, Status, UiScreen, UiWidget, WorldView,
+        ModPoseSwingAnim, ModPoseTarget, ModSlotMove, ModSwingAnim, ModSwingKind, ModWheelEvent,
+        Mods, Output, Player, Runs, ServerPlayer, Snapshot, SnapshotCamera, Status, UiScreen,
+        UiWidget, WorldView,
     },
     std::time::Instant,
     winit::{event::MouseButton, keyboard::KeyCode},
@@ -137,6 +138,30 @@ pub(super) struct ModsState {
     /// the runtime caps the verb per call.
     #[cfg(feature = "mods")]
     pub(super) pending_trades: Vec<(String, u32)>,
+    /// Capability `inventory-actions`' queued slot verbs (API
+    /// 24), in request order across mods: `route_mod_output`
+    /// collects them — they may not act where outputs drain —
+    /// and the tick's drain performs them
+    /// (`Game::perform_mod_slot_moves`), at most
+    /// [`horizon_mods::SLOT_VERBS_PER_MOD`] weighed per mod
+    /// awaiting (a drag weighs 8).
+    #[cfg(feature = "mods")]
+    pub(super) pending_slot_moves: Vec<(String, ModSlotMove)>,
+    /// The open window the pending slot verbs were collected
+    /// against (API 24): stamped (`Game::mod_slot_window`) when
+    /// the queue's first verb naming the open menu's own slots
+    /// is collected, and read at the drain — a verb naming those
+    /// slots performs only if the window open then is the
+    /// stamped one. Taken with the queue at every drain and
+    /// clear, so a stamp never outlives its verbs.
+    #[cfg(feature = "mods")]
+    pub(super) slot_window: Option<(i32, String)>,
+    /// The wheel's fractional turn (API 24): the game's own
+    /// wheel accumulator's counterpart for the mods' observed
+    /// turns — whole steps are pushed to the running
+    /// `inventory-actions` mods and the fraction carries.
+    #[cfg(feature = "mods")]
+    pub(super) mod_wheel: f32,
     /// The view's zoom ratio (API 19), for `render.set-hand-fov`:
     /// 1 unzoomed, easing toward 1/factor beside the FOV ease in
     /// `tick_fov` (`Game::tick_mod_zoom_ratio`). None until the
@@ -181,6 +206,43 @@ fn mod_trade_performs(offers: Option<usize>, index: u32) -> bool {
     offers.is_some_and(|n| (index as usize) < n)
 }
 
+/// Whether a queued slot verb performs in the window open at
+/// the drain (API 24): a verb naming one of the player's own
+/// slots — or no slot at all — performs in any window, because
+/// those slots exist in every menu; a verb naming the open
+/// menu's own slots performs only in the window stamped when
+/// it was collected ([`ModsState::slot_window`]). A menu verb
+/// with no stamp cannot happen — collection stamps before it
+/// queues — and reads as a match: dropping a verb on a
+/// bookkeeping gap would be worse than performing it.
+#[cfg(feature = "mods")]
+fn slot_verb_performs(
+    names_open_menu: bool,
+    stamped: Option<&(i32, String)>,
+    now: &(i32, String),
+) -> bool {
+    !names_open_menu || stamped.is_none_or(|s| s == now)
+}
+
+/// The slot-move drain's gate (API 24), judged at the drain:
+/// the session is loaded, the player awake, no dialog up, and
+/// the screen is the world's own (the window-0 inventory menu)
+/// or a menu screen. Everything else — chat, pause, options,
+/// death, the creative screens — clears the queue unperformed.
+/// Not feature-gated: `remote_handle_input` computes it in
+/// every build, beside the actions gate it mirrors.
+pub(super) fn slot_gate_performs(
+    screen: super::Screen,
+    loaded: bool,
+    sleeping: bool,
+    dialog: bool,
+) -> bool {
+    loaded
+        && !sleeping
+        && !dialog
+        && matches!(screen, super::Screen::Playing | super::Screen::Inventory)
+}
+
 #[cfg(all(test, feature = "mods"))]
 mod screen_tests {
     use super::mod_trade_performs;
@@ -198,6 +260,121 @@ mod screen_tests {
         assert!(!mod_trade_performs(Some(0), 0));
         // The merchant closed since the choice was queued.
         assert!(!mod_trade_performs(None, 0));
+    }
+}
+
+#[cfg(all(test, feature = "mods"))]
+mod slot_move_tests {
+    use super::{Screen, slot_gate_performs, slot_verb_performs};
+    use horizon_mods::{ModClickKind, ModDragButton, ModSlotClick, ModSlotDrag, ModSlotMove};
+
+    fn click(slot: Option<u32>) -> ModSlotMove {
+        ModSlotMove::Click(ModSlotClick {
+            slot,
+            button: 0,
+            kind: ModClickKind::Pickup,
+        })
+    }
+
+    fn window(kind: &str) -> (i32, String) {
+        (7, kind.to_string())
+    }
+
+    /// The window guard (API 24): in the window the queue was
+    /// collected against, everything performs; in a changed
+    /// window, the verbs naming the open menu's own slots —
+    /// a container's 300s, a station's 600s and its 650
+    /// result — drop, while the player's own slots and the
+    /// outside of the window still perform.
+    #[test]
+    fn a_changed_window_drops_only_the_open_menus_own_slots() {
+        let chest = window("minecraft:chest");
+        let furnace = window("minecraft:furnace");
+        let stamped = Some(chest.clone());
+        // The same window: every verb performs.
+        for verb in [
+            click(Some(300)),
+            click(Some(650)),
+            click(Some(9)),
+            click(None),
+        ] {
+            assert!(slot_verb_performs(
+                verb.names_open_menu(),
+                stamped.as_ref(),
+                &chest
+            ));
+        }
+        // A changed window: the menu's own slots drop...
+        assert!(!slot_verb_performs(
+            click(Some(300)).names_open_menu(),
+            stamped.as_ref(),
+            &furnace
+        ));
+        assert!(!slot_verb_performs(
+            click(Some(600)).names_open_menu(),
+            stamped.as_ref(),
+            &furnace
+        ));
+        assert!(!slot_verb_performs(
+            click(Some(650)).names_open_menu(),
+            stamped.as_ref(),
+            &furnace
+        ));
+        // ...a drag naming one drops whole...
+        let drag = ModSlotMove::Drag(ModSlotDrag {
+            button: ModDragButton::Left,
+            slots: vec![9, 300],
+        });
+        assert!(!slot_verb_performs(
+            drag.names_open_menu(),
+            stamped.as_ref(),
+            &furnace
+        ));
+        // ...and the player's own slots — hotbar, main,
+        // crafting, its result, armour, the off hand — and the
+        // outside of the window still perform.
+        for slot in [0, 9, 35, 100, 108, 200, 500, 503, 504] {
+            assert!(
+                slot_verb_performs(
+                    click(Some(slot)).names_open_menu(),
+                    stamped.as_ref(),
+                    &furnace
+                ),
+                "slot {slot}"
+            );
+        }
+        assert!(slot_verb_performs(
+            click(None).names_open_menu(),
+            stamped.as_ref(),
+            &furnace
+        ));
+    }
+
+    /// The drain gate's truth table (API 24): Playing and
+    /// Inventory perform; Chat, Paused, Dead and Creative
+    /// clear; and no screen performs unloaded, asleep or
+    /// behind a dialog.
+    #[test]
+    fn the_drain_gate_performs_only_playing_and_inventory() {
+        assert!(slot_gate_performs(Screen::Playing, true, false, false));
+        assert!(slot_gate_performs(Screen::Inventory, true, false, false));
+        for screen in [
+            Screen::Chat,
+            Screen::Paused,
+            Screen::Dead,
+            Screen::Creative,
+            Screen::Options,
+        ] {
+            assert!(
+                !slot_gate_performs(screen, true, false, false),
+                "{}",
+                screen.id()
+            );
+        }
+        assert!(!slot_gate_performs(Screen::Inventory, false, false, false));
+        assert!(!slot_gate_performs(Screen::Inventory, true, true, false));
+        assert!(!slot_gate_performs(Screen::Inventory, true, false, true));
+        assert!(!slot_gate_performs(Screen::Playing, true, false, true));
     }
 }
 
@@ -729,6 +906,11 @@ impl Game<'_> {
         (false, false)
     }
     pub(super) fn drain_mod_actions_in_frame(&mut self) {}
+    /// API 24: no mod runs, so no slot verb is ever queued and
+    /// the wheel is never a mod's.
+    pub(super) fn perform_mod_slot_moves(&mut self) {}
+    pub(super) fn clear_mod_slot_moves(&mut self) {}
+    pub(super) fn mod_wheel_scroll(&mut self, _delta: f32) {}
     /// API 22: no mod runs, so no screen carries a mod's buttons
     /// or marks, no press is ever a mod's, the sort buttons are
     /// never suppressed and the debug overlay is never claimed.
@@ -2009,6 +2191,19 @@ impl Game<'_> {
                     }
                     continue;
                 }
+                Output::SlotClick { mod_id, click } => {
+                    // Not here (API 24): a slot verb may only
+                    // perform in the tick's drain beside the
+                    // actions, under its own gate. Collect it,
+                    // weighed per mod as the runtime weighs
+                    // per call.
+                    self.collect_slot_move(mod_id, ModSlotMove::Click(click));
+                    continue;
+                }
+                Output::SlotDrag { mod_id, drag } => {
+                    self.collect_slot_move(mod_id, ModSlotMove::Drag(drag));
+                    continue;
+                }
             };
             self.add_mod_chat_line(line);
         }
@@ -2075,6 +2270,178 @@ impl Game<'_> {
         self.mods.pending_actions.clear();
         self.mods.pending_trades.clear();
     }
+    /// Collects one queued slot verb (capability
+    /// `inventory-actions`, API 24): at most
+    /// [`horizon_mods::SLOT_VERBS_PER_MOD`] weighed verbs await
+    /// per mod (a drag weighs 8) — past that the verb is
+    /// dropped, never deferred, as the runtime drops past its
+    /// own per-call cap. The queue's first verb naming the open
+    /// menu's own slots stamps the window it was collected
+    /// against, for the drain's guard ([`slot_verb_performs`]).
+    fn collect_slot_move(&mut self, mod_id: String, verb: ModSlotMove) {
+        let queued: usize = self
+            .mods
+            .pending_slot_moves
+            .iter()
+            .filter(|(id, _)| *id == mod_id)
+            .map(|(_, v)| v.weight())
+            .sum();
+        if queued + verb.weight() > horizon_mods::SLOT_VERBS_PER_MOD {
+            return;
+        }
+        if verb.names_open_menu() && self.mods.slot_window.is_none() {
+            self.mods.slot_window = Some(self.mod_slot_window());
+        }
+        self.mods.pending_slot_moves.push((mod_id, verb));
+    }
+    /// The open window's identity for the slot-move guard (API
+    /// 24): on a server, the open menu's own stamp —
+    /// `(0, "inventory")` when none is open; in-frame, the open
+    /// container's block or station, else the inventory. Only
+    /// equality between collection and drain is ever read.
+    fn mod_slot_window(&self) -> (i32, String) {
+        if self.remote.is_some() {
+            return self.remote_menu();
+        }
+        if let Some(key) = self.container {
+            return (0, format!("block {} {} {}", key.0, key.1, key.2));
+        }
+        if let Some(station) = &self.station {
+            return (0, format!("station {:?}", station.kind));
+        }
+        (0, "inventory".into())
+    }
+    /// Performs the queued slot verbs (capability
+    /// `inventory-actions`, API 24) in the tick's drain, after
+    /// the actions and the trades: one rebuilt menu session per
+    /// click, one session per drag. The window guard drops a
+    /// verb naming the open menu's own slots when the window
+    /// open now is not the window stamped at collection; the
+    /// player's own slots perform in any window. A verb the
+    /// menu cannot take is dropped where it stands — the menu
+    /// session says no and the drain moves on; nothing is
+    /// retried. Called by `remote_handle_input` under the
+    /// district's own gate and by the in-frame drain under the
+    /// same gate; the gate failing clears the queue instead
+    /// ([`Game::clear_mod_slot_moves`]).
+    pub(super) fn perform_mod_slot_moves(&mut self) {
+        let queue = std::mem::take(&mut self.mods.pending_slot_moves);
+        let stamped = self.mods.slot_window.take();
+        if queue.is_empty() {
+            return;
+        }
+        let now = self.mod_slot_window();
+        for (_, verb) in queue {
+            if !slot_verb_performs(verb.names_open_menu(), stamped.as_ref(), &now) {
+                continue;
+            }
+            match verb {
+                ModSlotMove::Click(click) => {
+                    use horizon_client::menu::Input;
+                    let input = match click.kind {
+                        horizon_mods::ModClickKind::Pickup => Input::Pickup,
+                        horizon_mods::ModClickKind::QuickMove => Input::QuickMove,
+                        horizon_mods::ModClickKind::Swap => Input::Swap,
+                        horizon_mods::ModClickKind::Clone => Input::Clone,
+                        horizon_mods::ModClickKind::Throw => Input::Throw,
+                        horizon_mods::ModClickKind::PickupAll => Input::PickupAll,
+                    };
+                    self.mod_slot_click(click.slot.map(|s| s as usize), click.button as i32, input);
+                }
+                ModSlotMove::Drag(drag) => {
+                    use horizon_client::menu::Input;
+                    // The run `inventory_release` builds for the
+                    // player's own drag, with the type folded
+                    // into the button: begin, one step per slot,
+                    // end — the whole gesture in one session.
+                    let ty = match drag.button {
+                        horizon_mods::ModDragButton::Left => 0,
+                        horizon_mods::ModDragButton::Right => 1,
+                        horizon_mods::ModDragButton::Middle => 2,
+                    };
+                    let mut ops: Vec<(Option<usize>, i32, Input)> =
+                        vec![(None, ty << 2, Input::QuickCraft)];
+                    ops.extend(
+                        drag.slots
+                            .iter()
+                            .map(|s| (Some(*s as usize), (ty << 2) | 1, Input::QuickCraft)),
+                    );
+                    ops.push((None, (ty << 2) | 2, Input::QuickCraft));
+                    self.mod_slot_drag(&ops);
+                }
+            }
+        }
+    }
+    /// One mod slot click (API 24), in the game's own sort's
+    /// shape (`tweak_click`): on a server, the remote menu path;
+    /// in-frame, this menu's own click — and an open container
+    /// is told, as a hand click tells it.
+    fn mod_slot_click(
+        &mut self,
+        slot: Option<usize>,
+        button: i32,
+        input: horizon_client::menu::Input,
+    ) -> bool {
+        if self.remote.is_some() {
+            return self.remote_menu_ops(&[(slot, button, input)]);
+        }
+        if !self.menu_click(slot, button, input) {
+            return false;
+        }
+        if let Some(key) = self.container {
+            self.container_changed(key);
+        }
+        true
+    }
+    /// One mod drag (API 24): the whole QuickCraft run in one
+    /// menu session, as the player's own drag runs — a drag's
+    /// state lives inside the session and cannot be split.
+    fn mod_slot_drag(&mut self, ops: &[(Option<usize>, i32, horizon_client::menu::Input)]) -> bool {
+        if self.remote.is_some() {
+            return self.remote_menu_ops(ops);
+        }
+        if !self.menu_ops(ops) {
+            return false;
+        }
+        if let Some(key) = self.container {
+            self.container_changed(key);
+        }
+        true
+    }
+    /// Drops the queued slot verbs unperformed (API 24): the
+    /// drain's own gate failed — the screen is one the district
+    /// does not live in. The window stamp drops with them.
+    pub(super) fn clear_mod_slot_moves(&mut self) {
+        self.mods.pending_slot_moves.clear();
+        self.mods.slot_window = None;
+    }
+    /// The wheel turned over the open inventory or container
+    /// screen (API 24): offered to the running
+    /// `inventory-actions` mods beside the game's own wheel
+    /// uses — observed, never consumed, so the built-in wheel
+    /// tweak and the station scroll run exactly as they did.
+    /// Whole steps accumulate as the game's own wheel does;
+    /// the sign follows the interface's contract — positive
+    /// steps are the turns the game's own wheel tweak calls
+    /// down, the direction items move toward the inventory —
+    /// which is the accumulated delta's negative here.
+    pub(super) fn mod_wheel_scroll(&mut self, delta: f32) {
+        if !self.mods.mods.wants_inventory_actions() {
+            self.mods.mod_wheel = 0.0;
+            return;
+        }
+        self.mods.mod_wheel += delta;
+        let steps = self.mods.mod_wheel.trunc();
+        if steps == 0.0 {
+            return;
+        }
+        self.mods.mod_wheel -= steps;
+        let slot = self.inventory_target().0.map(|s| s as u32);
+        self.mods.mods.push_wheel(ModWheelEvent {
+            slot,
+            steps: -(steps as i32),
+        });
+    }
     /// The buttons the running mods hold down (API 21), read once
     /// per tick at the input step and OR'd with the player's own
     /// buttons where the game reads them: a second, virtual
@@ -2132,25 +2499,40 @@ impl Game<'_> {
             && self.title.is_none()
             && self.sleeping.is_none()
             && !self.dialog_open();
-        if !ready {
-            return;
-        }
-        for (_, action) in pending {
-            match action {
-                ModAction::Use => self.use_clicks += 1,
-                ModAction::Attack => self.attack_clicks += 1,
-                ModAction::SelectSlot(slot) => self.selected = slot as usize,
-                ModAction::UseOnBlock { .. } => {}
+        if ready {
+            for (_, action) in pending {
+                match action {
+                    ModAction::Use => self.use_clicks += 1,
+                    ModAction::Attack => self.attack_clicks += 1,
+                    ModAction::SelectSlot(slot) => self.selected = slot as usize,
+                    ModAction::UseOnBlock { .. } => {}
+                }
+            }
+            // The trade choices (API 22) share the queue and its
+            // gates; performing one is the screen's own function,
+            // which runs the menu session on this path itself — no
+            // path-specific code of the district's is added here.
+            for (_, index) in trades {
+                if mod_trade_performs(self.mod_merchant_session(), index) {
+                    self.try_move_items(index as usize);
+                }
             }
         }
-        // The trade choices (API 22) share the queue and its
-        // gates; performing one is the screen's own function,
-        // which runs the menu session on this path itself — no
-        // path-specific code of the district's is added here.
-        for (_, index) in trades {
-            if mod_trade_performs(self.mod_merchant_session(), index) {
-                self.try_move_items(index as usize);
-            }
+        // The slot verbs (API 24) drain beside them under their
+        // own gate — they live where a screen is open, the
+        // opposite population from the actions — and perform
+        // through the shared menu fork in
+        // `Game::perform_mod_slot_moves`, the `tweak_click`
+        // precedent; no path-specific menu code is added here.
+        if slot_gate_performs(
+            self.screen,
+            self.title.is_none(),
+            self.sleeping.is_some(),
+            self.dialog_open(),
+        ) {
+            self.perform_mod_slot_moves();
+        } else {
+            self.clear_mod_slot_moves();
         }
     }
     /// A mod's line in the window's chat; not through system_message: a mod

@@ -1,0 +1,26 @@
+# Inventory actions (API 24): the panel idles on its note;
+# `/inv` queues the quick-move and the hotbar drag, which the
+# step's drained slot moves show in order; the note follows on
+# the next tick; a wheel turn the step pushes is then polled
+# and shown.
+[[step]]
+ticks = 1
+[step.expect]
+panel = ["inventory actions probe"]
+
+[[step]]
+command = "inv"
+[step.expect]
+feedback = "moved"
+slot-moves = ["click 9 0 quick-move", "drag left 0 1 2"]
+
+[[step]]
+ticks = 1
+[step.expect]
+panel = ["moved slot 9"]
+
+[[step]]
+ticks = 1
+wheel = [{ slot = 300, steps = -1 }]
+[step.expect]
+panel = ["wheel 300 -1"]

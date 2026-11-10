@@ -1134,6 +1134,100 @@ interface screen {
     claim-debug: func(claimed: bool);
 }
 
+/// Capability `inventory-actions` (experimental: the manifest
+/// needs `experimental = ["inventory-actions"]`): the player's
+/// own slot clicks, made by the game for the mod. Every click
+/// is performed as the player, in the menu that is open when it
+/// is performed, through the game's own menu logic — the server
+/// sees ordinary clicks, re-runs them itself, and corrects
+/// anything it sees differently. A click the game cannot
+/// perform when its tick comes (no menu it fits, the screen
+/// closed, the slot not one of the open menu's) is dropped, not
+/// queued for later; what a click did is read back from
+/// `inventory` on the next tick, never promised. Requests made
+/// in a hook are performed after the hook returns, in the next
+/// tick, in the order they were made; at most 32 are kept from
+/// one hook call and at most 64 from one mod at a time (a drag
+/// counts as 8).
+interface inventory-actions {
+    /// A click's kind, as the game's menu engine names them
+    /// (the ContainerClick packet's own list).
+    enum click-kind {
+        /// Left (button 0) or right (1) click: take, put, merge
+        /// or swap, as the hand and the slot dictate. With no
+        /// slot (outside the window) it drops what the hand
+        /// carries: all of it (0) or one of it (1). The only
+        /// kind that means anything with no slot.
+        pickup,
+        /// Shift-click (button 0 or 1): move the slot's stack
+        /// to the other side of the menu.
+        quick-move,
+        /// Swap the slot with a hotbar slot: the button is the
+        /// hotbar slot, 0 to 8, or 40 for the off hand.
+        swap,
+        /// The pick-block click (button 0): a full copy of the
+        /// slot's stack onto the empty hand. The game's menu
+        /// engine only clones in creative mode; in survival the
+        /// click does nothing, as the player's own would.
+        clone,
+        /// Drop from the slot (the hand must be empty): button
+        /// 0 drops one, 1 drops the whole stack.
+        throw,
+        /// The double click (button 0 or 1): gather stacks of
+        /// the slot's item onto the hand from the menu's slots.
+        pickup-all,
+    }
+
+    /// One click on a slot of the open menu, in `inventory`'s
+    /// numbering (0-8 hotbar, 9-35 main inventory, 100-108
+    /// crafting grid, 200 its result, 300+ the open container's
+    /// own slots, 500-503 armour, 504 off hand; a workstation's
+    /// inputs are 600 up and its result 650). `slot` is none for
+    /// a click outside the window. Errs only on an argument that
+    /// is malformed now: a slot past 999, or a button the kind
+    /// does not take (pickup, quick-move, throw and pickup-all
+    /// take 0 or 1; swap takes 0 to 8 or 40; clone takes 0). A
+    /// dropped click is not an error.
+    click: func(slot: option<u32>, button: u32, kind: click-kind) -> result<_, string>;
+
+    /// The button a drag is made with: it also chooses how the
+    /// hand's stack is shared out, as the player's own drags
+    /// do — left spreads it evenly over the slots, right puts
+    /// one in each, middle puts a full stack in each (creative
+    /// only; the engine refuses it otherwise).
+    enum drag-button {
+        left,
+        right,
+        middle,
+    }
+
+    /// A drag of the hand's stack over `slots`, in the order
+    /// given: the whole gesture is performed as one drag, as
+    /// releasing the button over those slots would. At most 64
+    /// slots; empty errs. Slots the drag cannot take (a result
+    /// slot, a slot of another item) are passed by, as the
+    /// game's own drag passes them. Performed whole or dropped
+    /// whole: a drag is one gesture in the game's menu logic
+    /// and cannot be split across ticks.
+    drag: func(button: drag-button, slots: list<u32>) -> result<_, string>;
+
+    /// A turn of the mouse wheel over the open inventory or
+    /// container screen since the last poll: the slot the
+    /// pointer rested on, in `inventory`'s numbering (none over
+    /// no slot), and the whole steps turned (positive: items
+    /// move toward the inventory, the direction the game's own
+    /// wheel tweak calls down). Observed, never consumed: the
+    /// game's own uses of the wheel still happen.
+    record wheel-event {
+        slot: option<u32>,
+        steps: s32,
+    }
+
+    /// The wheel turns over the open screen since the last
+    /// poll, at most 256 kept.
+    poll-wheel: func() -> list<wheel-event>;
+}
+
 /// Capability `render` (API 20): player models' poses. The game
 /// hands the mod every drawn player's pose inputs each frame —
 /// the local player's first — and the mod hands back per-part
@@ -2062,6 +2156,7 @@ world horizon-ui-mod {
     import item-model;
     import actions;
     import screen;
+    import inventory-actions;
     export ui-events;
     export audio-events;
 }
@@ -2093,7 +2188,12 @@ world audio-host {
 /// names both halves. API 23's `item-model` rides along with the
 /// hand and the poses: its writes are display only — a stack's
 /// picture, marks on its slots, dropped items' lie — so it is
-/// render's, with no consent line of its own.
+/// render's, with no consent line of its own. API 24's
+/// `inventory-actions` is hosted here too, as the actions and
+/// the screens are, and is its own capability, not
+/// `inventory`'s: reading an inventory and moving its stacks
+/// are different consents, and a shipped `inventory` mod's
+/// line said only the reading.
 world render-host {
     import render;
     import input;
@@ -2102,6 +2202,7 @@ world render-host {
     import item-model;
     import actions;
     import screen;
+    import inventory-actions;
 }
 
 /// The game's side of capability `recipes` (imports only).
