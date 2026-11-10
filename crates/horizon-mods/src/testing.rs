@@ -9,12 +9,12 @@
 //! saying what happens and what the mod must have shown by then.
 use crate::{
     BlockPos, Clock, Container, Corner, Entity, GameMode, InvStack, ItemModelIndex, MapTileData,
-    MapView, ModAction, ModActionTarget, ModArmPose, ModBlockDisplay, ModBlockTarget, ModClickKind,
-    ModDragButton, ModEffect, ModEntityPoseState, ModEntityTarget, ModFace, ModFlatDisplay,
-    ModHand, ModItemUse, ModMapContext, ModMapLayer, ModPoseSwingAnim, ModPosition,
-    ModPositionEvent, ModScreenEvent, ModScreenState, ModSelfState, ModSlotMove, ModTradeList,
-    ModTradeOffer, ModTradeStack, ModWheelEvent, Mods, Output, Panel, Player, PlayerInventory,
-    ServerPlayer, Snapshot, Status, Target, WorldDrawLine,
+    MapView, ModAction, ModActionTarget, ModArmPose, ModBlockDisplay, ModBlockTarget, ModBurst,
+    ModClickKind, ModDragButton, ModEffect, ModEmitter, ModEmitterAnchor, ModEntityPoseState,
+    ModEntityTarget, ModFace, ModFlatDisplay, ModHand, ModItemUse, ModMapContext, ModMapLayer,
+    ModPoseSwingAnim, ModPosition, ModPositionEvent, ModScreenEvent, ModScreenState, ModSelfState,
+    ModSlotMove, ModTradeList, ModTradeOffer, ModTradeStack, ModWheelEvent, Mods, Output, Panel,
+    Player, PlayerInventory, ServerPlayer, Snapshot, Status, Target, WorldDrawLine,
 };
 use serde::Deserialize;
 use std::{
@@ -114,6 +114,13 @@ pub struct TestGame {
     /// `inventory-actions`, API 24): the log of what the game
     /// would have performed, for a test to read back.
     pub slot_moves: Vec<String>,
+    /// Every particle burst the mod emitted, oldest first, in
+    /// the `expect.particles` spelling (capability
+    /// `particles`, API 26): the log of what the game would
+    /// have drawn, for a test to read back. Emitters are not
+    /// in it — they are stepped by the game, and a script
+    /// checks the stored list with `expect.emitters`.
+    pub particles: Vec<String>,
     /// What the mod reads with capability `map` (API 25): the
     /// tiles the game's cache holds, lent to the mod's calls
     /// for a step. A script sets them with its `tiles` steps.
@@ -271,6 +278,7 @@ impl TestGame {
             trades: None,
             actions: Vec::new(),
             slot_moves: Vec::new(),
+            particles: Vec::new(),
             map_tiles: Default::default(),
             map_context: None,
             last_death: None,
@@ -1059,6 +1067,37 @@ fn action_line(action: &ModAction) -> String {
     }
 }
 
+/// One burst as a script's `expect.particles` names it
+/// (API 26): the particle, its count after the door's clamp,
+/// and its centre — `heart 12 at 0.5 66 0.5`.
+fn burst_line(burst: &ModBurst) -> String {
+    format!(
+        "{} {} at {} {} {}",
+        burst.particle, burst.count, burst.at.x, burst.at.y, burst.at.z
+    )
+}
+
+/// One stored emitter as a script's `expect.emitters` names
+/// it (API 26): its anchor (`self`, `entity <id>` or
+/// `at <x> <y> <z>`), its burst's particle and count, its
+/// rate and its offset — `self end_rod x1 @40/s offset 1 1 0`.
+fn emitter_line(emitter: &ModEmitter) -> String {
+    let anchor = match &emitter.anchor {
+        ModEmitterAnchor::SelfPlayer => "self".to_string(),
+        ModEmitterAnchor::Entity(id) => format!("entity {id}"),
+        ModEmitterAnchor::Position(at) => format!("at {} {} {}", at.x, at.y, at.z),
+    };
+    format!(
+        "{anchor} {} x{} @{}/s offset {} {} {}",
+        emitter.burst.particle,
+        emitter.burst.count,
+        emitter.rate,
+        emitter.offset.x,
+        emitter.offset.y,
+        emitter.offset.z
+    )
+}
+
 /// One queued slot verb as a script's `expect.slot-moves` names
 /// it (API 24): the click or drag the game would have
 /// performed. A click is `click <slot|-> <button> <kind>`; a
@@ -1535,6 +1574,16 @@ pub struct Expect {
     /// `map`, API 25): `"none"`, or the stored image spelled
     /// `"{corner} {size} {width}x{height}"`.
     minimap_image: Option<String>,
+    /// The bursts the mod emitted during the step, in order,
+    /// in the spelling `burst_line` gives them (capability
+    /// `particles`, API 26).
+    particles: Option<Vec<String>>,
+    /// The mod's stored emitters after the step, in stored
+    /// order, in the spelling `emitter_line` gives them
+    /// (capability `particles`, API 26): `[]` once cleared.
+    /// The harness never steps them — stepping is the game's
+    /// side, against the drawn world.
+    emitters: Option<Vec<String>>,
     /// The mod is turned off during this step, for a reason holding this text.
     /// Without it, a mod that stops fails the test.
     stopped: Option<String>,
@@ -1888,6 +1937,9 @@ impl Step {
                 game.slot_moves
                     .push(slot_move_line(&ModSlotMove::Drag(drag.clone())));
             }
+            if let Output::ParticleBurst { burst, .. } = o {
+                game.particles.push(burst_line(burst));
+            }
         }
         let stopped = out.iter().find_map(|o| match o {
             Output::Stopped { reason, .. } => Some(reason.as_str()),
@@ -2022,6 +2074,25 @@ impl Step {
                 None => "none".to_string(),
             };
             same("minimap-image", &Some(want.clone()), &Some(got))?;
+        }
+        if let Some(want) = &e.particles {
+            let got: Vec<String> = out
+                .iter()
+                .filter_map(|o| match o {
+                    Output::ParticleBurst { burst, .. } => Some(burst_line(burst)),
+                    _ => None,
+                })
+                .collect();
+            same("particles", want, &got)?;
+        }
+        if let Some(want) = &e.emitters {
+            let got: Vec<String> = game
+                .mods
+                .particle_emitters()
+                .iter()
+                .map(|(_, emitter)| emitter_line(emitter))
+                .collect();
+            same("emitters", want, &got)?;
         }
         let feedback = |error: bool| {
             out.iter().rev().find_map(|o| match o {

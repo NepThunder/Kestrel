@@ -1,0 +1,7 @@
+id = "particles_probe"
+name = "Particles Probe"
+version = "0.1.0"
+description = "Prototype probe for particles: a heart burst over the targeted entity or the player, and end_rod wingtip emitters while gliding."
+api = "0.2"
+capabilities = ["game-read", "chat", "input", "entity", "render"]
+experimental = ["input", "entity", "render"]

@@ -12215,6 +12215,9 @@ impl Game<'_> {
     }
     fn close_world(&mut self) -> Result<()> {
         self.clear_waypoints();
+        // Mods' particle emitters (API 26) end with the world:
+        // their anchors are this world's drawn things.
+        self.clear_mod_particle_emitters();
         self.post_effects.clear();
         self.spectated_post_effect = None;
         if self.external_server() {

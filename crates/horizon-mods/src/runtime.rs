@@ -173,6 +173,17 @@ pub use render_bindings::horizon::mods::map::{
     MapTile as ModMapTile, MapView as ModMapView, MinimapImage as ModMinimapImage,
     Position as ModPosition, PositionEvent as ModPositionEvent, TileVersion as ModTileVersion,
 };
+use render_bindings::horizon::mods::particles;
+/// Particles of the mod's own (WIT `interface particles`,
+/// API 26): a `render` extension, hosted with the render
+/// world, as the hand and the item models are.
+/// `ModParticlePoint` is the interface's own `world-point`
+/// record — `render`'s type of that name is already
+/// [`WorldPoint`] here.
+pub use render_bindings::horizon::mods::particles::{
+    Burst as ModBurst, Emitter as ModEmitter, EmitterAnchor as ModEmitterAnchor,
+    ParticleParams as ModParticleParams, WorldPoint as ModParticlePoint,
+};
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
     CameraOverride as ModCameraOverride, CameraPose as ModCameraPose, Corner as RenderCorner,
@@ -294,6 +305,34 @@ pub const MAP_MARKERS: usize = 128;
 /// 2048 by 2048 of them is the whole allowance.
 pub const MAP_IMAGE_MAX_SIDE: u32 = 2048;
 pub const MAP_IMAGE_MAX_PIXELS: u64 = 4_194_304;
+/// Particles one burst may ask for (capability `particles`,
+/// API 26): the `/particle` command's own count discipline —
+/// a larger count is cut to it at the door.
+pub const PARTICLE_COUNT_MAX: u32 = 256;
+/// Particles one mod may spawn in one tick, weighed across
+/// its bursts and its emitters together (API 26): past it,
+/// the rest of the tick's asks spawn nothing — drop, never
+/// defer. The engine's own funnel (its distance cull, the
+/// Particles option, its hard cap) prices what the game
+/// draws; this prices what a mod asks.
+pub const PARTICLE_BUDGET_PER_TICK: usize = 1024;
+/// Emitters one mod may hold (API 26), and the most spawns
+/// a second one may ask for: a standing stream is a wingtip
+/// or a campfire, not a weather system.
+pub const PARTICLE_EMITTERS: usize = 8;
+pub const PARTICLE_EMITTER_RATE_MAX: f32 = 200.0;
+/// A particle type name's length cap (API 26): no loaded
+/// type's name is near it, and a longer one spawns nothing.
+const PARTICLE_NAME_CHARS: usize = 128;
+/// A burst's spread on one axis, in blocks (API 26), and
+/// its speed in blocks a tick: the ranges the game's own
+/// particle packet keeps to.
+const PARTICLE_SPREAD_MAX: f64 = 16.0;
+const PARTICLE_SPEED_MAX: f64 = 20.0;
+/// An emitter's offset from its anchor on one axis, in
+/// blocks (API 26): an emitter is tied to its anchor, not
+/// a second burst position.
+const PARTICLE_OFFSET_MAX: f64 = 8.0;
 /// How far `game.raycast` sees, in blocks.
 pub const RAYCAST_MAX: f32 = 1024.0;
 /// How far `entity.targeted` sees, in blocks.
@@ -700,6 +739,12 @@ pub enum Output {
     /// stack for the game to perform whole in the next tick, as
     /// one menu session's QuickCraft run.
     SlotDrag { mod_id: String, drag: ModSlotDrag },
+    /// `particles.emit` (API 26): one burst for the game to
+    /// draw with its own particle engine after the call
+    /// returns, sanitized and weighed at the door. The game
+    /// collects these beside the actions: a burst only draws
+    /// in the tick's output step.
+    ParticleBurst { mod_id: String, burst: ModBurst },
 }
 
 /// The game's world as capability `world` reads it during a call: the
@@ -838,6 +883,32 @@ impl MapStore {
         }
         self.map_events.push_back(event);
     }
+}
+
+/// What capability `particles` holds for one mod (API 26):
+/// its emitters, stepped by the game each tick, and the
+/// tick's weighed spawn count — the mod's budget, shared by
+/// its bursts and its emitters. All of it is dropped with
+/// the mod's store on stop, as every stateful surface's
+/// state is: a stopped mod's streams end with it.
+#[derive(Default)]
+struct ParticleStore {
+    /// The mod's standing streams (`particles.set-emitters`),
+    /// replaced wholesale by each call and sanitized by it
+    /// ([`PARTICLE_EMITTERS`]).
+    emitters: Vec<StoredEmitter>,
+    /// (tick, weighed spawns spent in it): the first weigh of
+    /// a new tick resets the count
+    /// ([`State::weigh_particles`]).
+    spent: (u64, usize),
+}
+
+/// One emitter a mod declared (API 26), with the game's step
+/// of it: the fraction of a spawn the accumulator has earned
+/// but not yet spent ([`advance_emitter`]).
+struct StoredEmitter {
+    emitter: ModEmitter,
+    accumulator: f32,
 }
 
 /// A stack match with its values parsed (WIT `item-model`, API
@@ -1433,6 +1504,15 @@ struct State {
     /// game pushed for its two polls. A stopped mod's map
     /// dies with its store, as its screen declarations do.
     map: MapStore,
+    /// Capability `particles`' emitters and budget (API 26):
+    /// the mod's standing streams and the tick's weighed
+    /// spawn count. A stopped mod's streams die with its
+    /// store, as its map does.
+    particles: ParticleStore,
+    /// The tick the game last began ([`Mods::tick`]): the
+    /// particle budget keys its count on it, so a call
+    /// between ticks weighs against the last tick's spends.
+    tick: u64,
     /// The wheel turns over the open screen the game observed
     /// for this mod (capability `inventory-actions`, API 24),
     /// oldest first, capped like `screen`'s events: a turn the
@@ -1770,6 +1850,8 @@ impl Mods {
             held_latched: false,
             screen: ScreenStore::default(),
             map: MapStore::default(),
+            particles: ParticleStore::default(),
+            tick: 0,
             wheel: std::collections::VecDeque::new(),
             model_rules: Vec::new(),
             model_rules_version: 0,
@@ -2003,6 +2085,13 @@ impl Mods {
 
     /// A game tick.
     pub fn tick(&mut self, tick: u64) {
+        // The tick's stamp lands before the hooks: the
+        // particle budget (API 26) keys its per-tick count
+        // on it, and a call between ticks weighs against
+        // the last tick's spends.
+        for run in self.entries.iter_mut().filter_map(|e| e.run.as_mut()) {
+            run.store.data_mut().tick = tick;
+        }
         self.each_client(FUEL_TICK, |h| h.tick, |m, s| m.call_tick(s, tick));
     }
     /// A rendered frame, `seconds` after the last.
@@ -2879,6 +2968,67 @@ impl Mods {
         })
     }
 
+    /// The running mods' emitters (capability `particles`,
+    /// API 26): every running mod's stored streams in load
+    /// order, as (entry index, emitter) pairs. The game steps
+    /// them after the tick's hooks: it resolves each anchor
+    /// against the drawn world and asks
+    /// [`Mods::particle_emitter_spawns`] for the spawns it may
+    /// draw. A stopped mod's streams are gone with its store.
+    pub fn particle_emitters(&self) -> Vec<(usize, ModEmitter)> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| e.run.as_ref().map(|r| (i, r.store.data())))
+            .flat_map(|(i, data)| {
+                data.particles
+                    .emitters
+                    .iter()
+                    .map(move |stored| (i, stored.emitter.clone()))
+            })
+            .collect()
+    }
+    /// Steps mod `owner`'s emitter `index` one tick (API 26):
+    /// advances its accumulator by its rate and answers how
+    /// many whole spawns this tick may draw — each weighed
+    /// against the mod's budget as a burst is, so an emitter
+    /// starved by its own mod's bursts idles this tick rather
+    /// than borrowing. 0 for a mod or an emitter that is not
+    /// there, and for an anchor the game could not resolve:
+    /// it asks only for a resolved one, so an unanchored
+    /// emitter does not advance.
+    pub fn particle_emitter_spawns(&mut self, owner: usize, index: usize) -> u32 {
+        let Some(run) = self.entries.get_mut(owner).and_then(|e| e.run.as_mut()) else {
+            return 0;
+        };
+        let data = run.store.data_mut();
+        let Some(stored) = data.particles.emitters.get(index) else {
+            return 0;
+        };
+        let (rate, count) = (stored.emitter.rate, stored.emitter.burst.count);
+        let whole = {
+            let stored = &mut data.particles.emitters[index];
+            advance_emitter(&mut stored.accumulator, rate)
+        };
+        let mut admitted = 0;
+        for _ in 0..whole {
+            if !data.weigh_particles(count) {
+                break;
+            }
+            admitted += 1;
+        }
+        admitted
+    }
+    /// Ends every running mod's emitters (API 26): the game
+    /// calls this as the world closes — anchors are the open
+    /// world's, and a reopened world starts with no emitters
+    /// until the mods declare them again.
+    pub fn clear_particle_emitters(&mut self) {
+        for run in self.entries.iter_mut().filter_map(|e| e.run.as_mut()) {
+            run.store.data_mut().particles.emitters.clear();
+        }
+    }
+
     /// The running mods' model rules as one evaluation index
     /// (WIT `item-model`, API 23): rebuilt only when a running
     /// mod's rule version moves — a set, a start, a stop — and
@@ -3748,6 +3898,158 @@ impl map::Host for State {
         };
         let seq = MAP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.map.minimap_image = Some((seq, image));
+    }
+}
+
+/// A burst as the door keeps it (capability `particles`,
+/// API 26): sanitized at call time, as the declaration
+/// districts sanitize theirs — the name trimmed and cut to
+/// [`PARTICLE_NAME_CHARS`], the count cut to
+/// [`PARTICLE_COUNT_MAX`], the spread and speed clamped to
+/// their ranges, the scale and duration to the ones the
+/// types themselves clamp to. A non-finite number anywhere
+/// in it refuses the whole burst (None), as the native line
+/// refuses them: half a burst is not a burst. A name past
+/// the cap is not refused — it is inert, clipped to a name
+/// no loaded type has, so the game draws nothing for it.
+fn sanitize_burst(mut burst: ModBurst) -> Option<ModBurst> {
+    fn finite(point: &ModParticlePoint) -> bool {
+        point.x.is_finite() && point.y.is_finite() && point.z.is_finite()
+    }
+    if !finite(&burst.at) || !finite(&burst.spread) || !burst.speed.is_finite() {
+        return None;
+    }
+    if burst.params.scale.is_some_and(|scale| !scale.is_finite()) {
+        return None;
+    }
+    if burst.params.target.as_ref().is_some_and(|t| !finite(t)) {
+        return None;
+    }
+    burst.particle = clip_to(burst.particle.trim().to_string(), PARTICLE_NAME_CHARS);
+    burst.count = burst.count.min(PARTICLE_COUNT_MAX);
+    burst.spread.x = burst
+        .spread
+        .x
+        .clamp(-PARTICLE_SPREAD_MAX, PARTICLE_SPREAD_MAX);
+    burst.spread.y = burst
+        .spread
+        .y
+        .clamp(-PARTICLE_SPREAD_MAX, PARTICLE_SPREAD_MAX);
+    burst.spread.z = burst
+        .spread
+        .z
+        .clamp(-PARTICLE_SPREAD_MAX, PARTICLE_SPREAD_MAX);
+    burst.speed = burst.speed.clamp(-PARTICLE_SPEED_MAX, PARTICLE_SPEED_MAX);
+    if let Some(scale) = &mut burst.params.scale {
+        *scale = scale.clamp(0.01, 4.0);
+    }
+    if let Some(duration) = &mut burst.params.duration {
+        *duration = (*duration).clamp(1, 200);
+    }
+    if let Some(block) = &mut burst.params.block {
+        let taken = std::mem::take(block);
+        *block = clip_to(taken, LINE_CHARS);
+    }
+    Some(burst)
+}
+
+/// An emitter as the door keeps it (API 26): its burst
+/// sanitized as a burst — its `at` zeroed first, since the
+/// anchor replaces it and its numbers are not the stream's —
+/// its rate clamped to the stream's range (a non-finite
+/// rate reads as 0, the district's non-finite style for a
+/// scale), and its offset clamped to the anchor's
+/// neighbourhood, a non-finite component reading as 0.
+fn sanitize_emitter(mut emitter: ModEmitter) -> Option<StoredEmitter> {
+    emitter.burst.at = ModParticlePoint {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
+    emitter.burst = sanitize_burst(emitter.burst)?;
+    emitter.rate = if emitter.rate.is_finite() {
+        emitter.rate.clamp(0.0, PARTICLE_EMITTER_RATE_MAX)
+    } else {
+        0.0
+    };
+    for axis in [
+        &mut emitter.offset.x,
+        &mut emitter.offset.y,
+        &mut emitter.offset.z,
+    ] {
+        *axis = if axis.is_finite() {
+            (*axis).clamp(-PARTICLE_OFFSET_MAX, PARTICLE_OFFSET_MAX)
+        } else {
+            0.0
+        };
+    }
+    Some(StoredEmitter {
+        emitter,
+        accumulator: 0.0,
+    })
+}
+
+/// How many whole spawns an emitter's accumulator holds
+/// after one tick at `rate` spawns a second (capability
+/// `particles`, API 26): the fraction carries, so 7 a second
+/// is seven spawns in most seconds — the game steps
+/// emitters once a tick, 20 a second.
+fn advance_emitter(accumulator: &mut f32, rate: f32) -> u32 {
+    *accumulator += rate / 20.0;
+    let whole = accumulator.floor().max(0.0);
+    *accumulator -= whole;
+    whole as u32
+}
+
+impl State {
+    /// Weighs `count` particles against this mod's per-tick
+    /// budget (capability `particles`, API 26): the first
+    /// weigh of a tick resets the spent count; an ask that
+    /// fits is charged and answered true; one that does not
+    /// is answered false and charges nothing — drop, never
+    /// defer. A count of 0 still weighs 1: a count-0 burst is
+    /// one directional particle, and the budget prices the
+    /// ask, not only the draw.
+    fn weigh_particles(&mut self, count: u32) -> bool {
+        if self.particles.spent.0 != self.tick {
+            self.particles.spent = (self.tick, 0);
+        }
+        let weighed = count.max(1) as usize;
+        if self.particles.spent.1 + weighed > PARTICLE_BUDGET_PER_TICK {
+            return false;
+        }
+        self.particles.spent.1 += weighed;
+        true
+    }
+}
+
+impl particles::Host for State {
+    fn emit(&mut self, burst: ModBurst) {
+        // Sanitized at the door, weighed against the tick's
+        // budget, and queued for the game's drain — what the
+        // engine draws of it is the game's side, as the
+        // actions queue is.
+        let Some(burst) = sanitize_burst(burst) else {
+            return;
+        };
+        if self.weigh_particles(burst.count) {
+            self.out.push(Output::ParticleBurst {
+                mod_id: self.id.clone(),
+                burst,
+            });
+        }
+    }
+    fn set_emitters(&mut self, emitters: Option<Vec<ModEmitter>>) {
+        // Replaced wholesale, as the declaration districts'
+        // sets are: at most PARTICLE_EMITTERS streams, each
+        // sanitized at the door, each accumulator starting
+        // at nothing. None clears, as the screens clear.
+        self.particles.emitters = emitters
+            .unwrap_or_default()
+            .into_iter()
+            .take(PARTICLE_EMITTERS)
+            .filter_map(sanitize_emitter)
+            .collect();
     }
 }
 
@@ -5430,5 +5732,31 @@ mod tests {
         let ahead = project_point(&camera, (427.0, 240.0), point(-9.5, 65.62, 0.5));
         assert!(ahead.visible);
         assert!((ahead.x - 213.5).abs() < 0.01 && (ahead.y - 120.0).abs() < 0.01);
+    }
+
+    /// An emitter's accumulator over a simulated second (API
+    /// 26): at 7 spawns a second, twenty ticks hold seven
+    /// whole spawns between them, the fraction carrying from
+    /// tick to tick; at the 200 cap, every tick holds ten.
+    /// A rate of 0 never spawns, and the accumulator never
+    /// holds a whole spawn between ticks.
+    #[test]
+    fn emitter_accumulator_counts_a_second() {
+        let mut accumulator = 0.0;
+        let mut total = 0;
+        for _ in 0..20 {
+            total += advance_emitter(&mut accumulator, 7.0);
+            assert!(accumulator < 1.0, "the fraction carries, never a whole");
+        }
+        assert_eq!(total, 7);
+        let mut accumulator = 0.0;
+        for _ in 0..20 {
+            assert_eq!(advance_emitter(&mut accumulator, 200.0), 10);
+        }
+        assert_eq!(accumulator, 0.0);
+        let mut accumulator = 0.0;
+        for _ in 0..20 {
+            assert_eq!(advance_emitter(&mut accumulator, 0.0), 0);
+        }
     }
 }

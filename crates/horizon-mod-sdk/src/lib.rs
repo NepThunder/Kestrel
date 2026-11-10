@@ -89,6 +89,15 @@
 //! pans, zooms and fields clicks over (heard through
 //! [`map::poll_map`]), and [`map::set_minimap_image`] a
 //! corner minimap of its own shading.
+//! `render` also spawns particles through [`particles`]
+//! (API level 26): [`particles::emit`] draws one burst in
+//! vanilla's own shape — a type name, its parameters, a
+//! centre, a spread, a speed and a count — and
+//! [`particles::set_emitters`] keeps standing streams at
+//! anchors of the player's or an entity's facing frame,
+//! stepped by the game every tick. Everything is drawn by
+//! the game's own particle engine on this client: nothing
+//! reaches the server and nothing in the world changes.
 //! Server mods: [`server`].
 //!
 //! Widgets (capability `ui`): a mod shows a screen it owns with
@@ -126,13 +135,15 @@ pub use horizon::mods::map::{
     ChunkPos, Corner, MapClick, MapContext, MapEvent, MapImage, MapLayer, MapMarker, MapScreen,
     MapTile, MapView, MinimapImage, Position, PositionEvent, TileVersion,
 };
+pub use horizon::mods::particles::{Burst, Emitter, EmitterAnchor, ParticleParams, WorldPoint};
 pub use horizon::mods::render::{HandFov, HandFovMode};
 pub use horizon::mods::screen::{
     Anchor, Highlight, ScreenButton, ScreenEvent, ScreenState, TradeList, TradeOffer, TradeStack,
 };
 pub use horizon::mods::{
     actions, audio, browser, chat, command, entity, entity_pose, game, hand, hud, input, inventory,
-    inventory_actions, item_model, log, map, recipes, render, screen, storage, ui, world,
+    inventory_actions, item_model, log, map, particles, recipes, render, screen, storage, ui,
+    world,
 };
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for

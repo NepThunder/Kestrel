@@ -1712,6 +1712,9 @@ impl ParticleEngine {
             q.ty = ParticleType::Smoke;
             q.gravity = 0.0;
             q.rgba = [1.0; 4];
+            // API 26: a code mod's burst scales its named
+            // particles, as its `dust` scale scales those.
+            q.size *= o.scale;
             q.lifetime = 20 + r.next_int_bound(20).unwrap_or(0);
             q.set = Some(set);
             let sprites = &self.set_sprites[set as usize];

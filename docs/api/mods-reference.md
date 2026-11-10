@@ -14,7 +14,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `command` | [`command`](#command) | run commands as you, with your permissions |
 | `registries` | data files (`assets/`, `data/`), no interface | add blocks, items, mob effects and entity types to your worlds |
 | `ui` | [`ui`](#ui) | show its own screens and a settings page |
-| `render` | [`render`](#render) | draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it, turn off distance fog, move your hand and held item in first person, hide the whole HUD, make the hand's field of view follow the zoom, cap the frame rate, shift how player models are posed and change how items themselves are shown: the model an item displays as, marks on item slots, and how dropped items lie in the world |
+| `render` | [`render`](#render) | draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it, turn off distance fog, move your hand and held item in first person, hide the whole HUD, make the hand's field of view follow the zoom, cap the frame rate, shift how player models are posed, change how items themselves are shown: the model an item displays as, marks on item slots, and how dropped items lie in the world, and spawn particles of its own in the world |
 | `input` | [`input`](#input) | see the keys you hold, your clicks and how long since you last gave input, take over the use button on its own items and the mouse wheel, and add keys |
 | `players` | [`players`](#players) | see who is on the server and message them |
 | `world` | [`world`](#world) | read the world's blocks, and change them where the game runs the world |
@@ -45,7 +45,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `audio`, `hand`, `entity-pose`, `item-model`, `actions`, `screen`, `inventory-actions`, `map`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `audio`, `hand`, `entity-pose`, `item-model`, `particles`, `actions`, `screen`, `inventory-actions`, `map`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
 - Exports (what the mod provides): `ui-events`, `audio-events`, `events`
 
 ## World `ui-host`
@@ -64,9 +64,9 @@ The game's side of capability `audio` (API 15) beyond `horizon-mod`: a second wo
 
 ## World `render-host`
 
-The game's side of capability `render` (imports only). API 16's `hand` rides along: it is a render extension, checked against the `render` capability, not one of its own. API 20's `entity-pose` rides along the same way. API 21's `actions` is hosted here too — the frame/tick-adjacent client surfaces live in this world — but it is its own capability, not render's: acting is not presentation. API 22's `screen` likewise: its reads are presentation, but `select-trade` spends items, so the interface is its own capability with a consent line that names both halves. API 23's `item-model` rides along with the hand and the poses: its writes are display only — a stack's picture, marks on its slots, dropped items' lie — so it is render's, with no consent line of its own. API 24's `inventory-actions` is hosted here too, as the actions and the screens are, and is its own capability, not `inventory`'s: reading an inventory and moving its stacks are different consents, and a shipped `inventory` mod's line said only the reading. API 25's `map` is hosted here too, and is its own capability as well: its heart is a survey — the game's tiles of the ground around the player, and where they died and came back — not drawing, though its full-screen map and its own minimap ride along.
+The game's side of capability `render` (imports only). API 16's `hand` rides along: it is a render extension, checked against the `render` capability, not one of its own. API 20's `entity-pose` rides along the same way. API 21's `actions` is hosted here too — the frame/tick-adjacent client surfaces live in this world — but it is its own capability, not render's: acting is not presentation. API 22's `screen` likewise: its reads are presentation, but `select-trade` spends items, so the interface is its own capability with a consent line that names both halves. API 23's `item-model` rides along with the hand and the poses: its writes are display only — a stack's picture, marks on its slots, dropped items' lie — so it is render's, with no consent line of its own. API 24's `inventory-actions` is hosted here too, as the actions and the screens are, and is its own capability, not `inventory`'s: reading an inventory and moving its stacks are different consents, and a shipped `inventory` mod's line said only the reading. API 25's `map` is hosted here too, and is its own capability as well: its heart is a survey — the game's tiles of the ground around the player, and where they died and came back — not drawing, though its full-screen map and its own minimap ride along. API 26's `particles` rides along with the hand, the poses and the item models: a burst is a picture in the world, drawn by the game's own engine — nothing spent, moved or read — so it is render's, with no consent line of its own.
 
-- Imports (what the game offers): `render`, `input`, `hand`, `entity-pose`, `item-model`, `actions`, `screen`, `inventory-actions`, `map`
+- Imports (what the game offers): `render`, `input`, `hand`, `entity-pose`, `item-model`, `particles`, `actions`, `screen`, `inventory-actions`, `map`
 - Exports (what the mod provides): 
 
 ## World `recipes-host`
@@ -1308,6 +1308,74 @@ How dropped items — item entities, and items flying to the player on pickup �
 | `set-model-rules` | `func(rules: list<model-rule>)` | Replaces the mod's model rules: at most 64, each with at most 4 component matches. When rules from several mods could swap one stack's display, the later-loaded mod's rule wins; within one mod, the first matching rule in this list wins. A declaration survives until replaced or the mod stops. Declare rules once (in `init`, or when settings change), not per frame. |
 | `set-decorations` | `func(decorations: list<decoration>)` | Replaces the mod's slot marks: at most 256. Marks from several mods on one slot all draw, in load order. They survive until replaced or the mod stops; a mark for a slot no open screen has simply draws nowhere until a screen has it. |
 | `set-dropped-display` | `func(display: dropped-display)` | Sets how dropped items display, for every dropped item on this client. One policy applies: the latest call across the running mods wins, as the hand's one offset wins the hand. Writing the all-vanilla record (`vanilla`, `vanilla`, `true`) hands the display back; a stopped mod's policy goes with it. |
+
+## `particles`
+
+Access: not granted by any capability.
+
+Capability `render` (experimental), interface `particles`: particles of the mod's own, drawn by the game's own particle engine on this client. A burst is vanilla's own shape — the one the `/particle` command and the server's particle packet use — and everything here is a picture: nothing is sent to the server, nothing in the world changes, and the player's Particles option thins a mod's particles as it thins the game's.
+
+### record `world-point`
+
+A point in the world, in blocks (redeclared: WIT interfaces cannot share types).
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+
+### record `particle-params`
+
+The parameters the parameterised particle types read; a field a type does not read is ignored, and a type whose parameter is missing does not spawn.
+
+| Field | Type | |
+| --- | --- | --- |
+| `color` | `option<u32>` | 0xAARRGGBB: the colour of `dust` and `dust-color-transition` (its start colour), `effect` / `instant-effect` / `entity-effect`, and the trail's colour. None: the type's own colour (dust's is red). |
+| `to-color` | `option<u32>` | `dust-color-transition`'s end colour, 0xAARRGGBB. |
+| `scale` | `option<f32>` | A size: `dust`'s scale, a spell's power, `sculk-charge`'s roll, `shriek`'s delay in ticks. Clamped to the range the type itself clamps to (dust: 0.01 to 4). None: 1. |
+| `block` | `option<string>` | The block whose crumb a `block`, `block-crumble`, `falling-dust`, `dust-pillar` or `block-marker` particle shows: `minecraft:stone`, ... Required by those types; without it they do not spawn. |
+| `target` | `option<world-point>` | Where a `trail` particle flies to, and how long it takes (`duration`, ticks, with it). Required by `trail`; without it it does not spawn. |
+| `duration` | `option<u32>` | With `target`: the trail's flight time in ticks, 1 to 200. None: 20. |
+
+### record `burst`
+
+One burst of particles: `count` of them around `at`, each offset by a gaussian of `spread` blocks on each axis and given a gaussian velocity of `speed` blocks a tick on each axis — the server packet's own arithmetic. A count of 0 is one particle at `at` itself, with the velocity `speed * spread` on each axis: the directional single.
+
+| Field | Type | |
+| --- | --- | --- |
+| `particle` | `string` | The particle: a vanilla type (`minecraft:flame`, or bare `flame`), or a namespaced type of a sprite set a pack or content mod carries (`mymod:spark`) — drawn as a plain billboard, with no gravity and a life of 20 to 40 ticks, as the game's mod types are. A name nothing loaded provides spawns nothing. |
+| `params` | `particle-params` | With `params`, where the type reads them. |
+| `at` | `world-point` |  |
+| `spread` | `world-point` |  |
+| `speed` | `f64` |  |
+| `count` | `u32` | At most 256; a larger count is cut to it. |
+
+### variant `emitter-anchor`
+
+What an emitter is tied to.
+
+| Case | Payload | |
+| --- | --- | --- |
+| `self-player` |  | The local player. |
+| `entity` | `u32` | A drawn entity — a mob or another player — by the id `entity.entities` and the pose states use. An entity the game is not drawing (gone, too far, another dimension) anchors nothing until it is drawn again. |
+| `position` | `world-point` | A fixed place in the world. |
+
+### record `emitter`
+
+A standing stream of particles, stepped by the game every tick until replaced or cleared.
+
+| Field | Type | |
+| --- | --- | --- |
+| `anchor` | `emitter-anchor` |  |
+| `offset` | `world-point` | The anchor's own frame: for `self-player` and `entity`, x is the anchor's right, y is up and z is its facing, in blocks, turned by the anchor's body yaw; for `position`, the world's axes. A wingtip is an offset of about (±1, 1, 0) on a gliding player. |
+| `burst` | `burst` | The burst each spawn draws from: its particle, params, spread, speed and count, spawned at the anchor's place (its `at` is ignored). |
+| `rate` | `f32` | Spawns a second, 0 to 200: the game accumulates the fraction, so 7 a second is seven spawns in most seconds. Each spawn weighs its burst's count against the mod's budget, as `emit` does; an emitter starved by its own mod's bursts idles that tick rather than borrowing. |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `emit` | `func(burst: burst)` | Emits one burst, to be drawn after this call returns. Bursts are weighed against the mod's budget: at most 1024 particles a tick across its bursts and its emitters together; past the budget the rest of the tick's bursts spawn nothing, and nothing is held over. A burst too far from the camera (past 32 blocks, as the game's own particles are), a burst on the title screen, and a burst of a type that does not spawn, all quietly spawn nothing. Malformed numbers (a non-finite position, spread or speed) refuse the whole burst, as the native line refuses them. |
+| `set-emitters` | `func(emitters: option<list<emitter>>)` | Replaces the mod's emitters: at most 8. They live until replaced, cleared (none), or the mod stops — a stopped mod's streams end with it, mid-flight particles living out their own lives as the game's do. Nothing here survives the world closing, either: anchors are the open world's, and a reopened world starts with no emitters until the mod declares them again. |
 
 ## `audio-events`
 

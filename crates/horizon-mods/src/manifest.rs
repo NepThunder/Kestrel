@@ -233,7 +233,7 @@ impl Capability {
             }
             Capability::Ui => "show its own screens and a settings page",
             Capability::Render => {
-                "draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it, turn off distance fog, move your hand and held item in first person, hide the whole HUD, make the hand's field of view follow the zoom, cap the frame rate, shift how player models are posed and change how items themselves are shown: the model an item displays as, marks on item slots, and how dropped items lie in the world"
+                "draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it, turn off distance fog, move your hand and held item in first person, hide the whole HUD, make the hand's field of view follow the zoom, cap the frame rate, shift how player models are posed, change how items themselves are shown: the model an item displays as, marks on item slots, and how dropped items lie in the world, and spawn particles of its own in the world"
             }
             Capability::Input => {
                 "see the keys you hold, your clicks and how long since you last gave input, take over the use button on its own items and the mouse wheel, and add keys"
@@ -292,6 +292,13 @@ impl Capability {
         // the dropped policy restyles a lie — nothing is moved,
         // spent or changed, the hand and pose precedent.
         if interface == "item-model" {
+            return Ok(Some(Capability::Render));
+        }
+        // Particles of the mod's own (API 26) are part of
+        // `render` too: a burst is a picture in the world,
+        // drawn by the game's own engine — nothing is spent,
+        // moved or read, the hand and item-model precedent.
+        if interface == "particles" {
             return Ok(Some(Capability::Render));
         }
         // The player's own clicks (API 21) are their own

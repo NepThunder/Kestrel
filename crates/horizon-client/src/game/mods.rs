@@ -30,17 +30,22 @@ use {
     },
     horizon_mods::{
         Clock, MapTileData, MapView, ModAction, ModArmPose, ModBlockDisplay, ModBlockTarget,
-        ModDisplayContext, ModEntityPoseState, ModFace, ModFlatDisplay, ModHand, ModHandState,
-        ModItemUse, ModKey, ModMapImage, ModMapView, ModPoseSwingAnim, ModPoseTarget, ModSlotMove,
-        ModSwingAnim, ModSwingKind, ModWheelEvent, Mods, Output, Player, Runs, ServerPlayer,
-        Snapshot, SnapshotCamera, Status, UiScreen, UiWidget, WorldView,
+        ModBurst, ModDisplayContext, ModEmitter, ModEmitterAnchor, ModEntityPoseState, ModFace,
+        ModFlatDisplay, ModHand, ModHandState, ModItemUse, ModKey, ModMapImage, ModMapView,
+        ModParticlePoint, ModPoseSwingAnim, ModPoseTarget, ModSlotMove, ModSwingAnim, ModSwingKind,
+        ModWheelEvent, Mods, Output, Player, Runs, ServerPlayer, Snapshot, SnapshotCamera, Status,
+        UiScreen, UiWidget, WorldView,
     },
     std::time::Instant,
     winit::{event::MouseButton, keyboard::KeyCode},
 };
 #[cfg(feature = "mods")]
 use {
-    horizon_client::{biome::Biomes, chunk::Chunk},
+    horizon_client::{
+        biome::Biomes,
+        chunk::Chunk,
+        particles::{ParticleOptions, ParticleType},
+    },
     horizon_world::registry::{BlockRegistry, BlockStateId},
     std::collections::HashMap,
     std::sync::Arc,
@@ -334,6 +339,137 @@ pub(super) fn map_zoom(
     view
 }
 
+/// A mod's burst as the engine's options (capability
+/// `particles`, API 26): the one translation. A vanilla name
+/// resolves through the type table; a namespaced name that
+/// is not vanilla's resolves to the named sprite set a pack
+/// or content mod carries — drawn as a plain billboard, the
+/// engine resolving whether it loaded — and anything else is
+/// inert. Two types are not offered: `item` (its sprites are
+/// a model's layers, which no mod supplies) and `vibration`
+/// (its destination is a sensor's, not a picture's). The
+/// parameterised families read their parameter or do not
+/// spawn: the block family its block, resolved by the
+/// caller (the sprite is the game's to work); `trail` its
+/// target. `dust` and its transition take their colours and
+/// scale through their own constructors; every other type
+/// takes the type plain, with the colour and the scale
+/// folded in where the type reads them.
+#[cfg(feature = "mods")]
+pub(super) fn mod_particle_options(
+    burst: &ModBurst,
+    block: Option<(String, u32)>,
+) -> Option<ParticleOptions> {
+    use ParticleType as T;
+    let params = &burst.params;
+    let rgb = |c: u32| {
+        [
+            ((c >> 16) & 255) as f32 / 255.0,
+            ((c >> 8) & 255) as f32 / 255.0,
+            (c & 255) as f32 / 255.0,
+        ]
+    };
+    let Some(ty) = ParticleType::from_name(&burst.particle) else {
+        // Not vanilla's: a sprite set's name, or nothing. A
+        // `minecraft:` name the table missed names nothing
+        // either — it does not fall through to the sets.
+        let named = burst.particle.contains(':') && !burst.particle.starts_with("minecraft:");
+        return named.then(|| {
+            let mut options = ParticleOptions::named(burst.particle.clone());
+            if let Some(scale) = params.scale {
+                options.scale = scale;
+            }
+            options
+        });
+    };
+    match ty {
+        T::Item | T::Vibration => None,
+        T::Block | T::BlockCrumble | T::DustPillar | T::FallingDust | T::BlockMarker => {
+            block.map(|(sprite, tint)| ParticleOptions::block(ty, sprite, tint))
+        }
+        T::Trail => {
+            let target = params.target.as_ref()?;
+            let color = params.color.unwrap_or(0x00FF_FFFF) & 0x00FF_FFFF;
+            let duration = (params.duration.unwrap_or(20) as i32).clamp(1, 200);
+            Some(ParticleOptions::trail(
+                [target.x, target.y, target.z],
+                color,
+                duration,
+            ))
+        }
+        T::Dust => Some(ParticleOptions::dust(
+            params.color.map(rgb).unwrap_or([1.0, 0.0, 0.0]),
+            params.scale.unwrap_or(1.0),
+        )),
+        T::DustColorTransition => Some(ParticleOptions::dust_transition(
+            params.color.map(rgb).unwrap_or([1.0, 0.0, 0.0]),
+            params.to_color.map(rgb).unwrap_or([1.0, 0.0, 0.0]),
+            params.scale.unwrap_or(1.0),
+        )),
+        _ => {
+            let mut options = ParticleOptions::simple(ty);
+            if let Some(color) = params.color {
+                let [r, g, b] = rgb(color);
+                options.color = [r, g, b, ((color >> 24) & 255) as f32 / 255.0];
+            }
+            if let Some(scale) = params.scale {
+                options.scale = scale;
+            }
+            Some(options)
+        }
+    }
+}
+
+/// An emitter's offset in the world (API 26): the anchor's
+/// frame — x right, y up, z facing — turned by its body
+/// yaw. Minecraft's yaw: 0 faces +Z (south), increasing
+/// clockwise from above (90 faces −X, west), so the facing
+/// is (−sin θ, 0, cos θ) and the right hand is (−cos θ, 0,
+/// −sin θ).
+#[cfg(feature = "mods")]
+pub(super) fn emitter_offset_world(offset: ModParticlePoint, body_yaw_degrees: f32) -> [f64; 3] {
+    let theta = f64::from(body_yaw_degrees).to_radians();
+    let (sin, cos) = (theta.sin(), theta.cos());
+    [
+        -cos * offset.x - sin * offset.z,
+        offset.y,
+        -sin * offset.x + cos * offset.z,
+    ]
+}
+
+/// Where one of a mod's emitters spawns this tick (API 26):
+/// its anchor's place plus its offset — in the anchor's
+/// facing frame for the player and entity anchors, in the
+/// world's axes for a fixed position. None when the anchor
+/// resolves to nothing (the player is not in a world, the
+/// entity is not drawn) or the place is not finite: the
+/// emitter idles this tick, its accumulator unspent.
+#[cfg(feature = "mods")]
+pub(super) fn emitter_spawn_point(
+    emitter: &ModEmitter,
+    self_anchor: Option<([f64; 3], f32)>,
+    entity_anchor: impl Fn(u32) -> Option<([f64; 3], f32)>,
+) -> Option<[f64; 3]> {
+    let point = match &emitter.anchor {
+        ModEmitterAnchor::SelfPlayer => {
+            let (base, yaw) = self_anchor?;
+            let o = emitter_offset_world(emitter.offset, yaw);
+            [base[0] + o[0], base[1] + o[1], base[2] + o[2]]
+        }
+        ModEmitterAnchor::Entity(id) => {
+            let (base, yaw) = entity_anchor(*id)?;
+            let o = emitter_offset_world(emitter.offset, yaw);
+            [base[0] + o[0], base[1] + o[1], base[2] + o[2]]
+        }
+        ModEmitterAnchor::Position(at) => [
+            at.x + emitter.offset.x,
+            at.y + emitter.offset.y,
+            at.z + emitter.offset.z,
+        ],
+    };
+    point.iter().all(|c| c.is_finite()).then_some(point)
+}
+
 #[cfg(all(test, feature = "mods"))]
 mod screen_tests {
     use super::mod_trade_performs;
@@ -448,6 +584,173 @@ mod map_tests {
             map_zoom(v, (100.0, 50.0), (200.0, 100.0), -100.0).blocks_per_pixel,
             128.0
         );
+    }
+}
+
+#[cfg(all(test, feature = "mods"))]
+mod particle_tests {
+    use super::{emitter_offset_world, emitter_spawn_point, mod_particle_options};
+    use horizon_client::particles::ParticleType;
+    use horizon_mods::{
+        ModBurst, ModEmitter, ModEmitterAnchor, ModParticleParams, ModParticlePoint,
+    };
+
+    fn point(x: f64, y: f64, z: f64) -> ModParticlePoint {
+        ModParticlePoint { x, y, z }
+    }
+
+    fn burst(name: &str) -> ModBurst {
+        ModBurst {
+            particle: name.into(),
+            params: ModParticleParams {
+                color: None,
+                to_color: None,
+                scale: None,
+                block: None,
+                target: None,
+                duration: None,
+            },
+            at: point(0.0, 64.0, 0.0),
+            spread: point(0.0, 0.0, 0.0),
+            speed: 0.0,
+            count: 1,
+        }
+    }
+
+    fn emitter(anchor: ModEmitterAnchor, offset: ModParticlePoint) -> ModEmitter {
+        ModEmitter {
+            anchor,
+            offset,
+            burst: burst("minecraft:flame"),
+            rate: 20.0,
+        }
+    }
+
+    fn near(point: [f64; 3], want: [f64; 3]) {
+        for (got, want) in point.iter().zip(want) {
+            assert!((got - want).abs() < 1e-9, "{point:?} != {want:?}");
+        }
+    }
+
+    /// The translation's names (API 26): a vanilla type
+    /// resolves bare or namespaced; a namespaced name that
+    /// is not vanilla's passes to the named sprite sets with
+    /// its scale; an unknown name — vanilla's namespace or
+    /// none — is inert.
+    #[test]
+    fn names_resolve_vanilla_named_or_nothing() {
+        let o = mod_particle_options(&burst("flame"), None).expect("bare vanilla");
+        assert_eq!(o.ty, ParticleType::Flame);
+        assert_eq!(o.mod_particle, None);
+        let o = mod_particle_options(&burst("minecraft:flame"), None).expect("namespaced");
+        assert_eq!(o.ty, ParticleType::Flame);
+        let mut b = burst("test:spark");
+        b.params.scale = Some(2.0);
+        let o = mod_particle_options(&b, None).expect("a pack's type");
+        assert_eq!(o.mod_particle.as_deref(), Some("test:spark"));
+        assert_eq!(o.scale, 2.0);
+        assert!(mod_particle_options(&burst("minecraft:nosuchthing"), None).is_none());
+        assert!(mod_particle_options(&burst("nosuchthing"), None).is_none());
+    }
+
+    /// The parameter families (API 26): the block family
+    /// spawns only with its block resolved; `trail` only
+    /// with its target, its colour and duration folded;
+    /// `dust` folds its colour and scale, red and 1 by
+    /// default; `item` and `vibration` are not offered.
+    #[test]
+    fn parameter_families_read_theirs_or_do_not_spawn() {
+        let block = Some(("minecraft:block/stone".to_string(), 0xFFAA_BBCC));
+        let o = mod_particle_options(&burst("block"), block.clone()).expect("with its block");
+        assert_eq!(o.ty, ParticleType::Block);
+        assert_eq!(o.block, block);
+        assert!(mod_particle_options(&burst("block"), None).is_none());
+        assert!(
+            mod_particle_options(&burst("falling_dust"), None).is_none(),
+            "the falling dust is the block family too"
+        );
+        let mut b = burst("trail");
+        assert!(
+            mod_particle_options(&b, None).is_none(),
+            "no target, no trail"
+        );
+        b.params.target = Some(point(1.0, 2.0, 3.0));
+        b.params.color = Some(0xFF00_FF00);
+        let o = mod_particle_options(&b, None).expect("with its target");
+        assert_eq!(o.trail, Some(([1.0, 2.0, 3.0], 20)));
+        assert_eq!(o.color, [0.0, 1.0, 0.0, 1.0]);
+        let mut b = burst("dust");
+        let o = mod_particle_options(&b, None).expect("dust");
+        assert_eq!(o.color, [1.0, 0.0, 0.0, 1.0], "dust's own colour is red");
+        assert_eq!(o.scale, 1.0);
+        b.params.color = Some(0x8000_FF00);
+        b.params.scale = Some(2.0);
+        let o = mod_particle_options(&b, None).expect("dust folded");
+        // The constructor takes the rgb triple; the alpha of
+        // the 0xAARRGGBB colour is not dust's to read.
+        assert_eq!(o.color, [0.0, 1.0, 0.0, 1.0]);
+        assert_eq!(o.scale, 2.0);
+        assert!(mod_particle_options(&burst("item"), None).is_none());
+        assert!(mod_particle_options(&burst("vibration"), None).is_none());
+    }
+
+    /// The emitter frame (API 26): at yaw 0 the offset's z
+    /// is south and its x is west (the anchor's right,
+    /// facing south); at 90 the facing is west and the
+    /// right is north; at 180 the facing is north.
+    #[test]
+    fn emitter_offsets_turn_with_the_body() {
+        near(
+            emitter_offset_world(point(0.0, 0.0, 1.0), 0.0),
+            [0.0, 0.0, 1.0],
+        );
+        near(
+            emitter_offset_world(point(1.0, 0.0, 0.0), 0.0),
+            [-1.0, 0.0, 0.0],
+        );
+        near(
+            emitter_offset_world(point(0.0, 0.0, 1.0), 90.0),
+            [-1.0, 0.0, 0.0],
+        );
+        near(
+            emitter_offset_world(point(1.0, 0.0, 0.0), 90.0),
+            [0.0, 0.0, -1.0],
+        );
+        near(
+            emitter_offset_world(point(0.0, 0.0, 1.0), 180.0),
+            [0.0, 0.0, -1.0],
+        );
+        near(
+            emitter_offset_world(point(0.0, 2.0, 0.0), 90.0),
+            [0.0, 2.0, 0.0],
+        );
+    }
+
+    /// The anchors (API 26): the player's place plus the
+    /// turned offset; an entity the lookup cannot find
+    /// anchors nothing; a fixed position reads in the
+    /// world's axes, untouched by any facing.
+    #[test]
+    fn emitter_anchors_resolve_or_idle() {
+        let e = emitter(ModEmitterAnchor::SelfPlayer, point(0.0, 2.0, 0.0));
+        let p = emitter_spawn_point(&e, Some(([10.0, 64.0, 10.0], 0.0)), |_| None)
+            .expect("the player anchors");
+        near(p, [10.0, 66.0, 10.0]);
+        let e = emitter(ModEmitterAnchor::Entity(7), point(0.0, 0.0, 1.0));
+        assert_eq!(
+            emitter_spawn_point(&e, None, |_| None),
+            None,
+            "a vanished entity anchors nothing"
+        );
+        let p = emitter_spawn_point(&e, None, |id| (id == 7).then_some(([1.0, 2.0, 3.0], 180.0)))
+            .expect("the drawn entity anchors");
+        near(p, [1.0, 2.0, 2.0]);
+        let e = emitter(
+            ModEmitterAnchor::Position(point(1.0, 2.0, 3.0)),
+            point(0.5, 0.0, 0.0),
+        );
+        let p = emitter_spawn_point(&e, None, |_| None).expect("a fixed place anchors");
+        near(p, [1.5, 2.0, 3.0]);
     }
 }
 
@@ -1166,6 +1469,8 @@ impl Game<'_> {
         false
     }
     pub(super) fn return_client_world(&mut self) {}
+    /// API 26: no mod runs, so no emitter ever stands to end.
+    pub(super) fn clear_mod_particle_emitters(&mut self) {}
     /// API 25: no mod runs, so no tile view is ever lent.
     pub(super) fn lend_client_map(&mut self) -> bool {
         false
@@ -1781,6 +2086,9 @@ impl Game<'_> {
         let env = self.mods.mods.sound_environment();
         self.audio.set_sound_environment(env);
         self.show_mod_output();
+        // API 26: the mods' emitters step after the tick's
+        // bursts have drained, against the drawn world.
+        self.step_mod_particle_emitters();
     }
 
     /// Install (or refresh) the sound engine's hook (API 15): world
@@ -2464,6 +2772,15 @@ impl Game<'_> {
                     self.collect_slot_move(mod_id, ModSlotMove::Drag(drag));
                     continue;
                 }
+                Output::ParticleBurst { burst, .. } => {
+                    // Drawn here (API 26): a burst is an ask to
+                    // draw, performed in the output step like the
+                    // chat lines around it — the engine's funnel
+                    // thins and culls it as it does the game's
+                    // own particles.
+                    self.show_mod_particle_burst(&burst);
+                    continue;
+                }
             };
             self.add_mod_chat_line(line);
         }
@@ -2529,6 +2846,117 @@ impl Game<'_> {
     pub(super) fn clear_mod_actions(&mut self) {
         self.mods.pending_actions.clear();
         self.mods.pending_trades.clear();
+    }
+    /// Draws one mod burst (capability `particles`, API 26):
+    /// the burst the runtime sanitized and weighed, translated
+    /// into the engine's options and sent through the funnel
+    /// every particle takes. No player in a world, a type that
+    /// does not spawn here, or a block that did not resolve
+    /// draws nothing.
+    fn show_mod_particle_burst(&mut self, burst: &ModBurst) {
+        if self.player.is_none() {
+            return;
+        }
+        let at = [burst.at.x, burst.at.y, burst.at.z];
+        let block = self.mod_particle_block(burst, at);
+        let Some(options) = mod_particle_options(burst, block) else {
+            return;
+        };
+        let spread = [burst.spread.x, burst.spread.y, burst.spread.z];
+        self.particles
+            .send_particles(&options, at, spread, burst.speed, burst.count);
+    }
+    /// The block a burst's crumbs show (API 26): the state the
+    /// burst names, resolved against the registry, and its
+    /// particle sprite at the burst's place — the game's own
+    /// block particles' sprite path.
+    fn mod_particle_block(&self, burst: &ModBurst, at: [f64; 3]) -> Option<(String, u32)> {
+        let name = burst.params.block.as_ref()?;
+        let state =
+            crate::game::render_control::parse_state(self.pack.assets.registry, name).ok()?;
+        let pos = [
+            at[0].floor() as i32,
+            at[1].floor() as i32,
+            at[2].floor() as i32,
+        ];
+        self.particle_sprite(state, pos)
+    }
+    /// Steps the running mods' particle emitters one tick
+    /// (capability `particles`, API 26), after the tick's
+    /// output has drained: each stored stream whose anchor
+    /// resolves against the drawn world advances in the
+    /// runtime and draws its admitted spawns at the anchor's
+    /// place; one whose anchor does not resolve — a vanished
+    /// entity, no world — idles without advancing.
+    pub(super) fn step_mod_particle_emitters(&mut self) {
+        if self.player.is_none() {
+            return;
+        }
+        let emitters = self.mods.mods.particle_emitters();
+        if emitters.is_empty() {
+            return;
+        }
+        let self_anchor = self.mod_particle_self_anchor();
+        let mut index_by_owner: HashMap<usize, usize> = HashMap::new();
+        for (owner, emitter) in &emitters {
+            let index = {
+                let next = index_by_owner.entry(*owner).or_insert(0);
+                let index = *next;
+                *next += 1;
+                index
+            };
+            let Some(point) = emitter_spawn_point(emitter, self_anchor, |id| {
+                self.mod_particle_entity_anchor(id)
+            }) else {
+                continue;
+            };
+            let spawns = self.mods.mods.particle_emitter_spawns(*owner, index);
+            if spawns == 0 {
+                continue;
+            }
+            let block = self.mod_particle_block(&emitter.burst, point);
+            let Some(options) = mod_particle_options(&emitter.burst, block) else {
+                continue;
+            };
+            let burst = &emitter.burst;
+            let spread = [burst.spread.x, burst.spread.y, burst.spread.z];
+            for _ in 0..spawns {
+                self.particles
+                    .send_particles(&options, point, spread, burst.speed, burst.count);
+            }
+        }
+    }
+    /// The local player's emitter anchor (API 26): its drawn
+    /// model's place and body yaw; without a model, the
+    /// motion's place and the look's yaw.
+    fn mod_particle_self_anchor(&self) -> Option<([f64; 3], f32)> {
+        if let Some(m) = &self.player_model {
+            return Some(([m.position.x, m.position.y, m.position.z], m.body_yaw));
+        }
+        self.player
+            .as_ref()
+            .map(|p| ([p.position.x, p.position.y, p.position.z], self.yaw))
+    }
+    /// A drawn entity's emitter anchor (API 26): the player
+    /// model answers for its own id, as the pose states key
+    /// it; any other id answers from the drawn mobs. A removed
+    /// or undrawn entity anchors nothing.
+    fn mod_particle_entity_anchor(&self, id: u32) -> Option<([f64; 3], f32)> {
+        if let Some(m) = &self.player_model
+            && m.id == id
+        {
+            return Some(([m.position.x, m.position.y, m.position.z], m.body_yaw));
+        }
+        self.mobs
+            .iter()
+            .find(|m| m.id == id && !m.removed)
+            .map(|m| ([m.position.x, m.position.y, m.position.z], m.body_yaw))
+    }
+    /// Ends the running mods' particle emitters (API 26) as
+    /// the world closes: called from `close_world`, before
+    /// the close fans out to the server or the save.
+    pub(super) fn clear_mod_particle_emitters(&mut self) {
+        self.mods.mods.clear_particle_emitters();
     }
     /// Collects one queued slot verb (capability
     /// `inventory-actions`, API 24): at most

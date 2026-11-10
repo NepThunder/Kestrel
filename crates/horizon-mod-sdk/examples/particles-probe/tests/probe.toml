@@ -1,0 +1,29 @@
+# Particles (API 26): the command bursts hearts over the
+# player (nothing is targeted in the harness); gliding
+# declares the two wingtip emitters in the stored list,
+# and landing clears them. The harness never steps the
+# emitters — stepping is the game's side, against the
+# drawn world — so only the bursts and the stored list
+# are pinned here.
+[[step]]
+command = "burst"
+[step.expect]
+particles = ["minecraft:heart 7 at 0.5 66 0.5"]
+feedback = "burst over you"
+emitters = []
+
+[[step]]
+ticks = 1
+[step.self-state]
+gliding = true
+[step.expect]
+particles = []
+emitters = ["self minecraft:end_rod x1 @40/s offset -1 1 0", "self minecraft:end_rod x1 @40/s offset 1 1 0"]
+
+[[step]]
+ticks = 1
+[step.self-state]
+gliding = false
+[step.expect]
+particles = []
+emitters = []

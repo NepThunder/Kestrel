@@ -24,16 +24,20 @@
 //! `/mapshow`, `/mapmini`, `/maphide`, `/mapbad` and
 //! `/mappollmap` capability `map`'s tile reads, context,
 //! death place, position events, map screen and minimap
-//! image (API 25); `tick` and
+//! image (API 25); `/emitburst`, `/emitdust`, `/emitbad`,
+//! `/emitblock`, `/setemitter` and `/clearemitter`
+//! capability `render`'s particles — bursts and emitters
+//! (API 26); `tick` and
 //! `frame` do nothing, to measure the cost of a call.
 use horizon_mod_sdk::{
-    ActionHand, ActionTarget, Anchor, BlockDisplay, BlockTarget, ChunkPos, ClickKind,
+    ActionHand, ActionTarget, Anchor, BlockDisplay, BlockTarget, Burst, ChunkPos, ClickKind,
     ComponentMatch, Corner, Decoration, DecorationPlace, DecorationTarget, DisplayContext,
-    DragButton, DroppedDisplay, Face, FlatDisplay, HandFov, HandFovMode, HandTransform, Highlight,
-    MapEvent, MapImage, MapLayer, MapMarker, MapScreen, MinimapImage, Mod, ModelMatch, ModelRule,
-    PartOffset, PoseOffset, PoseTarget, PositionEvent, Registration, ScreenButton, ScreenEvent,
-    SoundAdjustment, SoundQuery, SwingAnim, actions, audio, chat, entity_pose, game, hand, input,
-    inventory_actions, item_model, map, render, screen, storage,
+    DragButton, DroppedDisplay, Emitter, EmitterAnchor, Face, FlatDisplay, HandFov, HandFovMode,
+    HandTransform, Highlight, MapEvent, MapImage, MapLayer, MapMarker, MapScreen, MinimapImage,
+    Mod, ModelMatch, ModelRule, PartOffset, ParticleParams, PoseOffset, PoseTarget, PositionEvent,
+    Registration, ScreenButton, ScreenEvent, SoundAdjustment, SoundQuery, SwingAnim, WorldPoint,
+    actions, audio, chat, entity_pose, game, hand, input, inventory_actions, item_model, map,
+    particles, render, screen, storage,
 };
 
 struct Guest {
@@ -102,6 +106,12 @@ impl Mod for Guest {
             "maphide",
             "mapbad",
             "mappollmap",
+            "emitburst",
+            "emitdust",
+            "emitbad",
+            "emitblock",
+            "setemitter",
+            "clearemitter",
         ]
         .into_iter()
         .fold(Registration::new(), Registration::command)
@@ -931,11 +941,145 @@ impl Mod for Guest {
                     .collect();
                 Ok(Some(format!("map [{}]", parts.join("; "))))
             }
+            "emitburst" => {
+                let p = game::get_player().ok_or("no player")?;
+                let at = point(p.x, p.y, p.z);
+                particles::emit(&burst("minecraft:heart", at, point(0.5, 0.5, 0.5), 0.1, 12));
+                // A count of 0: the directional single,
+                // straight up.
+                particles::emit(&burst("minecraft:flame", at, point(0.0, 1.0, 0.0), 0.5, 0));
+                Ok(Some("burst".into()))
+            }
+            "emitdust" => {
+                let p = game::get_player().ok_or("no player")?;
+                // A count of 300: the host cuts it to 256.
+                let mut b = burst(
+                    "dust",
+                    point(p.x, p.y, p.z),
+                    point(0.3, 0.3, 0.3),
+                    0.05,
+                    300,
+                );
+                b.params.color = Some(0xFFAA_0000);
+                b.params.scale = Some(2.0);
+                particles::emit(&b);
+                Ok(Some("dust".into()))
+            }
+            "emitbad" => {
+                let p = game::get_player().ok_or("no player")?;
+                let at = point(p.x, p.y, p.z);
+                // A non-finite spread: the whole burst is
+                // refused at the door and never drains.
+                particles::emit(&burst(
+                    "minecraft:flame",
+                    at,
+                    point(f64::NAN, 0.0, 0.0),
+                    0.1,
+                    4,
+                ));
+                // An unknown type and a pack's type both
+                // drain as asked: what they draw is the
+                // game's side.
+                particles::emit(&burst(
+                    "minecraft:nosuchthing",
+                    at,
+                    point(0.0, 0.0, 0.0),
+                    0.0,
+                    4,
+                ));
+                particles::emit(&burst("test:spark", at, point(0.0, 0.0, 0.0), 0.0, 2));
+                Ok(Some("bad".into()))
+            }
+            "emitblock" => {
+                let p = game::get_player().ok_or("no player")?;
+                let at = point(p.x, p.y, p.z);
+                let mut with = burst("block", at, point(0.2, 0.2, 0.2), 0.0, 6);
+                with.params.block = Some("minecraft:stone".into());
+                particles::emit(&with);
+                // Without its block the burst still drains:
+                // drawing nothing for it is the game's side.
+                particles::emit(&burst("block", at, point(0.2, 0.2, 0.2), 0.0, 6));
+                Ok(Some("blocks".into()))
+            }
+            "setemitter" => {
+                // Nine declared: the host keeps eight. The
+                // second's rate (500) and offset (20) sit
+                // past their clamps and are cut at the door.
+                let mut emitters = vec![Emitter {
+                    anchor: EmitterAnchor::SelfPlayer,
+                    offset: point(0.0, 1.0, 0.0),
+                    burst: burst(
+                        "minecraft:end_rod",
+                        point(0.0, 0.0, 0.0),
+                        point(0.0, 0.0, 0.0),
+                        0.0,
+                        1,
+                    ),
+                    rate: 7.0,
+                }];
+                emitters.push(Emitter {
+                    anchor: EmitterAnchor::Position(point(1.0, 2.0, 3.0)),
+                    offset: point(20.0, 0.0, 0.0),
+                    burst: burst(
+                        "minecraft:flame",
+                        point(0.0, 0.0, 0.0),
+                        point(0.0, 0.0, 0.0),
+                        0.0,
+                        1,
+                    ),
+                    rate: 500.0,
+                });
+                for i in 0..7 {
+                    emitters.push(Emitter {
+                        anchor: EmitterAnchor::Position(point(f64::from(i), 64.0, 0.0)),
+                        offset: point(0.0, 0.0, 0.0),
+                        burst: burst(
+                            "minecraft:flame",
+                            point(0.0, 0.0, 0.0),
+                            point(0.0, 0.0, 0.0),
+                            0.0,
+                            1,
+                        ),
+                        rate: 20.0,
+                    });
+                }
+                particles::set_emitters(Some(&emitters));
+                Ok(Some("emitters".into()))
+            }
+            "clearemitter" => {
+                particles::set_emitters(None);
+                Ok(Some("cleared".into()))
+            }
             _ => {
                 chat::show(&format!("hello {args} after {} ticks", self.ticks));
                 Ok(None)
             }
         }
+    }
+}
+
+/// A world point (capability `particles`, API 26).
+fn point(x: f64, y: f64, z: f64) -> WorldPoint {
+    WorldPoint { x, y, z }
+}
+
+/// A burst with no parameters (capability `particles`,
+/// API 26).
+fn burst(particle: &str, at: WorldPoint, spread: WorldPoint, speed: f64, count: u32) -> Burst {
+    Burst {
+        particle: particle.into(),
+        params: ParticleParams {
+            color: None,
+            to_color: None,
+            scale: None,
+            block: None,
+            target: None,
+            duration: None,
+        },
+        at,
+        spread,
+        speed,
+        count,
     }
 }
 

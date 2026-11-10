@@ -326,6 +326,9 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
             Output::SlotDrag { drag, .. } => {
                 format!("dragged over {} slot(s)", drag.slots.len())
             }
+            Output::ParticleBurst { burst, .. } => {
+                format!("burst {} x{}", burst.particle, burst.count)
+            }
         });
     }
     let shapes = mods.hud_shapes().count();

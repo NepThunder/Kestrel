@@ -3409,6 +3409,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "particles-probe"
+version = "0.1.0"
+dependencies = [
+ "horizon-mod-sdk",
+]
+
+[[package]]
 name = "pbkdf2"
 version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

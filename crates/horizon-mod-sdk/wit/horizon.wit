@@ -1792,6 +1792,143 @@ interface item-model {
     set-dropped-display: func(display: dropped-display);
 }
 
+/// Capability `render` (experimental), interface
+/// `particles`: particles of the mod's own, drawn by the
+/// game's own particle engine on this client. A burst is
+/// vanilla's own shape — the one the `/particle` command
+/// and the server's particle packet use — and everything
+/// here is a picture: nothing is sent to the server,
+/// nothing in the world changes, and the player's Particles
+/// option thins a mod's particles as it thins the game's.
+interface particles {
+    /// A point in the world, in blocks (redeclared: WIT
+    /// interfaces cannot share types).
+    record world-point {
+        x: f64,
+        y: f64,
+        z: f64,
+    }
+
+    /// The parameters the parameterised particle types
+    /// read; a field a type does not read is ignored, and
+    /// a type whose parameter is missing does not spawn.
+    record particle-params {
+        /// 0xAARRGGBB: the colour of `dust` and
+        /// `dust-color-transition` (its start colour),
+        /// `effect` / `instant-effect` / `entity-effect`,
+        /// and the trail's colour. None: the type's own
+        /// colour (dust's is red).
+        color: option<u32>,
+        /// `dust-color-transition`'s end colour, 0xAARRGGBB.
+        to-color: option<u32>,
+        /// A size: `dust`'s scale, a spell's power,
+        /// `sculk-charge`'s roll, `shriek`'s delay in
+        /// ticks. Clamped to the range the type itself
+        /// clamps to (dust: 0.01 to 4). None: 1.
+        scale: option<f32>,
+        /// The block whose crumb a `block`, `block-crumble`,
+        /// `falling-dust`, `dust-pillar` or `block-marker`
+        /// particle shows: `minecraft:stone`, ... Required
+        /// by those types; without it they do not spawn.
+        block: option<string>,
+        /// Where a `trail` particle flies to, and how long
+        /// it takes (`duration`, ticks, with it). Required
+        /// by `trail`; without it it does not spawn.
+        target: option<world-point>,
+        /// With `target`: the trail's flight time in ticks,
+        /// 1 to 200. None: 20.
+        duration: option<u32>,
+    }
+
+    /// One burst of particles: `count` of them around
+    /// `at`, each offset by a gaussian of `spread` blocks
+    /// on each axis and given a gaussian velocity of
+    /// `speed` blocks a tick on each axis — the server
+    /// packet's own arithmetic. A count of 0 is one
+    /// particle at `at` itself, with the velocity
+    /// `speed * spread` on each axis: the directional
+    /// single.
+    record burst {
+        /// The particle: a vanilla type
+        /// (`minecraft:flame`, or bare `flame`), or a
+        /// namespaced type of a sprite set a pack or
+        /// content mod carries (`mymod:spark`) — drawn as
+        /// a plain billboard, with no gravity and a life
+        /// of 20 to 40 ticks, as the game's mod types are.
+        /// A name nothing loaded provides spawns nothing.
+        particle: string,
+        /// With `params`, where the type reads them.
+        params: particle-params,
+        at: world-point,
+        spread: world-point,
+        speed: f64,
+        /// At most 256; a larger count is cut to it.
+        count: u32,
+    }
+
+    /// Emits one burst, to be drawn after this call
+    /// returns. Bursts are weighed against the mod's
+    /// budget: at most 1024 particles a tick across its
+    /// bursts and its emitters together; past the budget
+    /// the rest of the tick's bursts spawn nothing, and
+    /// nothing is held over. A burst too far from the
+    /// camera (past 32 blocks, as the game's own
+    /// particles are), a burst on the title screen, and a
+    /// burst of a type that does not spawn, all quietly
+    /// spawn nothing. Malformed numbers (a non-finite
+    /// position, spread or speed) refuse the whole burst,
+    /// as the native line refuses them.
+    emit: func(burst: burst);
+
+    /// What an emitter is tied to.
+    variant emitter-anchor {
+        /// The local player.
+        self-player,
+        /// A drawn entity — a mob or another player — by
+        /// the id `entity.entities` and the pose states
+        /// use. An entity the game is not drawing (gone,
+        /// too far, another dimension) anchors nothing
+        /// until it is drawn again.
+        entity(u32),
+        /// A fixed place in the world.
+        position(world-point),
+    }
+
+    /// A standing stream of particles, stepped by the
+    /// game every tick until replaced or cleared.
+    record emitter {
+        anchor: emitter-anchor,
+        /// The anchor's own frame: for `self-player` and
+        /// `entity`, x is the anchor's right, y is up and
+        /// z is its facing, in blocks, turned by the
+        /// anchor's body yaw; for `position`, the world's
+        /// axes. A wingtip is an offset of about (±1, 1,
+        /// 0) on a gliding player.
+        offset: world-point,
+        /// The burst each spawn draws from: its particle,
+        /// params, spread, speed and count, spawned at the
+        /// anchor's place (its `at` is ignored).
+        burst: burst,
+        /// Spawns a second, 0 to 200: the game accumulates
+        /// the fraction, so 7 a second is seven spawns in
+        /// most seconds. Each spawn weighs its burst's
+        /// count against the mod's budget, as `emit` does;
+        /// an emitter starved by its own mod's bursts idles
+        /// that tick rather than borrowing.
+        rate: f32,
+    }
+
+    /// Replaces the mod's emitters: at most 8. They live
+    /// until replaced, cleared (none), or the mod stops —
+    /// a stopped mod's streams end with it, mid-flight
+    /// particles living out their own lives as the game's
+    /// do. Nothing here survives the world closing, either:
+    /// anchors are the open world's, and a reopened world
+    /// starts with no emitters until the mod declares
+    /// them again.
+    set-emitters: func(emitters: option<list<emitter>>);
+}
+
 /// What the game calls for sounds (API 15). Only the first mod in
 /// load order with this export is asked; mods built before API 15
 /// have no such export and simply never hear sounds. The call must
@@ -2408,6 +2545,7 @@ world horizon-ui-mod {
     import hand;
     import entity-pose;
     import item-model;
+    import particles;
     import actions;
     import screen;
     import inventory-actions;
@@ -2453,12 +2591,17 @@ world audio-host {
 /// survey — the game's tiles of the ground around the player,
 /// and where they died and came back — not drawing, though
 /// its full-screen map and its own minimap ride along.
+/// API 26's `particles` rides along with the hand, the poses
+/// and the item models: a burst is a picture in the world,
+/// drawn by the game's own engine — nothing spent, moved or
+/// read — so it is render's, with no consent line of its own.
 world render-host {
     import render;
     import input;
     import hand;
     import entity-pose;
     import item-model;
+    import particles;
     import actions;
     import screen;
     import inventory-actions;

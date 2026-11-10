@@ -81,6 +81,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "map-probe",
                 "-p",
+                "particles-probe",
+                "-p",
                 "horizon-mods-test-guest",
                 "-p",
                 "horizon-mods-test-ui-guest",
@@ -123,6 +125,7 @@ fn mods_dir() -> &'static Path {
                 example("inventory-actions-probe"),
             ),
             ("map_probe", example("map-probe")),
+            ("particles_probe", example("particles-probe")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
         ];
@@ -991,6 +994,153 @@ fn slot_moves_queue_clamp_and_drop() {
     assert_eq!(text.matches("; ").count(), 255, "{text}");
     assert!(mods.command("invwheel"));
     assert_eq!(feedback(&mut mods), [("wheel []".to_string(), false)]);
+}
+
+/// Capability `particles` (API 26): a burst drains verbatim
+/// (name, centre, count) after the door's sanitize — a count
+/// of 300 cut to 256, the dust's colour and scale kept; a
+/// non-finite burst never drains, while an unknown name and
+/// a pack's name do (what they draw is the game's side); a
+/// block burst drains with and without its block. Four
+/// 256-count bursts fill the tick's 1024 budget across
+/// calls, the fifth drops, and a fresh tick admits again.
+/// Emitters clamp at the door (eight kept, the rate and
+/// offset cut), step by their accumulator, clear on command,
+/// and a stopped mod's are gone with it.
+#[test]
+fn particle_bursts_clamp_budget_and_drop() {
+    use horizon_mods::{ModBurst, ModEmitterAnchor, ModParticleParams, ModParticlePoint};
+    let mut mods = load("horizon_mods_test_guest.kmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    mods.set_snapshot(player());
+    let bursts = |mods: &mut Mods| -> Vec<ModBurst> {
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::ParticleBurst { burst, .. } => Some(burst),
+                _ => None,
+            })
+            .collect()
+    };
+    let point = |x: f64, y: f64, z: f64| ModParticlePoint { x, y, z };
+    let at = point(12.5, 64.0, -3.25);
+    let plain = ModParticleParams {
+        color: None,
+        to_color: None,
+        scale: None,
+        block: None,
+        target: None,
+        duration: None,
+    };
+    // A heart burst at the player, then the count-0
+    // directional, at the fixture's position verbatim.
+    assert!(mods.command("emitburst"));
+    assert_eq!(
+        bursts(&mut mods),
+        [
+            ModBurst {
+                particle: "minecraft:heart".into(),
+                params: plain.clone(),
+                at,
+                spread: point(0.5, 0.5, 0.5),
+                speed: 0.1,
+                count: 12,
+            },
+            ModBurst {
+                particle: "minecraft:flame".into(),
+                params: plain.clone(),
+                at,
+                spread: point(0.0, 1.0, 0.0),
+                speed: 0.5,
+                count: 0,
+            },
+        ]
+    );
+    // A count of 300 drains as 256, its colour and scale kept.
+    assert!(mods.command("emitdust"));
+    assert_eq!(
+        bursts(&mut mods),
+        [ModBurst {
+            particle: "dust".into(),
+            params: ModParticleParams {
+                color: Some(0xFFAA_0000),
+                scale: Some(2.0),
+                ..plain.clone()
+            },
+            at,
+            spread: point(0.3, 0.3, 0.3),
+            speed: 0.05,
+            count: 256,
+        }]
+    );
+    // The non-finite burst never drains; the unknown name and
+    // the pack's name drain as asked.
+    assert!(mods.command("emitbad"));
+    assert_eq!(
+        bursts(&mut mods)
+            .iter()
+            .map(|b| (b.particle.as_str(), b.count))
+            .collect::<Vec<_>>(),
+        [("minecraft:nosuchthing", 4), ("test:spark", 2)]
+    );
+    // A block burst drains with its block and without it.
+    assert!(mods.command("emitblock"));
+    assert_eq!(
+        bursts(&mut mods)
+            .iter()
+            .map(|b| b.params.block.clone())
+            .collect::<Vec<_>>(),
+        [Some("minecraft:stone".to_string()), None]
+    );
+    // The budget: a fresh tick, four 256-count bursts across
+    // four calls fill it exactly, the fifth drops, and the
+    // next tick admits again.
+    mods.tick(1);
+    mods.drain();
+    for _ in 0..4 {
+        assert!(mods.command("emitdust"));
+        assert_eq!(bursts(&mut mods).len(), 1);
+    }
+    assert!(mods.command("emitdust"));
+    assert_eq!(bursts(&mut mods).len(), 0, "past the tick's budget");
+    mods.tick(2);
+    mods.drain();
+    assert!(mods.command("emitdust"));
+    assert_eq!(bursts(&mut mods).len(), 1, "a fresh tick admits again");
+    // Emitters: nine declared, eight kept; the second's rate
+    // and offset cut at the door.
+    assert!(mods.command("setemitter"));
+    mods.drain();
+    let emitters = mods.particle_emitters();
+    assert_eq!(emitters.len(), 8);
+    assert_eq!(emitters[0].0, 0);
+    assert_eq!(emitters[0].1.anchor, ModEmitterAnchor::SelfPlayer);
+    assert_eq!(emitters[0].1.burst.particle, "minecraft:end_rod");
+    assert_eq!(emitters[0].1.rate, 7.0);
+    assert_eq!(emitters[1].1.rate, 200.0, "the rate is cut to its cap");
+    assert_eq!(emitters[1].1.offset.x, 8.0, "the offset is cut to its cap");
+    // The step: twenty ticks at 7 a second hold seven spawns;
+    // one tick at the 200 cap holds ten.
+    let mut total = 0;
+    for _ in 0..20 {
+        total += mods.particle_emitter_spawns(0, 0);
+    }
+    assert_eq!(total, 7);
+    assert_eq!(mods.particle_emitter_spawns(0, 1), 10);
+    // Cleared on command; and a stopped mod's are gone.
+    assert!(mods.command("clearemitter"));
+    mods.drain();
+    assert!(mods.particle_emitters().is_empty());
+    assert!(mods.command("setemitter"));
+    mods.drain();
+    assert_eq!(mods.particle_emitters().len(), 8);
+    assert!(mods.command("panic"));
+    mods.drain();
+    assert!(matches!(mods.entries()[0].status, Status::Failed(_)));
+    assert!(
+        mods.particle_emitters().is_empty(),
+        "a stopped mod's emitters are gone"
+    );
 }
 
 /// Capability `screen` (API 22): the snapshot's screen state and
@@ -1877,6 +2027,8 @@ experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audi
     assert_eq!(level("inventory_actions_probe.kmod"), 24);
     // The map probe reads tiles (`map.tiles`, level 25).
     assert_eq!(level("map_probe.kmod"), 25);
+    // The particles probe emits bursts (`particles.emit`, level 26).
+    assert_eq!(level("particles_probe.kmod"), 26);
 }
 
 #[test]
