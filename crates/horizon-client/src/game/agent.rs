@@ -424,6 +424,7 @@ impl Game<'_> {
             Screen::BlockEditor => "block-editor",
             Screen::Win => "win",
             Screen::Mod => "mod",
+            Screen::Map => "map",
             Screen::DebugOptions => "debug-options",
         }
     }

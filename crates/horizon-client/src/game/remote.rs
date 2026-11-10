@@ -1997,7 +1997,12 @@ impl Game<'_> {
         // The replacement player starts with its inventory menu, even if the
         // server switched levels without closing the previous container.
         self.remote_close_local();
+        // Capability `map` (API 25): a (re)entry that begins
+        // from the death screen owes the mods a `respawned`
+        // when its replacement player is made.
+        let was_dead = self.screen == Screen::Dead;
         self.screen = Screen::Playing;
+        self.arm_mod_respawn(was_dead);
         let Some(r) = self.remote.as_mut() else {
             return;
         };
@@ -3968,13 +3973,20 @@ impl Game<'_> {
                 // The death screen opens (or the respawn is asked for) with the
                 // death packet when the rule hides it.
                 let shown = self.remote.as_ref().is_none_or(|r| r.show_death_screen);
-                if p.health <= 0.0 && shown && self.screen != Screen::Dead && self.player.is_some()
+                if p.health <= 0.0
+                    && shown
+                    && super::mods::death_opens_screen(self.screen)
+                    && self.player.is_some()
                 {
                     self.close_dialogs();
                     self.screen = Screen::Dead;
                     self.ui.death_time = 0;
                     self.ui.death_confirm = None;
                     self.capture(false);
+                    // Capability `map` (API 25): the death
+                    // screen opened — the one `died` push of
+                    // this death, under the guard above.
+                    self.note_mod_position_event(true);
                 }
             }
             C::PlayerCombatKill(p) => {
@@ -3989,13 +4001,17 @@ impl Game<'_> {
                 // ClientPacketListener.handlePlayerCombatKill: the death
                 // screen, whatever health was last sent, or `respawn()` at
                 // once when it is hidden.
-                if me && self.screen != Screen::Dead && self.player.is_some() {
+                if me && super::mods::death_opens_screen(self.screen) && self.player.is_some() {
                     if self.remote.as_ref().is_none_or(|r| r.show_death_screen) {
                         self.close_dialogs();
                         self.screen = Screen::Dead;
                         self.ui.death_time = 0;
                         self.ui.death_confirm = None;
                         self.capture(false);
+                        // Capability `map` (API 25): the death
+                        // screen opened — the one `died` push of
+                        // this death, under the guard above.
+                        self.note_mod_position_event(true);
                     } else {
                         self.respawn_player()?;
                     }
@@ -5355,6 +5371,10 @@ impl Game<'_> {
                 self.clock.reset();
                 self.apply_remote_health();
                 self.apply_remote_abilities();
+                // Capability `map` (API 25): a replacement
+                // player an armed respawn entry waited for —
+                // the respawn is applied.
+                self.note_mod_respawned();
             }
         }
         self.previous_position = position;

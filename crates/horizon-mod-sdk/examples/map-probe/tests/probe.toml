@@ -1,0 +1,15 @@
+# Map (API 25): the fixture holds two of the nine chunks
+# around the player (the surface one underfoot, a cave tile
+# west of it), so `/survey` reports 2 and shows its
+# checkerboard at the player's block (0, 0), one marker on it.
+[[step]]
+tiles = [
+  { cx = 0, cz = 0, colors = [7, 7, 7] },
+  { cx = -1, cz = 0, layer = "cave", cut = 40, version = 2 },
+]
+map-context = { dimension = "minecraft:overworld", world = "Probe World" }
+command = "survey"
+[step.expect]
+feedback = "2 tiles around 0 0"
+map-screen = "32x32 scale 1 at 0 0 markers 1"
+minimap-image = "none"

@@ -76,6 +76,19 @@
 //! reads the wheel turns over the open screen, observed never
 //! consumed. Reading an inventory is `inventory`'s consent;
 //! moving its stacks is this one's.
+//! `map` (its own capability, API level 25, experimental)
+//! reads the game's own mapping of the ground around the
+//! player: [`map::tiles`] and [`map::tile_versions`] read its
+//! minimap's tiles verbatim — a view of the loaded chunks,
+//! never an archive, so a mod keeps the tiles it wants in
+//! its own storage, keyed by [`map::context`].
+//! [`map::last_death`] reads where the player last died, and
+//! [`map::poll_events`] the deaths and respawns as they
+//! happen. The mod composes the pictures itself:
+//! [`map::set_map_screen`] shows a full-screen map the game
+//! pans, zooms and fields clicks over (heard through
+//! [`map::poll_map`]), and [`map::set_minimap_image`] a
+//! corner minimap of its own shading.
 //! Server mods: [`server`].
 //!
 //! Widgets (capability `ui`): a mod shows a screen it owns with
@@ -109,13 +122,17 @@ pub use horizon::mods::item_model::{
     BlockDisplay, ComponentMatch, Decoration, DecorationPlace, DecorationTarget, DisplayContext,
     DroppedDisplay, FlatDisplay, ModelMatch, ModelRule,
 };
+pub use horizon::mods::map::{
+    ChunkPos, Corner, MapClick, MapContext, MapEvent, MapImage, MapLayer, MapMarker, MapScreen,
+    MapTile, MapView, MinimapImage, Position, PositionEvent, TileVersion,
+};
 pub use horizon::mods::render::{HandFov, HandFovMode};
 pub use horizon::mods::screen::{
     Anchor, Highlight, ScreenButton, ScreenEvent, ScreenState, TradeList, TradeOffer, TradeStack,
 };
 pub use horizon::mods::{
     actions, audio, browser, chat, command, entity, entity_pose, game, hand, hud, input, inventory,
-    inventory_actions, item_model, log, recipes, render, screen, storage, ui, world,
+    inventory_actions, item_model, log, map, recipes, render, screen, storage, ui, world,
 };
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for

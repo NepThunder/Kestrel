@@ -29,11 +29,11 @@ use {
         ui,
     },
     horizon_mods::{
-        Clock, ModAction, ModArmPose, ModBlockDisplay, ModBlockTarget, ModDisplayContext,
-        ModEntityPoseState, ModFace, ModFlatDisplay, ModHand, ModHandState, ModItemUse, ModKey,
-        ModPoseSwingAnim, ModPoseTarget, ModSlotMove, ModSwingAnim, ModSwingKind, ModWheelEvent,
-        Mods, Output, Player, Runs, ServerPlayer, Snapshot, SnapshotCamera, Status, UiScreen,
-        UiWidget, WorldView,
+        Clock, MapTileData, MapView, ModAction, ModArmPose, ModBlockDisplay, ModBlockTarget,
+        ModDisplayContext, ModEntityPoseState, ModFace, ModFlatDisplay, ModHand, ModHandState,
+        ModItemUse, ModKey, ModMapImage, ModMapView, ModPoseSwingAnim, ModPoseTarget, ModSlotMove,
+        ModSwingAnim, ModSwingKind, ModWheelEvent, Mods, Output, Player, Runs, ServerPlayer,
+        Snapshot, SnapshotCamera, Status, UiScreen, UiWidget, WorldView,
     },
     std::time::Instant,
     winit::{event::MouseButton, keyboard::KeyCode},
@@ -171,6 +171,23 @@ pub(super) struct ModsState {
     /// the spyglass.
     #[cfg(feature = "mods")]
     pub(super) zoom_ratio: Option<f32>,
+    /// A client map view is lent for the client tick right now
+    /// (capability `map`, API 25, [`Game::lend_client_map`]):
+    /// the minimap cache's tiles, cloned, as the client world's
+    /// columns are.
+    #[cfg(feature = "mods")]
+    client_map_lent: bool,
+    /// A respawn is owed to the `map` mods (API 25): a server
+    /// dimension entry began from the death screen, and the
+    /// replacement player's making spends it
+    /// (`Game::note_mod_respawned`).
+    #[cfg(feature = "mods")]
+    pub(super) respawn_armed: bool,
+    /// The map screen's game-side state (API 25,
+    /// `game/mod_map.rs`): the winning mod's set, the game's
+    /// view of it, and the press in flight.
+    #[cfg(feature = "mods")]
+    pub(super) map_screen: Option<super::mod_map::ModMapScreenState>,
 }
 
 /// A mod action's face (API 21) as the game's pick names it: the
@@ -243,6 +260,80 @@ pub(super) fn slot_gate_performs(
         && matches!(screen, super::Screen::Playing | super::Screen::Inventory)
 }
 
+/// Whether a death opens the death screen (API 25): the
+/// dedupe law of capability `map`'s `died` pushes. Each of
+/// the three entries (a server's health packet, its combat
+/// kill packet, the simulated player's tick) opens the screen
+/// under this guard and pushes `died` only inside it, so one
+/// death makes one screen and one event; a death the rule
+/// hides never opens it and pushes nothing (its place still
+/// reads through `map.last-death`). Not feature-gated: the
+/// three entries compute it in every build, as the slot-move
+/// gate above is.
+pub(super) fn death_opens_screen(screen: super::Screen) -> bool {
+    screen != super::Screen::Dead
+}
+
+/// The world place under a map screen's pointer (API 25):
+/// the view's centre plus the pointer's offset from the
+/// window's centre, at the view's scale — right is east,
+/// down is south, as the image lies.
+#[cfg(feature = "mods")]
+pub(super) fn map_click_world(
+    view: ModMapView,
+    cursor: (f32, f32),
+    size: (f32, f32),
+) -> (f64, f64) {
+    (
+        view.center_x + f64::from(cursor.0 - size.0 / 2.0) * f64::from(view.blocks_per_pixel),
+        view.center_z + f64::from(cursor.1 - size.1 / 2.0) * f64::from(view.blocks_per_pixel),
+    )
+}
+
+/// A map view dragged by `delta` GUI pixels (API 25): the
+/// centre moves against the drag (the ground follows the
+/// pointer), clamped into the image's own world extent — a
+/// view may centre on the image's edge, never past it.
+#[cfg(feature = "mods")]
+pub(super) fn map_pan(view: ModMapView, image: &ModMapImage, delta: (f32, f32)) -> ModMapView {
+    let mut view = view;
+    view.center_x -= f64::from(delta.0) * f64::from(view.blocks_per_pixel);
+    view.center_z -= f64::from(delta.1) * f64::from(view.blocks_per_pixel);
+    let (hw, hh) = (
+        f64::from(image.width) * f64::from(image.blocks_per_pixel) / 2.0,
+        f64::from(image.height) * f64::from(image.blocks_per_pixel) / 2.0,
+    );
+    view.center_x = view.center_x.clamp(
+        f64::from(image.center_x) - hw,
+        f64::from(image.center_x) + hw,
+    );
+    view.center_z = view.center_z.clamp(
+        f64::from(image.center_z) - hh,
+        f64::from(image.center_z) + hh,
+    );
+    view
+}
+
+/// A map view wheeled by `steps` (API 25): a step doubles or
+/// halves the scale, clamped to 0.125..=128 blocks per pixel,
+/// and the centre moves so the world place under the pointer
+/// stays under it.
+#[cfg(feature = "mods")]
+pub(super) fn map_zoom(
+    view: ModMapView,
+    cursor: (f32, f32),
+    size: (f32, f32),
+    steps: f32,
+) -> ModMapView {
+    let (wx, wz) = map_click_world(view, cursor, size);
+    let bpp = (view.blocks_per_pixel * 2f32.powf(-steps)).clamp(0.125, 128.0);
+    let mut view = view;
+    view.blocks_per_pixel = bpp;
+    view.center_x = wx - f64::from(cursor.0 - size.0 / 2.0) * f64::from(bpp);
+    view.center_z = wz - f64::from(cursor.1 - size.1 / 2.0) * f64::from(bpp);
+    view
+}
+
 #[cfg(all(test, feature = "mods"))]
 mod screen_tests {
     use super::mod_trade_performs;
@@ -260,6 +351,103 @@ mod screen_tests {
         assert!(!mod_trade_performs(Some(0), 0));
         // The merchant closed since the choice was queued.
         assert!(!mod_trade_performs(None, 0));
+    }
+}
+
+#[cfg(all(test, feature = "mods"))]
+mod map_tests {
+    use super::{Screen, death_opens_screen, map_click_world, map_pan, map_zoom};
+    use horizon_mods::{ModMapImage, ModMapView};
+
+    fn view(cx: f64, cz: f64, bpp: f32) -> ModMapView {
+        ModMapView {
+            center_x: cx,
+            center_z: cz,
+            blocks_per_pixel: bpp,
+        }
+    }
+
+    /// A 100x50 image over the world at 2 blocks a pixel,
+    /// centred on (1000, -500): its extent is x 900..=1100,
+    /// z -550..=-450.
+    fn image() -> ModMapImage {
+        ModMapImage {
+            width: 100,
+            height: 50,
+            palette: vec![0xFF00_0000],
+            pixels: vec![0; 5000],
+            center_x: 1000,
+            center_z: -500,
+            blocks_per_pixel: 2.0,
+        }
+    }
+
+    /// The death dedupe law (API 25): a death opens the death
+    /// screen — and pushes `died` — from any screen but the
+    /// death screen itself, so a second health or kill packet
+    /// for the same death opens nothing and pushes nothing.
+    #[test]
+    fn a_death_opens_the_screen_unless_it_stands() {
+        assert!(death_opens_screen(Screen::Playing));
+        assert!(death_opens_screen(Screen::Paused));
+        assert!(death_opens_screen(Screen::Inventory));
+        assert!(death_opens_screen(Screen::Chat));
+        assert!(!death_opens_screen(Screen::Dead));
+    }
+
+    /// Clicks read the world off the view's centre (API 25):
+    /// the centre of the window is the view's centre, and an
+    /// offset reads at the view's scale, right east, down
+    /// south.
+    #[test]
+    fn clicks_read_the_world_off_the_view_centre() {
+        let v = view(100.0, -50.0, 2.0);
+        assert_eq!(
+            map_click_world(v, (100.0, 50.0), (200.0, 100.0)),
+            (100.0, -50.0)
+        );
+        assert_eq!(
+            map_click_world(v, (150.0, 25.0), (200.0, 100.0)),
+            (200.0, -100.0)
+        );
+    }
+
+    /// A pan moves the centre against the drag and stops at
+    /// the image's own edge (API 25).
+    #[test]
+    fn pans_follow_the_pointer_and_stop_at_the_images_edge() {
+        let img = image();
+        let v = view(1000.0, -500.0, 2.0);
+        let panned = map_pan(v, &img, (10.0, -5.0));
+        assert_eq!((panned.center_x, panned.center_z), (980.0, -490.0));
+        let clamped = map_pan(v, &img, (100_000.0, 0.0));
+        assert_eq!(clamped.center_x, 900.0);
+        let clamped = map_pan(v, &img, (-100_000.0, 100_000.0));
+        assert_eq!((clamped.center_x, clamped.center_z), (1100.0, -550.0));
+    }
+
+    /// A zoom doubles toward the pointer — the world place
+    /// under it stays under it — and clamps to the interface's
+    /// scale range (API 25).
+    #[test]
+    fn zooms_double_toward_the_pointer_and_clamp() {
+        let v = view(0.0, 0.0, 4.0);
+        let z = map_zoom(v, (100.0, 50.0), (200.0, 100.0), 1.0);
+        assert_eq!(z.blocks_per_pixel, 2.0);
+        assert_eq!((z.center_x, z.center_z), (0.0, 0.0));
+        let z = map_zoom(v, (150.0, 50.0), (200.0, 100.0), 1.0);
+        assert_eq!(
+            map_click_world(z, (150.0, 50.0), (200.0, 100.0)),
+            (200.0, 0.0)
+        );
+        assert_eq!(
+            map_zoom(v, (100.0, 50.0), (200.0, 100.0), 100.0).blocks_per_pixel,
+            0.125
+        );
+        assert_eq!(
+            map_zoom(v, (100.0, 50.0), (200.0, 100.0), -100.0).blocks_per_pixel,
+            128.0
+        );
     }
 }
 
@@ -978,6 +1166,11 @@ impl Game<'_> {
         false
     }
     pub(super) fn return_client_world(&mut self) {}
+    /// API 25: no mod runs, so no tile view is ever lent.
+    pub(super) fn lend_client_map(&mut self) -> bool {
+        false
+    }
+    pub(super) fn return_client_map(&mut self) {}
     pub(super) fn tick_mods(&mut self) {}
     pub(super) fn mods_frame(&mut self, _elapsed: Duration) {}
     pub(super) fn mod_hand_pose(&self, to_world: glam::Mat4, _two_handed_map: bool) -> glam::Mat4 {
@@ -1141,6 +1334,26 @@ fn state_string(registry: &BlockRegistry, state: BlockStateId) -> String {
         .map(|(k, v)| format!("{k}={v}"))
         .collect();
     format!("{}[{}]", s.name, props.join(","))
+}
+
+/// Capability `map`'s view for a client mod's calls (API
+/// 25): the minimap cache's tiles at the lend's moment,
+/// cloned out of the extras (with their versions) — the
+/// cache is a view of the loaded chunks, so the lend is too.
+/// Nothing is scanned for a read: a chunk the cache does not
+/// hold reads as no tile.
+#[cfg(feature = "mods")]
+struct LentMapView {
+    tiles: HashMap<(i32, i32), MapTileData>,
+}
+#[cfg(feature = "mods")]
+impl MapView for LentMapView {
+    fn tile(&self, cx: i32, cz: i32) -> Option<MapTileData> {
+        self.tiles.get(&(cx, cz)).cloned()
+    }
+    fn tile_version(&self, cx: i32, cz: i32) -> Option<u64> {
+        self.tiles.get(&(cx, cz)).map(|t| t.version)
+    }
 }
 
 /// The item-model group (API 23) a display context reads its
@@ -1372,6 +1585,7 @@ impl Game<'_> {
         let (entities, targeted) = self.mod_entities();
         let (effects, self_state) = self.mod_self_reads();
         let (screen_state, trades) = self.mod_screen_reads();
+        let (map_context, last_death) = self.mod_map_reads();
         Snapshot {
             player,
             clock,
@@ -1402,6 +1616,8 @@ impl Game<'_> {
             action_target: self.mod_action_target(),
             screen_state,
             trades,
+            map_context,
+            last_death,
         }
     }
     /// The camera the last frame rendered from, for `get-camera` /
@@ -1551,9 +1767,15 @@ impl Game<'_> {
         // on a frame, chat or command hook gets `None`, as on the title
         // screen. See [`Game::lend_client_world`].
         let lent_here = self.lend_client_world();
+        // API 25: the map cache is lent beside the world, for
+        // the same calls.
+        let map_lent_here = self.lend_client_map();
         self.mods.mods.tick(self.ticks);
         if lent_here {
             self.return_client_world();
+        }
+        if map_lent_here {
+            self.return_client_map();
         }
         // API 15: the sound mod's reverb character reaches the mixer.
         let env = self.mods.mods.sound_environment();
@@ -1629,6 +1851,41 @@ impl Game<'_> {
         }
     }
 
+    /// Lends the minimap cache's tiles to capability `map`
+    /// (API 25) for the client tick, when a running mod reads
+    /// them: a clone of the cache's versioned tiles, as
+    /// [`Game::lend_client_world`]'s columns are clones — on
+    /// any world, local or a server's, since the cache is the
+    /// client's own. Lent for the mods' tick, and by the frame
+    /// loop for its step, as the world view is. True when this
+    /// call did the lending.
+    pub(super) fn lend_client_map(&mut self) -> bool {
+        if !self.mods.mods.wants_map_tiles() || self.mods.client_map_lent {
+            return false;
+        }
+        let tiles = self.map_tile_data();
+        self.mods.mods.lend_map(Box::new(LentMapView { tiles }));
+        self.mods.client_map_lent = true;
+        true
+    }
+
+    /// Takes back what [`Game::lend_client_map`] lent: the
+    /// tiles are clones, so nothing is put back — the slot
+    /// only has to be empty again, as the world view's is.
+    pub(super) fn return_client_map(&mut self) {
+        if !self.mods.client_map_lent {
+            return;
+        }
+        self.mods.client_map_lent = false;
+        let Some(view) = self.mods.mods.take_map() else {
+            return;
+        };
+        let view: Box<dyn std::any::Any> = view;
+        if view.downcast::<LentMapView>().is_err() {
+            log::error!("Horizon: the client map's slot held another view at the tick's end");
+        }
+    }
+
     /// Restarts the dev mods rebuilt since the last check, once a second.
     pub(super) fn reload_dev_mods(&mut self) {
         if self.mods.dev.is_empty()
@@ -1655,6 +1912,9 @@ impl Game<'_> {
     /// Once per frame: the frame hook, and dev mods' rebuilds.
     pub(super) fn mods_frame(&mut self, elapsed: Duration) {
         self.reload_dev_mods();
+        // API 25: the map screen's bookkeeping runs even with
+        // nothing running — a stopped mod's screen must close.
+        self.sync_mod_map_screen();
         if !self.mods.mods.is_running() {
             return;
         }

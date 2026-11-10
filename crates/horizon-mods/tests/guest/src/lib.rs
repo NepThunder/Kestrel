@@ -19,15 +19,21 @@
 //! and dropped display (API 23); `/invclick`, `/invswap`,
 //! `/invthrow`, `/invdrag`, `/invdragspam`, `/invbad`,
 //! `/invspam` and `/invwheel` capability `inventory-actions`'
-//! slot clicks, drags and wheel poll (API 24); `tick` and
+//! slot clicks, drags and wheel poll (API 24); `/maptiles`,
+//! `/mapversions`, `/mapcontext`, `/mapdeath`, `/mappoll`,
+//! `/mapshow`, `/mapmini`, `/maphide`, `/mapbad` and
+//! `/mappollmap` capability `map`'s tile reads, context,
+//! death place, position events, map screen and minimap
+//! image (API 25); `tick` and
 //! `frame` do nothing, to measure the cost of a call.
 use horizon_mod_sdk::{
-    ActionHand, ActionTarget, Anchor, BlockDisplay, BlockTarget, ClickKind, ComponentMatch,
-    Decoration, DecorationPlace, DecorationTarget, DisplayContext, DragButton, DroppedDisplay,
-    Face, FlatDisplay, HandFov, HandFovMode, HandTransform, Highlight, Mod, ModelMatch, ModelRule,
-    PartOffset, PoseOffset, PoseTarget, Registration, ScreenButton, ScreenEvent, SoundAdjustment,
-    SoundQuery, SwingAnim, actions, audio, chat, entity_pose, game, hand, input, inventory_actions,
-    item_model, render, screen, storage,
+    ActionHand, ActionTarget, Anchor, BlockDisplay, BlockTarget, ChunkPos, ClickKind,
+    ComponentMatch, Corner, Decoration, DecorationPlace, DecorationTarget, DisplayContext,
+    DragButton, DroppedDisplay, Face, FlatDisplay, HandFov, HandFovMode, HandTransform, Highlight,
+    MapEvent, MapImage, MapLayer, MapMarker, MapScreen, MinimapImage, Mod, ModelMatch, ModelRule,
+    PartOffset, PoseOffset, PoseTarget, PositionEvent, Registration, ScreenButton, ScreenEvent,
+    SoundAdjustment, SoundQuery, SwingAnim, actions, audio, chat, entity_pose, game, hand, input,
+    inventory_actions, item_model, map, render, screen, storage,
 };
 
 struct Guest {
@@ -86,6 +92,16 @@ impl Mod for Guest {
             "invbad",
             "invspam",
             "invwheel",
+            "maptiles",
+            "mapversions",
+            "mapcontext",
+            "mapdeath",
+            "mappoll",
+            "mapshow",
+            "mapmini",
+            "maphide",
+            "mapbad",
+            "mappollmap",
         ]
         .into_iter()
         .fold(Registration::new(), Registration::command)
@@ -757,6 +773,163 @@ impl Mod for Guest {
                     })
                     .collect();
                 Ok(Some(format!("wheel [{}]", parts.join("; "))))
+            }
+            "maptiles" => {
+                // A 65-chunk ask first: over the cap, no tiles.
+                let wide: Vec<ChunkPos> = (0..65).map(|i| ChunkPos { x: i, z: 0 }).collect();
+                let over = map::tiles(&wide).len();
+                let ask = [
+                    ChunkPos { x: 0, z: 0 },
+                    ChunkPos { x: 1, z: 0 },
+                    ChunkPos { x: 0, z: 1 },
+                    ChunkPos { x: 5, z: 5 },
+                ];
+                let tiles = map::tiles(&ask);
+                let mut out = format!("tiles {} over {over}", tiles.len());
+                for t in &tiles {
+                    let (layer, cut) = match t.layer {
+                        MapLayer::Surface => ("surface", "-".to_string()),
+                        MapLayer::Cave => ("cave", t.cut_y.unwrap_or(0).to_string()),
+                    };
+                    let sum: u32 = t.colors.iter().map(|c| u32::from(*c)).sum();
+                    out += &format!(
+                        "; {},{} {layer} {cut} v{} c{sum} h{}/{} d{}",
+                        t.chunk_x, t.chunk_z, t.version, t.heights[0], t.heights[255], t.depths[0]
+                    );
+                }
+                Ok(Some(out))
+            }
+            "mapversions" => {
+                // A 257-chunk ask first: over the cap, nothing.
+                let wide: Vec<ChunkPos> = (0..257).map(|i| ChunkPos { x: i, z: 0 }).collect();
+                let over = map::tile_versions(&wide).len();
+                let ask = [
+                    ChunkPos { x: 0, z: 0 },
+                    ChunkPos { x: 1, z: 0 },
+                    ChunkPos { x: 0, z: 1 },
+                ];
+                let versions = map::tile_versions(&ask);
+                let mut out = format!("versions {} over {over}", versions.len());
+                for v in &versions {
+                    out += &format!("; {},{} v{}", v.chunk_x, v.chunk_z, v.version);
+                }
+                Ok(Some(out))
+            }
+            "mapcontext" => match map::context() {
+                Some(c) => Ok(Some(format!("context {} {}", c.dimension, c.world))),
+                None => Ok(Some("context none".into())),
+            },
+            "mapdeath" => match map::last_death() {
+                Some(p) => Ok(Some(format!(
+                    "death {} {} {} {}",
+                    p.dimension, p.x, p.y, p.z
+                ))),
+                None => Ok(Some("death none".into())),
+            },
+            "mappoll" => {
+                let parts: Vec<String> = map::poll_events()
+                    .iter()
+                    .map(|e| match e {
+                        PositionEvent::Died(p) => {
+                            format!("died {} {} {} {}", p.dimension, p.x, p.y, p.z)
+                        }
+                        PositionEvent::Respawned(p) => {
+                            format!("respawned {} {} {} {}", p.dimension, p.x, p.y, p.z)
+                        }
+                    })
+                    .collect();
+                Ok(Some(format!("events [{}]", parts.join("; "))))
+            }
+            "mapshow" => {
+                // 129 markers: the host keeps 128, and the
+                // first's 100-character label is cut to 64.
+                let mut markers: Vec<MapMarker> = (0..129)
+                    .map(|i| MapMarker {
+                        x: i,
+                        z: 0,
+                        color: 0xFF00_FF00,
+                        label: String::new(),
+                    })
+                    .collect();
+                markers[0] = MapMarker {
+                    x: 100,
+                    z: -200,
+                    color: 0xFFFF_0000,
+                    label: "m".repeat(100),
+                };
+                map::set_map_screen(Some(&MapScreen {
+                    image: MapImage {
+                        center_x: 100,
+                        center_z: -200,
+                        blocks_per_pixel: 2.0,
+                        width: 4,
+                        height: 3,
+                        palette: vec![0xFF11_2233, 0xFF44_5566],
+                        // Index 2 is past the palette: clear.
+                        pixels: vec![0, 1, 2, 0, 1, 0, 0, 1, 2, 1, 0, 1],
+                    },
+                    markers,
+                }));
+                Ok(Some("shown".into()))
+            }
+            "mapmini" => {
+                map::set_minimap_image(Some(&MinimapImage {
+                    corner: Corner::TopLeft,
+                    size: 100.0,
+                    round: true,
+                    image: MapImage {
+                        center_x: 0,
+                        center_z: 0,
+                        blocks_per_pixel: 1.0,
+                        width: 2,
+                        height: 2,
+                        palette: vec![0xFF00_00FF],
+                        pixels: vec![0, 0, 0, 0],
+                    },
+                }));
+                Ok(Some("mini".into()))
+            }
+            "maphide" => {
+                map::set_map_screen(None);
+                map::set_minimap_image(None);
+                Ok(Some("hidden".into()))
+            }
+            "mapbad" => {
+                // A 4x3 image with 5 pixels: malformed — the
+                // host drops it and sets nothing.
+                let image = MapImage {
+                    center_x: 0,
+                    center_z: 0,
+                    blocks_per_pixel: 1.0,
+                    width: 4,
+                    height: 3,
+                    palette: vec![0xFF00_0000],
+                    pixels: vec![0; 5],
+                };
+                map::set_map_screen(Some(&MapScreen {
+                    image: image.clone(),
+                    markers: Vec::new(),
+                }));
+                map::set_minimap_image(Some(&MinimapImage {
+                    corner: Corner::TopLeft,
+                    size: 100.0,
+                    round: false,
+                    image,
+                }));
+                Ok(Some("bad".into()))
+            }
+            "mappollmap" => {
+                let parts: Vec<String> = map::poll_map()
+                    .iter()
+                    .map(|e| match e {
+                        MapEvent::Clicked(c) => format!("clicked {} {} b{}", c.x, c.z, c.button),
+                        MapEvent::View(v) => {
+                            format!("view {} {} {}", v.center_x, v.center_z, v.blocks_per_pixel)
+                        }
+                        MapEvent::Closed => "closed".into(),
+                    })
+                    .collect();
+                Ok(Some(format!("map [{}]", parts.join("; "))))
             }
             _ => {
                 chat::show(&format!("hello {args} after {} ticks", self.ticks));

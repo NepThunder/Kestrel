@@ -188,6 +188,7 @@ mod mod_entities;
 mod mod_input;
 #[cfg(feature = "mods")]
 mod mod_inventory;
+mod mod_map;
 #[cfg(feature = "mods")]
 mod mod_panel;
 mod mod_render;
@@ -800,6 +801,10 @@ enum Screen {
     /// A `ui` mod's own screen, or its settings page from Options > Mods
     /// (game/mods.rs).
     Mod,
+    /// A `map` mod's full-screen map (capability `map`, API 25,
+    /// game/mod_map.rs): the game pans and zooms the mod's
+    /// image, and fields its clicks.
+    Map,
     /// DebugOptionsScreen, F3+F6 (game/debug_options.rs).
     DebugOptions,
 }
@@ -829,6 +834,7 @@ impl Screen {
             Screen::Win => "win",
             Screen::DebugOptions => "debug_options",
             Screen::Mod => "mod",
+            Screen::Map => "map",
         }
     }
 }
@@ -7223,7 +7229,7 @@ impl Game<'_> {
             let _ = player.set_health(0.0, false);
         }
         let dead = player.health.dead_or_dying();
-        if dead && self.screen != Screen::Dead {
+        if dead && mods::death_opens_screen(self.screen) {
             // Inventory.dropAll: every stack thrown in a random direction.
             let feet = [player.position.x, player.position.y, player.position.z];
             let at = [feet[0], feet[1] + 1.32, feet[2]];
@@ -7275,6 +7281,10 @@ impl Game<'_> {
                 self.death_focus = None;
                 self.capture(false);
                 self.ui.death_time = 0;
+                // Capability `map` (API 25): the death screen
+                // opened — the one `died` push of this death,
+                // under the guard above.
+                self.note_mod_position_event(true);
             }
         } else if dead {
             // LivingEntity.tickDeath: 20 ticks after dying the player is
@@ -8482,6 +8492,7 @@ impl Game<'_> {
             }
             Screen::Chat => self.draw_chat_screen(&mut batch),
             Screen::Mod => self.draw_mod_screen(&mut batch),
+            Screen::Map => self.draw_mod_map_screen(&mut batch),
             Screen::Playing | Screen::Options | Screen::Win => {}
         }
         self.fire_screen_render_post(&mut batch);
@@ -15835,6 +15846,7 @@ impl Game<'_> {
                 Screen::Chat => self.close_chat(chat::ChatExit::Intentional),
                 Screen::Win => self.close_win_screen()?,
                 Screen::Mod => self.close_mod_screen(true),
+                Screen::Map => self.mod_map_close(),
                 Screen::DebugOptions => self.close_debug_options(),
             },
             KeyCode::Digit1
@@ -17470,6 +17482,9 @@ impl Game<'_> {
                         if self.screen == Screen::DebugOptions {
                             self.debug_options_drag();
                         }
+                        if self.screen == Screen::Map {
+                            self.mod_map_drag();
+                        }
                         if self.screen == Screen::WorldOptions {
                             self.world_options_drag();
                         }
@@ -17588,6 +17603,9 @@ impl Game<'_> {
                     }
                     if self.screen == Screen::Mod && d != 0.0 {
                         self.mod_screen_scroll(d);
+                    }
+                    if self.screen == Screen::Map && d != 0.0 {
+                        self.mod_map_wheel(d);
                     }
                     // AbstractContainerScreen.mouseScrolled: a bundle under the
                     // cursor takes the wheel before the screen's own scrolling.
@@ -17888,6 +17906,7 @@ impl Game<'_> {
                         }
                         Screen::Stats if button == MouseButton::Left => self.stats_release(),
                         Screen::Mod if pressed => self.mod_screen_click(button),
+                        Screen::Map if button == MouseButton::Left => self.mod_map_mouse(pressed),
                         _ => {}
                     }
                 }
@@ -18280,6 +18299,9 @@ impl Game<'_> {
                         // next step's return then takes it back (the
                         // lend is flag-guarded).
                         self.lend_client_world();
+                        // API 25: the map cache stays lent for
+                        // the step beside it.
+                        self.lend_client_map();
                         if self.title.is_none() && !self.pause {
                             let tick = Instant::now();
                             horizon_client::spans::time("tick", || self.tick())?;
@@ -18297,6 +18319,7 @@ impl Game<'_> {
                         self.tick_music();
                         self.tick_sound_engine();
                         self.return_client_world();
+                        self.return_client_map();
                         self.clock.record(started.elapsed());
                         spent += started.elapsed();
                         if let Some(report) = self.clock.take_sprint_report() {

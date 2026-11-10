@@ -20,8 +20,8 @@ id = "test_guest"
 name = "Test Guest"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "storage", "audio", "render", "input", "actions", "screen", "inventory-actions"]
-experimental = ["audio", "render", "input", "actions", "screen", "inventory-actions"]
+capabilities = ["game-read", "chat", "storage", "audio", "render", "input", "actions", "screen", "inventory-actions", "map"]
+experimental = ["audio", "render", "input", "actions", "screen", "inventory-actions", "map"]
 "#;
 const UI_MANIFEST: &str = r#"
 id = "test_ui_guest"
@@ -79,6 +79,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "inventory-actions-probe",
                 "-p",
+                "map-probe",
+                "-p",
                 "horizon-mods-test-guest",
                 "-p",
                 "horizon-mods-test-ui-guest",
@@ -120,6 +122,7 @@ fn mods_dir() -> &'static Path {
                 "inventory_actions_probe",
                 example("inventory-actions-probe"),
             ),
+            ("map_probe", example("map-probe")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
         ];
@@ -1171,6 +1174,215 @@ fn screen_state_buttons_and_poll_flow() {
     assert!(mods.screen_highlights().is_empty());
 }
 
+/// Capability `map` (API 25): tiles come back verbatim through
+/// the lent view (arrays in the game's order, the wall bit
+/// intact, the cave tile's cut), an unheld chunk is absent, a
+/// 65-chunk call returns nothing and a 257-chunk versions call
+/// returns nothing, versions match the tiles', `last-death`
+/// and `context` read back as fixtured, `poll-events` drains a
+/// pushed died-then-respawned pair in order and the queue caps
+/// at 256, the map screen and minimap image the guest set are
+/// the ones the aggregates carry (markers clipped, labels
+/// clipped), a malformed image sets nothing, and the map
+/// events drain through `poll-map` in order.
+#[test]
+fn map_tiles_events_and_screen_flow() {
+    use horizon_mods::{
+        MapTileData, MapView, ModMapClick, ModMapContext, ModMapCorner, ModMapEvent, ModMapLayer,
+        ModPosition, ModPositionEvent,
+    };
+    /// The lent view over the fixture's two chunks: (0, 0) a
+    /// surface tile at version 3 — colour 7 everywhere but a
+    /// walled 9 at the first column — and (1, 0) a cave tile
+    /// cut at 40, version 1.
+    struct Fixture;
+    impl MapView for Fixture {
+        fn tile(&self, cx: i32, cz: i32) -> Option<MapTileData> {
+            match (cx, cz) {
+                (0, 0) => {
+                    let mut colors = [7u8; 256];
+                    colors[0] = 0x80 | 9;
+                    Some(MapTileData {
+                        layer: ModMapLayer::Surface,
+                        cut_y: None,
+                        version: 3,
+                        colors,
+                        heights: [64; 256],
+                        depths: [0; 256],
+                    })
+                }
+                (1, 0) => {
+                    let mut depths = [0u8; 256];
+                    depths[0] = 2;
+                    Some(MapTileData {
+                        layer: ModMapLayer::Cave,
+                        cut_y: Some(40),
+                        version: 1,
+                        colors: [3; 256],
+                        heights: [40; 256],
+                        depths,
+                    })
+                }
+                _ => None,
+            }
+        }
+        fn tile_version(&self, cx: i32, cz: i32) -> Option<u64> {
+            self.tile(cx, cz).map(|t| t.version)
+        }
+    }
+    let mut mods = load("horizon_mods_test_guest.kmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert!(mods.wants_map());
+    assert!(mods.wants_map_tiles());
+    let feedback = |mods: &mut Mods| -> Vec<(String, bool)> {
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Feedback { text, error } => Some((text, error)),
+                _ => None,
+            })
+            .collect()
+    };
+    let at = |x: i32, y: i32, z: i32| ModPosition {
+        dimension: "minecraft:overworld".into(),
+        x,
+        y,
+        z,
+    };
+    let mut snapshot = player();
+    snapshot.map_context = Some(ModMapContext {
+        dimension: "minecraft:overworld".into(),
+        world: "Steve's World".into(),
+    });
+    snapshot.last_death = Some(at(12, 64, -4));
+    mods.set_snapshot(snapshot);
+    // No view lent: the reads find nothing.
+    assert!(mods.command("maptiles"));
+    assert_eq!(feedback(&mut mods), [("tiles 0 over 0".to_string(), false)]);
+    // Lent, the tiles come back verbatim, and the versions
+    // agree with them; unheld chunks are absent from both.
+    mods.lend_map(Box::new(Fixture));
+    assert!(mods.command("maptiles"));
+    assert_eq!(
+        feedback(&mut mods),
+        [(
+            "tiles 2 over 0; 0,0 surface - v3 c1922 h64/64 d0; \
+             1,0 cave 40 v1 c768 h40/40 d2"
+                .to_string(),
+            false
+        )]
+    );
+    assert!(mods.command("mapversions"));
+    assert_eq!(
+        feedback(&mut mods),
+        [("versions 2 over 0; 0,0 v3; 1,0 v1".to_string(), false)]
+    );
+    // The context and the last death read back as fixtured.
+    assert!(mods.command("mapcontext"));
+    assert_eq!(
+        feedback(&mut mods),
+        [(
+            "context minecraft:overworld Steve's World".to_string(),
+            false
+        )]
+    );
+    assert!(mods.command("mapdeath"));
+    assert_eq!(
+        feedback(&mut mods),
+        [("death minecraft:overworld 12 64 -4".to_string(), false)]
+    );
+    // A died-then-respawned pair drains in order; a second
+    // poll is empty.
+    mods.push_position_event(ModPositionEvent::Died(at(12, 64, -4)));
+    mods.push_position_event(ModPositionEvent::Respawned(at(8, 65, 2)));
+    assert!(mods.command("mappoll"));
+    assert_eq!(
+        feedback(&mut mods),
+        [(
+            "events [died minecraft:overworld 12 64 -4; respawned minecraft:overworld 8 65 2]"
+                .to_string(),
+            false
+        )]
+    );
+    assert!(mods.command("mappoll"));
+    assert_eq!(feedback(&mut mods), [("events []".to_string(), false)]);
+    // The queue keeps the newest 256: of 300 deaths the first
+    // polled is the 45th pushed.
+    for i in 0..300 {
+        mods.push_position_event(ModPositionEvent::Died(at(i, 64, 0)));
+    }
+    assert!(mods.command("mappoll"));
+    let (text, error) = &feedback(&mut mods)[0];
+    assert!(!error);
+    assert!(
+        text.starts_with("events [died minecraft:overworld 44 "),
+        "{text}"
+    );
+    assert_eq!(text.matches("died").count(), 256);
+    // The screen the guest set is the aggregate's, its
+    // markers clipped to 128 and the first's label to 64
+    // characters; the view starts at the image's centre and
+    // scale.
+    assert!(mods.command("mapshow"));
+    assert_eq!(feedback(&mut mods), [("shown".to_string(), false)]);
+    let (owner, seq, screen, view) = mods.map_screen().expect("the guest's screen");
+    assert_eq!(owner, 0);
+    assert_eq!((screen.image.width, screen.image.height), (4, 3));
+    assert_eq!(screen.image.pixels.len(), 12);
+    assert_eq!(screen.markers.len(), 128);
+    assert_eq!(screen.markers[0].label.len(), 64);
+    assert_eq!(
+        (view.center_x, view.center_z, view.blocks_per_pixel),
+        (100.0, -200.0, 2.0)
+    );
+    // The minimap image likewise.
+    assert!(mods.command("mapmini"));
+    assert_eq!(feedback(&mut mods), [("mini".to_string(), false)]);
+    let (_, _, mini) = mods.minimap_image().expect("the guest's image");
+    assert_eq!(mini.corner, ModMapCorner::TopLeft);
+    assert_eq!(mini.size, 100.0);
+    assert!(mini.round);
+    // A malformed image sets nothing: both aggregates stand.
+    assert!(mods.command("mapbad"));
+    assert_eq!(feedback(&mut mods), [("bad".to_string(), false)]);
+    let (_, seq_after, _, _) = mods.map_screen().expect("the screen stands");
+    assert_eq!(seq_after, seq);
+    assert!(mods.minimap_image().is_some());
+    // The map events drain in order: a click, a view, a close.
+    mods.push_map_event(
+        0,
+        ModMapEvent::Clicked(ModMapClick {
+            x: 12.5,
+            z: -3.25,
+            button: 0,
+        }),
+    );
+    mods.push_map_event(
+        0,
+        ModMapEvent::View(horizon_mods::ModMapView {
+            center_x: 100.0,
+            center_z: -200.0,
+            blocks_per_pixel: 2.0,
+        }),
+    );
+    mods.push_map_event(0, ModMapEvent::Closed);
+    assert!(mods.command("mappollmap"));
+    assert_eq!(
+        feedback(&mut mods),
+        [(
+            "map [clicked 12.5 -3.25 b0; view 100 -200 2; closed]".to_string(),
+            false
+        )]
+    );
+    // Clearing both takes both aggregates down.
+    assert!(mods.command("maphide"));
+    assert_eq!(feedback(&mut mods), [("hidden".to_string(), false)]);
+    assert!(mods.map_screen().is_none());
+    assert!(mods.minimap_image().is_none());
+    // The lent view comes back.
+    assert!(mods.take_map().is_some());
+}
+
 /// Capability `game-read`'s self reads (API 18): the snapshot's
 /// effects and self-state reach the mod verbatim — an infinite
 /// effect's -1 among them, and the mount's health —, both read
@@ -1619,8 +1831,8 @@ id = "too_new"
 name = "Too New"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world", "inventory", "entity", "audio", "actions", "screen", "inventory-actions"]
-experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audio", "actions", "screen", "inventory-actions"]
+capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world", "inventory", "entity", "audio", "actions", "screen", "inventory-actions", "map"]
+experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audio", "actions", "screen", "inventory-actions", "map"]
 "#;
     std::fs::write(dir.join("horizon-mod.toml"), manifest).unwrap();
     std::fs::write(dir.join("mod.wasm"), wasm).unwrap();
@@ -1663,6 +1875,8 @@ experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audi
     assert_eq!(level("item_probe.kmod"), 23);
     // The inventory actions probe moves stacks (`inventory-actions.click`, level 24).
     assert_eq!(level("inventory_actions_probe.kmod"), 24);
+    // The map probe reads tiles (`map.tiles`, level 25).
+    assert_eq!(level("map_probe.kmod"), 25);
 }
 
 #[test]

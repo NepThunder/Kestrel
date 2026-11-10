@@ -8,10 +8,11 @@
 //! test written in TOML, `tests/<name>.toml` in the mod's folder: steps, each
 //! saying what happens and what the mod must have shown by then.
 use crate::{
-    BlockPos, Clock, Container, Corner, Entity, GameMode, InvStack, ItemModelIndex, ModAction,
-    ModActionTarget, ModArmPose, ModBlockDisplay, ModBlockTarget, ModClickKind, ModDragButton,
-    ModEffect, ModEntityPoseState, ModEntityTarget, ModFace, ModFlatDisplay, ModHand, ModItemUse,
-    ModPoseSwingAnim, ModScreenEvent, ModScreenState, ModSelfState, ModSlotMove, ModTradeList,
+    BlockPos, Clock, Container, Corner, Entity, GameMode, InvStack, ItemModelIndex, MapTileData,
+    MapView, ModAction, ModActionTarget, ModArmPose, ModBlockDisplay, ModBlockTarget, ModClickKind,
+    ModDragButton, ModEffect, ModEntityPoseState, ModEntityTarget, ModFace, ModFlatDisplay,
+    ModHand, ModItemUse, ModMapContext, ModMapLayer, ModPoseSwingAnim, ModPosition,
+    ModPositionEvent, ModScreenEvent, ModScreenState, ModSelfState, ModSlotMove, ModTradeList,
     ModTradeOffer, ModTradeStack, ModWheelEvent, Mods, Output, Panel, Player, PlayerInventory,
     ServerPlayer, Snapshot, Status, Target, WorldDrawLine,
 };
@@ -113,6 +114,17 @@ pub struct TestGame {
     /// `inventory-actions`, API 24): the log of what the game
     /// would have performed, for a test to read back.
     pub slot_moves: Vec<String>,
+    /// What the mod reads with capability `map` (API 25): the
+    /// tiles the game's cache holds, lent to the mod's calls
+    /// for a step. A script sets them with its `tiles` steps.
+    pub map_tiles: std::collections::HashMap<(i32, i32), MapTileData>,
+    /// What the mod reads with `map.context` (API 25): the
+    /// place the player is in. None until a test sets it, as
+    /// on the title screen.
+    pub map_context: Option<ModMapContext>,
+    /// What the mod reads with `map.last-death` (API 25): the
+    /// place the player last died. None until a test sets it.
+    pub last_death: Option<ModPosition>,
 }
 
 /// The world a script's mod reads: [`TestGame::world`] and
@@ -169,6 +181,21 @@ impl crate::WorldView for ScriptWorld {
         (ok && closed)
             .then_some(())
             .ok_or_else(|| format!("{state} is not a block state"))
+    }
+}
+
+/// The map a script's mod reads (capability `map`, API 25):
+/// [`TestGame::map_tiles`], copied for a step.
+struct ScriptMap {
+    tiles: std::collections::HashMap<(i32, i32), MapTileData>,
+}
+
+impl MapView for ScriptMap {
+    fn tile(&self, cx: i32, cz: i32) -> Option<MapTileData> {
+        self.tiles.get(&(cx, cz)).cloned()
+    }
+    fn tile_version(&self, cx: i32, cz: i32) -> Option<u64> {
+        self.tiles.get(&(cx, cz)).map(|t| t.version)
     }
 }
 
@@ -244,6 +271,9 @@ impl TestGame {
             trades: None,
             actions: Vec::new(),
             slot_moves: Vec::new(),
+            map_tiles: Default::default(),
+            map_context: None,
+            last_death: None,
         };
         copy_mod(kmod, &copy)?;
         game.start()?;
@@ -315,6 +345,8 @@ impl TestGame {
             action_target: self.action_target.clone(),
             screen_state: self.screen_state.clone(),
             trades: self.trades.clone(),
+            map_context: self.map_context.clone(),
+            last_death: self.last_death.clone(),
             ..Snapshot::default()
         });
         // The game's per-frame pose push (API 20), played by the
@@ -1178,6 +1210,96 @@ impl ScreenSet {
     }
 }
 
+/// One tile of a step (capability `map`, API 25), in the
+/// WIT record's shape: its chunk, its layer (`surface`, or
+/// `cave` with its `cut`), its version, and its three arrays
+/// — each short array zero-padded to the tile's 256, as a
+/// fixture names only the columns it cares about.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct TileSet {
+    cx: i32,
+    cz: i32,
+    #[serde(default = "default_tile_layer")]
+    layer: String,
+    cut: Option<i32>,
+    #[serde(default = "default_tile_version")]
+    version: u64,
+    #[serde(default)]
+    colors: Vec<u8>,
+    #[serde(default)]
+    heights: Vec<i16>,
+    #[serde(default)]
+    depths: Vec<u8>,
+}
+
+fn default_tile_layer() -> String {
+    "surface".into()
+}
+
+fn default_tile_version() -> u64 {
+    1
+}
+
+impl TileSet {
+    fn to_tile(&self) -> MapTileData {
+        let pad = |v: &[u8]| {
+            let mut out = [0u8; 256];
+            out[..v.len().min(256)].copy_from_slice(&v[..v.len().min(256)]);
+            out
+        };
+        let pad_h = |v: &[i16]| {
+            let mut out = [0i16; 256];
+            out[..v.len().min(256)].copy_from_slice(&v[..v.len().min(256)]);
+            out
+        };
+        let (layer, cut_y) = match self.layer.as_str() {
+            "cave" => (ModMapLayer::Cave, self.cut),
+            _ => (ModMapLayer::Surface, None),
+        };
+        MapTileData {
+            layer,
+            cut_y,
+            version: self.version,
+            colors: pad(&self.colors),
+            heights: pad_h(&self.heights),
+            depths: pad(&self.depths),
+        }
+    }
+}
+
+/// The place a step's player is in (capability `map`, API
+/// 25), in the `map-context` record's shape.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct ContextSet {
+    dimension: String,
+    world: String,
+}
+
+/// A place in a step (capability `map`, API 25), in the
+/// `position` record's shape: a last death to read, or an
+/// event to push (`died-at` / `respawned-at`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct PositionSet {
+    dimension: String,
+    x: i32,
+    y: i32,
+    z: i32,
+}
+
+impl PositionSet {
+    fn to_position(&self) -> ModPosition {
+        ModPosition {
+            dimension: self.dimension.clone(),
+            x: self.x,
+            y: self.y,
+            z: self.z,
+        }
+    }
+}
+
 impl SelfSet {
     fn to_self_state(&self) -> ModSelfState {
         ModSelfState {
@@ -1228,8 +1350,10 @@ impl EntitySet {
 /// One step. Its parts happen in this order: `reload`, `title-screen`,
 /// `blocks`, `lights`, `join`, `player`, `clock`, `inventory`, `container`,
 /// `close-container`, `dead`, `entities`, `effects`, `self`, `can-zoom`,
-/// `spyglass`, `idle-ms`, `poses`, `target`, `screen`, `press-button`,
-/// `middle-click`, `middle-click-none`, `wheel`, `multiplayer`, `ticks`,
+/// `spyglass`, `idle-ms`, `poses`, `target`, `screen`, `tiles`,
+/// `map-context`, `last-death`, `press-button`,
+/// `middle-click`, `middle-click-none`, `wheel`, `died-at`, `respawned-at`,
+/// `multiplayer`, `ticks`,
 /// `frames`, `chat`, `command`, `break`, `place`, `leave`; then the blocks the mod set are made, and `expect`
 /// is checked against what the mod showed and changed during the step.
 /// For a server mod, `player`, `chat`, `command`, `break` and `place` are
@@ -1287,6 +1411,18 @@ pub struct Step {
     /// the last ones. (A script cannot clear the offers back to
     /// none — no probe needs to.)
     screen: Option<ScreenSet>,
+    /// The game's map tiles (capability `map`, API 25):
+    /// replaces the fixture wholesale; a step without it keeps
+    /// the last one.
+    tiles: Option<Vec<TileSet>>,
+    /// The place the player is in (capability `map`, API 25):
+    /// replaces the fixture; a step without it keeps the last
+    /// one.
+    map_context: Option<ContextSet>,
+    /// Where the player last died (capability `map`, API 25):
+    /// replaces the fixture; a step without it keeps the last
+    /// one.
+    last_death: Option<PositionSet>,
     /// A button the mod declared is pressed (API 22): its id,
     /// queued for the mod's `screen.poll` before the step's
     /// ticks, as the game queues a real press.
@@ -1303,6 +1439,14 @@ pub struct Step {
     /// the step's ticks, as the game reports a real turn.
     #[serde(default)]
     wheel: Vec<WheelSet>,
+    /// The player dies here (capability `map`, API 25): a
+    /// `died` event at this place is pushed to the mod's
+    /// `map.poll-events` queue before the step's ticks, as the
+    /// game pushes it when the death screen opens.
+    died_at: Option<PositionSet>,
+    /// The player comes back here (capability `map`, API 25):
+    /// a `respawned` event, as `died-at` pushes its own.
+    respawned_at: Option<PositionSet>,
     /// Multiplayer from this step on (capability `entity`): the list
     /// reads empty and health reads None, while the crosshair target
     /// still answers.
@@ -1383,6 +1527,14 @@ pub struct Expect {
     /// `flat <..> blocks <..> shadows <..>` (capability
     /// `render`'s `item-model`, API 23).
     dropped_display: Option<String>,
+    /// The mod's map screen after the step (capability `map`,
+    /// API 25): `"none"`, or the stored image spelled
+    /// `"{width}x{height} scale {bpp} at {cx} {cz} markers {n}"`.
+    map_screen: Option<String>,
+    /// The mod's minimap image after the step (capability
+    /// `map`, API 25): `"none"`, or the stored image spelled
+    /// `"{corner} {size} {width}x{height}"`.
+    minimap_image: Option<String>,
     /// The mod is turned off during this step, for a reason holding this text.
     /// Without it, a mod that stops fails the test.
     stopped: Option<String>,
@@ -1489,6 +1641,15 @@ impl Step {
         if self.screen.is_some() {
             parts.push("screen".to_string());
         }
+        if self.tiles.is_some() {
+            parts.push("tiles".to_string());
+        }
+        if self.map_context.is_some() {
+            parts.push("map-context".to_string());
+        }
+        if self.last_death.is_some() {
+            parts.push("last-death".to_string());
+        }
         if let Some(id) = self.press_button {
             parts.push(format!("press button {id}"));
         }
@@ -1497,6 +1658,12 @@ impl Step {
         }
         if !self.wheel.is_empty() {
             parts.push(count(self.wheel.len() as u64, "wheel turn"));
+        }
+        if self.died_at.is_some() {
+            parts.push("died".to_string());
+        }
+        if self.respawned_at.is_some() {
+            parts.push("respawned".to_string());
         }
         if self.multiplayer {
             parts.push("multiplayer".to_string());
@@ -1547,6 +1714,9 @@ impl Step {
         game.mods.lend_world(Box::new(ScriptWorld {
             blocks: game.world.clone(),
             lights: game.lights.clone(),
+        }));
+        game.mods.lend_map(Box::new(ScriptMap {
+            tiles: game.map_tiles.clone(),
         }));
         if let Some(name) = &self.join {
             game.join(name);
@@ -1623,6 +1793,23 @@ impl Step {
             game.screen_state = set.to_state();
             game.trades = set.to_trades();
         }
+        if let Some(set) = &self.tiles {
+            game.map_tiles = set.iter().map(|t| ((t.cx, t.cz), t.to_tile())).collect();
+            // The step's calls read this step's tiles: re-lend.
+            game.mods.take_map();
+            game.mods.lend_map(Box::new(ScriptMap {
+                tiles: game.map_tiles.clone(),
+            }));
+        }
+        if let Some(set) = &self.map_context {
+            game.map_context = Some(ModMapContext {
+                dimension: set.dimension.clone(),
+                world: set.world.clone(),
+            });
+        }
+        if let Some(set) = &self.last_death {
+            game.last_death = Some(set.to_position());
+        }
         if let Some(id) = self.press_button {
             game.mods.screen_event(0, ModScreenEvent::Button(id));
         }
@@ -1637,6 +1824,14 @@ impl Step {
                 slot: turn.slot,
                 steps: turn.steps,
             });
+        }
+        if let Some(at) = &self.died_at {
+            game.mods
+                .push_position_event(ModPositionEvent::Died(at.to_position()));
+        }
+        if let Some(at) = &self.respawned_at {
+            game.mods
+                .push_position_event(ModPositionEvent::Respawned(at.to_position()));
         }
         if self.multiplayer {
             game.multiplayer = true;
@@ -1670,6 +1865,7 @@ impl Step {
             return Err(format!("{name} is not on the server"));
         }
         game.mods.take_world();
+        game.mods.take_map();
         let out = game.drain();
         for o in &out {
             if let Output::SetBlocks {
@@ -1793,6 +1989,39 @@ impl Step {
                 if d.shadows { "on" } else { "off" },
             );
             same("dropped-display", &Some(want.clone()), &Some(got))?;
+        }
+        if let Some(want) = &e.map_screen {
+            let got = match game.mods.map_screen() {
+                Some((_, _, screen, _)) => format!(
+                    "{}x{} scale {} at {} {} markers {}",
+                    screen.image.width,
+                    screen.image.height,
+                    screen.image.blocks_per_pixel,
+                    screen.image.center_x,
+                    screen.image.center_z,
+                    screen.markers.len()
+                ),
+                None => "none".to_string(),
+            };
+            same("map-screen", &Some(want.clone()), &Some(got))?;
+        }
+        if let Some(want) = &e.minimap_image {
+            let got = match game.mods.minimap_image() {
+                Some((_, _, image)) => {
+                    let corner = match image.corner {
+                        crate::ModMapCorner::TopLeft => "top-left",
+                        crate::ModMapCorner::TopRight => "top-right",
+                        crate::ModMapCorner::BottomLeft => "bottom-left",
+                        crate::ModMapCorner::BottomRight => "bottom-right",
+                    };
+                    format!(
+                        "{corner} {} {}x{}",
+                        image.size, image.image.width, image.image.height
+                    )
+                }
+                None => "none".to_string(),
+            };
+            same("minimap-image", &Some(want.clone()), &Some(got))?;
         }
         let feedback = |error: bool| {
             out.iter().rev().find_map(|o| match o {

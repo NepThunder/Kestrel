@@ -137,9 +137,18 @@ pub enum Capability {
     /// is seeing the inventory, and moving its stacks is a
     /// different consent.
     InventoryActions,
+    /// The game's own mapping of the ground around the player
+    /// (interface `map`, API 25): its minimap's tiles read
+    /// verbatim, a full-screen map and a corner minimap of the
+    /// mod's own composition, and the places the player died
+    /// and came back. Its own capability, not `render`'s: the
+    /// district's heart is a survey — where the player has
+    /// been, and where they died — and a coherent, sensitive
+    /// read set gets its own line, as `screen`'s did.
+    Map,
 }
 impl Capability {
-    pub const ALL: [Capability; 18] = [
+    pub const ALL: [Capability; 19] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -158,6 +167,7 @@ impl Capability {
         Capability::Actions,
         Capability::Screen,
         Capability::InventoryActions,
+        Capability::Map,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -187,6 +197,7 @@ impl Capability {
             Capability::Actions => "actions",
             Capability::Screen => "screen",
             Capability::InventoryActions => "inventory-actions",
+            Capability::Map => "map",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -204,6 +215,7 @@ impl Capability {
                 | Capability::Actions
                 | Capability::Screen
                 | Capability::InventoryActions
+                | Capability::Map
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -244,6 +256,9 @@ impl Capability {
             }
             Capability::InventoryActions => {
                 "move your items for you in your inventory and open containers: click and drag over slots, as your own clicks in them would — a server sees ordinary clicks and may refuse any of them"
+            }
+            Capability::Map => {
+                "read the game's map tiles of the ground around you, show its own minimap and a full-screen map, and know where you died and where you came back"
             }
         }
     }
@@ -301,6 +316,14 @@ impl Capability {
         if interface == "inventory-actions" {
             return Ok(Some(Capability::InventoryActions));
         }
+        // The game's own mapping (API 25) is its own
+        // capability too, not `render`'s: the tiles and the
+        // death places are a survey of where the player has
+        // been, and folding them into `render` would widen
+        // what every shipped `render` mod was consented to.
+        if interface == "map" {
+            return Ok(Some(Capability::Map));
+        }
         Capability::ALL
             .into_iter()
             .filter(|c| *c != Capability::Registries)
@@ -330,6 +353,7 @@ impl fmt::Display for Capability {
             Capability::Actions => "actions",
             Capability::Screen => "screen",
             Capability::InventoryActions => "inventory-actions",
+            Capability::Map => "map",
         };
         f.write_str(name)
     }

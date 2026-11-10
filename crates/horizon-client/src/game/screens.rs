@@ -36,7 +36,10 @@ impl Screen {
             | Self::Inventory
             | Self::Dead
             | Self::CommandBlock
-            | Self::BlockEditor => false,
+            | Self::BlockEditor
+            // A mod's map fills the screen with its own image,
+            // as the Win screen's poem does (API 25).
+            | Self::Map => false,
             // WinScreen.extractBackground: the poem fills the screen with the End portal, the
             // credits alone blur. Game::menu_blur knows which one rolls.
             Self::Win => false,
@@ -628,6 +631,11 @@ impl Game<'_> {
     /// LocalPlayer.respawn: the player comes back (the death screen's
     /// button, or at once with `immediate_respawn`).
     pub(super) fn respawn_player(&mut self) -> Result<()> {
+        // Capability `map` (API 25): out of the death screen
+        // is a respawn for the mods; the server path hears its
+        // own at the replacement player's making, so only the
+        // local paths push here.
+        let was_dead = self.screen == Screen::Dead;
         self.death_focus = None;
         if self.remote.is_none() {
             // PlayerList.respawn removes the dead player, and Player.remove's
@@ -678,6 +686,9 @@ impl Game<'_> {
         // respawned player only watches.
         if self.remote.is_none() && self.level.hardcore {
             self.set_mode(GameMode::Spectator);
+        }
+        if was_dead && self.remote.is_none() {
+            self.note_mod_position_event(false);
         }
         Ok(())
     }

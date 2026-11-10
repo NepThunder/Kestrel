@@ -159,6 +159,20 @@ pub use render_bindings::horizon::mods::item_model::{
     DroppedDisplay as ModDroppedDisplay, FlatDisplay as ModFlatDisplay,
     ModelMatch as ModModelMatch, ModelRule as ModModelRule,
 };
+use render_bindings::horizon::mods::map;
+/// The game's own mapping (WIT `interface map`, API 25): its
+/// own capability, hosted with the render world as the actions
+/// and the screens are. `ModMapView` here is the interface's
+/// `map-view` record — the fullscreen map's view — not the
+/// lent [`MapView`] trait the tile reads answer through; the
+/// name collision is the actions hand one again.
+pub use render_bindings::horizon::mods::map::{
+    ChunkPos as ModChunkPos, Corner as ModMapCorner, MapClick as ModMapClick,
+    MapContext as ModMapContext, MapEvent as ModMapEvent, MapImage as ModMapImage,
+    MapLayer as ModMapLayer, MapMarker as ModMapMarker, MapScreen as ModMapScreen,
+    MapTile as ModMapTile, MapView as ModMapView, MinimapImage as ModMinimapImage,
+    Position as ModPosition, PositionEvent as ModPositionEvent, TileVersion as ModTileVersion,
+};
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
     CameraOverride as ModCameraOverride, CameraPose as ModCameraPose, Corner as RenderCorner,
@@ -259,6 +273,27 @@ pub const SLOT_VERBS_PER_MOD: usize = 64;
 /// (API 24): the `screen` events' cap, for the same reason — a
 /// turn the mod never polls for is not kept forever.
 pub const WHEEL_EVENTS: usize = 256;
+/// Tiles one `map.tiles` call may read (capability `map`, API
+/// 25): the `world.get-blocks` discipline — over the cap, no
+/// results — at a tile-sized cap (a tile is 768 bytes; 64 of
+/// them are about 49 KB a call). Versions are the cheap poll:
+/// 256 chunks a `map.tile-versions` call.
+pub const TILES_PER_CALL: usize = 64;
+pub const TILE_VERSIONS_PER_CALL: usize = 256;
+/// Events kept for one mod's `map.poll-events` and
+/// `map.poll-map` (API 25): the `screen` events' cap, twice
+/// over — a death or a click the mod never polls for is not
+/// kept forever.
+pub const MAP_EVENTS: usize = 256;
+/// Markers one mod may put on its map screen (API 25): a page
+/// of named places, as `screen`'s buttons are a page of a
+/// screen's furniture.
+pub const MAP_MARKERS: usize = 128;
+/// A map image's largest side and pixel count (API 25): a
+/// screen-sized picture crosses as one byte per pixel, and
+/// 2048 by 2048 of them is the whole allowance.
+pub const MAP_IMAGE_MAX_SIDE: u32 = 2048;
+pub const MAP_IMAGE_MAX_PIXELS: u64 = 4_194_304;
 /// How far `game.raycast` sees, in blocks.
 pub const RAYCAST_MAX: f32 = 1024.0;
 /// How far `entity.targeted` sees, in blocks.
@@ -387,6 +422,17 @@ pub struct Snapshot {
     /// container record deliberately carries none. None while
     /// no merchant screen is open.
     pub trades: Option<ModTradeList>,
+    /// Where the player is playing (capability `map`, API
+    /// 25): the dimension and the world or server's name, for
+    /// keying a mod's own stored maps; the game fills it once
+    /// per tick, and only while a mod reads it
+    /// ([`Mods::wants_map`]). None on the title screen.
+    pub map_context: Option<ModMapContext>,
+    /// Where the player last died (capability `map`, API 25),
+    /// the game's own record of it, filled with
+    /// [`Snapshot::map_context`]. None when the player has not
+    /// died in this world.
+    pub last_death: Option<ModPosition>,
 }
 
 impl Default for Snapshot {
@@ -428,6 +474,8 @@ impl Default for Snapshot {
                 debug_open: false,
             },
             trades: None,
+            map_context: None,
+            last_death: None,
         }
     }
 }
@@ -677,6 +725,46 @@ pub trait WorldView: std::any::Any + Send {
 /// The view lent for the current calls, shared by every mod's store.
 type WorldSlot = Arc<Mutex<Option<Box<dyn WorldView>>>>;
 
+/// One chunk's tile as the game's map holds it (capability
+/// `map`, API 25): the arrays verbatim, in the game's column
+/// order (`z * 16 + x`), the layer it was scanned at, its cut
+/// on a cave tile, and the version the host keeps beside the
+/// cache. The lent [`MapView`] answers with these; the host
+/// calls assemble the WIT record from one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapTileData {
+    pub layer: ModMapLayer,
+    /// A cave tile's cut: the head height its floor and walls
+    /// were scanned at. None on a surface tile.
+    pub cut_y: Option<i32>,
+    pub version: u64,
+    /// The vanilla map colour of each column, the wall bit
+    /// (0x80) intact on a cave tile's cut walls.
+    pub colors: [u8; 256],
+    /// Each column's height: the y its colour was scanned at.
+    pub heights: [i16; 256],
+    /// The fluid depth over each column.
+    pub depths: [u8; 256],
+}
+
+/// The game's map cache as capability `map` reads it during a
+/// call: the game lends one with [`Mods::lend_map`] and takes
+/// it back after, as it lends the [`WorldView`]. A read never
+/// triggers a scan: the view is the cache exactly as it stands.
+pub trait MapView: std::any::Any + Send {
+    /// The tile of the chunk at `(cx, cz)`, or None where the
+    /// game's map holds none (an unloaded chunk, or one not
+    /// scanned yet).
+    fn tile(&self, cx: i32, cz: i32) -> Option<MapTileData>;
+    /// The version of the chunk's tile, without the tile;
+    /// None as for [`MapView::tile`].
+    fn tile_version(&self, cx: i32, cz: i32) -> Option<u64>;
+}
+
+/// The map view lent for the current calls, shared by every
+/// mod's store, as [`WorldSlot`] is.
+type MapSlot = Arc<Mutex<Option<Box<dyn MapView>>>>;
+
 /// What capability `screen` pushed since the hooks last ran (API 22).
 #[derive(Default)]
 struct ScreenStore {
@@ -705,6 +793,50 @@ impl ScreenStore {
             self.events.pop_front();
         }
         self.events.push_back(event);
+    }
+}
+
+/// What capability `map` holds for one mod (API 25): its
+/// full-screen map and its corner minimap image, and the two
+/// poll queues — the deaths and respawns the game pushed for
+/// `poll-events`, and what the player did on its map screen
+/// for `poll-map`. All of it is dropped with the mod's store
+/// on stop, as every stateful surface's state is.
+#[derive(Default)]
+struct MapStore {
+    /// The mod's full-screen map (`map.set-map-screen`), with
+    /// the order it was set in and the game's view of it: the
+    /// running mods' newest set is the one screen
+    /// ([`Mods::map_screen`]), and the game writes its pans
+    /// and zooms back into the winner's view
+    /// ([`Mods::set_map_view`]). Markers and their labels are
+    /// clamped by the host call ([`MAP_MARKERS`]).
+    screen: Option<(u64, ModMapScreen, ModMapView)>,
+    /// The mod's own minimap (`map.set-minimap-image`), with
+    /// the order it was set in: the first loaded mod's shows
+    /// ([`Mods::minimap_image`]), and the stamp tells the game
+    /// when the shown one changed, for its upload.
+    minimap_image: Option<(u64, ModMinimapImage)>,
+    /// Deaths and respawns since the mod's last
+    /// `map.poll-events`, capped at [`MAP_EVENTS`], oldest
+    /// dropped, as `screen`'s events are.
+    position_events: std::collections::VecDeque<ModPositionEvent>,
+    /// What the player did on this mod's map screen since its
+    /// last `map.poll-map`, capped as the position events.
+    map_events: std::collections::VecDeque<ModMapEvent>,
+}
+impl MapStore {
+    fn push_position(&mut self, event: ModPositionEvent) {
+        if self.position_events.len() == MAP_EVENTS {
+            self.position_events.pop_front();
+        }
+        self.position_events.push_back(event);
+    }
+    fn push_map(&mut self, event: ModMapEvent) {
+        if self.map_events.len() == MAP_EVENTS {
+            self.map_events.pop_front();
+        }
+        self.map_events.push_back(event);
     }
 }
 
@@ -1091,6 +1223,15 @@ struct Running {
     reads_screen: bool,
     /// It imports capability `inventory-actions` (API 24).
     reads_inventory_actions: bool,
+    /// It imports capability `map` (API 25): the position
+    /// events are pushed to its queue.
+    reads_map: bool,
+    /// It imports `map.tiles` or `map.tile-versions` (API 25):
+    /// the game keeps its map cache warm for it.
+    reads_map_tiles: bool,
+    /// It imports `map.context` or `map.last-death` (API 25):
+    /// the snapshot needs its map fields.
+    reads_map_snapshot: bool,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -1168,6 +1309,11 @@ static POSE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::ne
 /// across mods (API 23): one policy applies to every dropped
 /// item, so the newest stamp wins, as with the hand's offset.
 static ITEM_DISPLAY_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// The order `map`'s sets happened in, across mods (API 25):
+/// one map screen shows, so the newest `set-map-screen` stamp
+/// wins, as with the dropped display; a `set-minimap-image`
+/// stamp tells the game when the shown image changed.
+static MAP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// Items a panel may hold, and events kept for `browser.poll`.
 const BROWSER_ITEMS: usize = 8192;
 /// `recipes.place` and `give` calls a hook call may make.
@@ -1282,6 +1428,11 @@ struct State {
     /// debug claim. A stopped mod's declarations die with its
     /// store, as its held buttons do.
     screen: ScreenStore,
+    /// Capability `map`'s surfaces and queues (API 25): the
+    /// mod's full-screen map and minimap image, and what the
+    /// game pushed for its two polls. A stopped mod's map
+    /// dies with its store, as its screen declarations do.
+    map: MapStore,
     /// The wheel turns over the open screen the game observed
     /// for this mod (capability `inventory-actions`, API 24),
     /// oldest first, capped like `screen`'s events: a turn the
@@ -1341,6 +1492,9 @@ struct State {
     storage_budget: u64,
     limits: StoreLimits,
     world: WorldSlot,
+    /// The map view lent for the current calls (API 25),
+    /// shared by every mod's store, as [`State::world`] is.
+    map_view: MapSlot,
     /// Whether this mod runs where the world is simulated: only a server
     /// mod may change blocks (`world.set-blocks`); a client mod reads only.
     server: bool,
@@ -1355,6 +1509,9 @@ pub struct Mods {
     snapshot: Arc<Snapshot>,
     out: Vec<Output>,
     world: WorldSlot,
+    /// The lent map view (API 25), shared by every mod's
+    /// store, as [`Mods::world`] is.
+    map: MapSlot,
     /// Moves on whenever a mod starts or stops: the game resends the server
     /// mods' commands to players when it changes.
     generation: u64,
@@ -1427,6 +1584,18 @@ impl Mods {
     /// The view [`Mods::lend_world`] lent, back to the game.
     pub fn take_world(&mut self) -> Option<Box<dyn WorldView>> {
         self.world.lock().ok()?.take()
+    }
+    /// Lends the game's map cache to capability `map` for the
+    /// calls until [`Mods::take_map`]; with none lent,
+    /// `map.tiles` finds nothing.
+    pub fn lend_map(&mut self, view: Box<dyn MapView>) {
+        if let Ok(mut slot) = self.map.lock() {
+            *slot = Some(view);
+        }
+    }
+    /// The view [`Mods::lend_map`] lent, back to the game.
+    pub fn take_map(&mut self) -> Option<Box<dyn MapView>> {
+        self.map.lock().ok()?.take()
     }
 
     /// Reads every mod at `paths` and starts those `enabled` says are on,
@@ -1548,6 +1717,7 @@ impl Mods {
             .collect();
         let snapshot = self.snapshot.clone();
         let world = self.world.clone();
+        let map_view = self.map.clone();
         let (engine, linker) = self.engine()?;
         let component =
             Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"))?;
@@ -1599,6 +1769,7 @@ impl Mods {
             held: (false, false),
             held_latched: false,
             screen: ScreenStore::default(),
+            map: MapStore::default(),
             wheel: std::collections::VecDeque::new(),
             model_rules: Vec::new(),
             model_rules_version: 0,
@@ -1619,6 +1790,7 @@ impl Mods {
                 .instances(16)
                 .build(),
             world,
+            map_view,
             server,
         };
         let mut store = Store::new(engine, state);
@@ -1690,6 +1862,13 @@ impl Mods {
             reads_inventory_actions: functions
                 .iter()
                 .any(|f| f.starts_with("inventory-actions.")),
+            reads_map: functions.iter().any(|f| f.starts_with("map.")),
+            reads_map_tiles: functions
+                .iter()
+                .any(|f| f == "map.tiles" || f == "map.tile-versions"),
+            reads_map_snapshot: functions
+                .iter()
+                .any(|f| f == "map.context" || f == "map.last-death"),
         }))
     }
 
@@ -2084,6 +2263,22 @@ impl Mods {
         self.entries
             .iter()
             .any(|e| e.run.as_ref().is_some_and(|r| r.reads_inventory_actions))
+    }
+    /// Some running mod imports `map.context` or
+    /// `map.last-death` (API 25): the snapshot needs
+    /// [`Snapshot::map_context`] and [`Snapshot::last_death`].
+    pub fn wants_map(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.reads_map_snapshot))
+    }
+    /// Some running mod imports `map.tiles` or
+    /// `map.tile-versions` (API 25): the game keeps its map
+    /// cache warm for it and lends the cache to its calls.
+    pub fn wants_map_tiles(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.reads_map_tiles))
     }
     /// Some running mod has a `frame` hook: the game refreshes the snapshot
     /// every frame for it.
@@ -2612,6 +2807,76 @@ impl Mods {
             .iter()
             .filter_map(|e| e.run.as_ref())
             .any(|r| r.store.data().screen.debug_claimed)
+    }
+
+    /// The player died or came back (capability `map`, API
+    /// 25): every running `map` mod hears it, in the order the
+    /// game pushes them. Each mod's queue keeps at most
+    /// [`MAP_EVENTS`], the oldest dropped, as `screen`'s
+    /// events do.
+    pub fn push_position_event(&mut self, event: ModPositionEvent) {
+        for run in self
+            .entries
+            .iter_mut()
+            .filter_map(|e| e.run.as_mut())
+            .filter(|r| r.reads_map)
+        {
+            run.store.data_mut().map.push_position(event.clone());
+        }
+    }
+    /// What the player did on mod `owner`'s map screen (API
+    /// 25): queued for its `map.poll-map`, the
+    /// [`Mods::screen_event`] shape.
+    pub fn push_map_event(&mut self, owner: usize, event: ModMapEvent) {
+        if let Some(run) = self.entries.get_mut(owner).and_then(|e| e.run.as_mut()) {
+            run.store.data_mut().map.push_map(event);
+        }
+    }
+    /// The full-screen map to show (capability `map`, API
+    /// 25): the running mod that called `set-map-screen` most
+    /// recently owns the one screen — its entry index, the
+    /// set's stamp, its image and markers, and the game's
+    /// view of it. None when no running mod shows one; a
+    /// stopped mod's map goes with its store.
+    pub fn map_screen(&self) -> Option<(usize, u64, ModMapScreen, ModMapView)> {
+        let mut best: Option<(usize, u64, ModMapScreen, ModMapView)> = None;
+        for (i, data) in self
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| e.run.as_ref().map(|r| (i, r.store.data())))
+        {
+            if let Some((seq, screen, view)) = &data.map.screen
+                && best.as_ref().is_none_or(|(_, b, _, _)| *seq > *b)
+            {
+                best = Some((i, *seq, screen.clone(), *view));
+            }
+        }
+        best
+    }
+    /// The game's view of mod `owner`'s map screen (API 25):
+    /// a pan or a zoom writes back into the winner's store,
+    /// so `map.poll-map`'s view events and the game's own
+    /// reading of the view agree. A store that no longer
+    /// holds a screen (the mod cleared it, or stopped) takes
+    /// nothing.
+    pub fn set_map_view(&mut self, owner: usize, view: ModMapView) {
+        if let Some(run) = self.entries.get_mut(owner).and_then(|e| e.run.as_mut())
+            && let Some((_, _, held)) = &mut run.store.data_mut().map.screen
+        {
+            *held = view;
+        }
+    }
+    /// The minimap image to show (capability `map`, API 25):
+    /// the first loaded running mod that set one — its entry
+    /// index, the set's stamp and the image. None when no
+    /// running mod shows one; a stopped mod's image goes with
+    /// its store, as its map screen does.
+    pub fn minimap_image(&self) -> Option<(usize, u64, ModMinimapImage)> {
+        self.entries.iter().enumerate().find_map(|(i, e)| {
+            let (seq, image) = e.run.as_ref()?.store.data().map.minimap_image.as_ref()?;
+            Some((i, *seq, image.clone()))
+        })
     }
 
     /// The running mods' model rules as one evaluation index
@@ -3363,6 +3628,129 @@ impl screen::Host for State {
     }
 }
 
+/// Whether a map image passes the door (capability `map`,
+/// API 25): the acting districts' call-time law, in the
+/// declaration districts' form — `set-map-screen` and
+/// `set-minimap-image` return nothing, so a malformed image
+/// is dropped here and sets nothing, as `screen`'s
+/// declarations clamp at theirs. A pixel count that is not
+/// `width * height`, an empty palette or one past 256, a side
+/// past 2048 or a pixel count past the whole allowance, and
+/// a scale that is not a positive number are malformed; an
+/// index past the palette's end is not — it draws as clear,
+/// the inert-rule style of `item-model` (API 23).
+fn map_image_ok(image: &ModMapImage) -> bool {
+    if image.width > MAP_IMAGE_MAX_SIDE || image.height > MAP_IMAGE_MAX_SIDE {
+        return false;
+    }
+    let pixels = u64::from(image.width) * u64::from(image.height);
+    if pixels > MAP_IMAGE_MAX_PIXELS || image.pixels.len() as u64 != pixels {
+        return false;
+    }
+    if image.palette.is_empty() || image.palette.len() > 256 {
+        return false;
+    }
+    image.blocks_per_pixel.is_finite() && image.blocks_per_pixel > 0.0
+}
+
+impl map::Host for State {
+    fn tiles(&mut self, chunks: Vec<ModChunkPos>) -> Vec<ModMapTile> {
+        // The bulk-read law, as `world.get-blocks` keeps it:
+        // over the cap, no tiles — never a truncated survey.
+        if chunks.len() > TILES_PER_CALL {
+            return Vec::new();
+        }
+        chunks
+            .iter()
+            .filter_map(|c| {
+                let data = self.view_tile(c.x, c.z)?;
+                Some(ModMapTile {
+                    chunk_x: c.x,
+                    chunk_z: c.z,
+                    layer: data.layer,
+                    cut_y: data.cut_y,
+                    version: data.version,
+                    colors: data.colors.to_vec(),
+                    heights: data.heights.to_vec(),
+                    depths: data.depths.to_vec(),
+                })
+            })
+            .collect()
+    }
+    fn tile_versions(&mut self, chunks: Vec<ModChunkPos>) -> Vec<ModTileVersion> {
+        if chunks.len() > TILE_VERSIONS_PER_CALL {
+            return Vec::new();
+        }
+        chunks
+            .iter()
+            .filter_map(|c| {
+                self.view_tile_version(c.x, c.z)
+                    .map(|version| ModTileVersion {
+                        chunk_x: c.x,
+                        chunk_z: c.z,
+                        version,
+                    })
+            })
+            .collect()
+    }
+    fn context(&mut self) -> Option<ModMapContext> {
+        self.snapshot.map_context.clone()
+    }
+    fn last_death(&mut self) -> Option<ModPosition> {
+        self.snapshot.last_death.clone()
+    }
+    fn poll_events(&mut self) -> Vec<ModPositionEvent> {
+        self.map.position_events.drain(..).collect()
+    }
+    fn set_map_screen(&mut self, screen: Option<ModMapScreen>) {
+        let Some(mut screen) = screen else {
+            self.map.screen = None;
+            return;
+        };
+        if !map_image_ok(&screen.image) {
+            return;
+        }
+        // The store is clamped here, at the door: at most
+        // MAP_MARKERS marks, their labels cut to 64
+        // characters — what the aggregate
+        // ([`Mods::map_screen`]) later reads back.
+        screen.markers.truncate(MAP_MARKERS);
+        for marker in &mut screen.markers {
+            marker.label = clip_to(std::mem::take(&mut marker.label), 64);
+        }
+        // The view starts at the image's centre and scale.
+        let view = ModMapView {
+            center_x: f64::from(screen.image.center_x),
+            center_z: f64::from(screen.image.center_z),
+            blocks_per_pixel: screen.image.blocks_per_pixel,
+        };
+        let seq = MAP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.map.screen = Some((seq, screen, view));
+    }
+    fn poll_map(&mut self) -> Vec<ModMapEvent> {
+        self.map.map_events.drain(..).collect()
+    }
+    fn set_minimap_image(&mut self, image: Option<ModMinimapImage>) {
+        let Some(mut image) = image else {
+            self.map.minimap_image = None;
+            return;
+        };
+        if !map_image_ok(&image.image) {
+            return;
+        }
+        // The side is the WIT's 16 to 256, sanitized as
+        // `render.set-minimap` sanitizes its own: a value
+        // that is not a number reads as the smallest.
+        image.size = if image.size.is_finite() {
+            image.size.clamp(16.0, 256.0)
+        } else {
+            16.0
+        };
+        let seq = MAP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.map.minimap_image = Some((seq, image));
+    }
+}
+
 impl audio::Host for State {
     fn set_environment(&mut self, wet: f32, decay: f32) {
         self.sound_env = Some((wet.clamp(0.0, 1.0), decay.clamp(0.1, 10.0)));
@@ -3621,6 +4009,18 @@ impl State {
             .iter()
             .map(|&(x, y, z)| view.light(dimension, x, y, z))
             .collect()
+    }
+    /// One tile read through the lent map view (API 25):
+    /// `None` where nothing is lent or the game's map holds
+    /// no tile of the chunk.
+    fn view_tile(&self, cx: i32, cz: i32) -> Option<MapTileData> {
+        let view = self.map_view.lock().ok()?;
+        view.as_ref()?.tile(cx, cz)
+    }
+    /// One tile version read, as [`State::view_tile`].
+    fn view_tile_version(&self, cx: i32, cz: i32) -> Option<u64> {
+        let view = self.map_view.lock().ok()?;
+        view.as_ref()?.tile_version(cx, cz)
     }
     /// `set-blocks`, shared by the client and server hosts: a client mod
     /// is refused outright and queues nothing; a server mod's changes are

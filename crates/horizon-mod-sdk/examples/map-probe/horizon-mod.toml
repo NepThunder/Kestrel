@@ -1,0 +1,9 @@
+id = "map_probe"
+name = "Map Probe"
+version = "0.1.0"
+description = "Prototype for map: on its key, reads the map tiles around the player, reports the count in chat, and shows a checkerboard map screen at the player's position."
+authors = ["Horizon"]
+api = "0.1"
+side = "client"
+capabilities = ["game-read", "chat", "input", "map"]
+experimental = ["input", "map"]

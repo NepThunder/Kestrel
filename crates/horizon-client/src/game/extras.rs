@@ -6,7 +6,7 @@ use super::{Dim, Game, Screen, native_hooks::NativeMinimap};
 use horizon_client::{
     extras::{Corner, Cps, FpsCounter, fov_target},
     extras_hud::{self, Corners},
-    hud::{HudBatch, MINIMAP_SPRITE},
+    hud::{HudBatch, MINIMAP_SPRITE, MOD_MINIMAP_SPRITE},
     minimap::{self, Layer, Minimap, View},
     multiplayer,
     reconnect::{Retry, Tracker},
@@ -24,6 +24,16 @@ pub(super) struct ExtrasState {
     minimap: Minimap,
     /// The dimension the minimap's tiles belong to.
     minimap_dim: Option<Dim>,
+    /// Tile versions beside the minimap's cache (capability
+    /// `map`, API 25): a chunk's version starts at 1 with its
+    /// first tile, grows when a rescan changes the tile's
+    /// content, and dies with the tile — the table is cleared
+    /// and pruned where the cache is.
+    tile_versions: std::collections::HashMap<(i32, i32), u64>,
+    /// The mod minimap image last uploaded to its atlas slot
+    /// (API 25): the set's stamp and the uploaded size in
+    /// pixels (the image resampled to fit the slot).
+    pub(super) minimap_image_shown: Option<(u64, u32, u32)>,
     /// Auto-reconnect's attempts at the current server.
     reconnect: Tracker,
 }
@@ -166,18 +176,136 @@ impl Game<'_> {
             round: m.round,
         })
     }
+    /// A WASM mod's own minimap image (capability `map`, API
+    /// 25), when it stands in for the terrain minimap: no
+    /// native mod's minimap shows, and the same gates as the
+    /// terrain one's (a player, no title screen, the HUD up).
+    /// A WASM mod's `render.set-minimap` terrain ask still
+    /// warms the cache beside it, but the picture is what
+    /// draws.
+    fn minimap_picture(&self) -> Option<super::mod_map::ModMinimapPicture> {
+        if self.native_minimap_now().is_some()
+            || self.player.is_none()
+            || self.title.is_some()
+            || self.hud_hidden()
+        {
+            return None;
+        }
+        self.mod_minimap_image()
+    }
+    /// Scanned chunks' versions, from the updates the minimap
+    /// just made (capability `map`, API 25): a chunk's version
+    /// starts at 1 with its first tile, grows when a rescan
+    /// changes the tile's content, and dies with the tile —
+    /// the table is pruned where the cache is.
+    fn bump_tile_versions(&mut self) {
+        for key in self.extras.minimap.take_changed_tiles() {
+            *self.extras.tile_versions.entry(key).or_insert(0) += 1;
+        }
+        self.extras
+            .tile_versions
+            .retain(|key, _| self.extras.minimap.has_tile(*key));
+    }
+    /// Keep the minimap's cache (and the tile versions) warm
+    /// for a tile reader alone (capability `map`, API 25),
+    /// with no map on screen: the same layer rule as the shown
+    /// minimap's, the render distance as the radius, nothing
+    /// composed or uploaded.
+    fn warm_map_tiles(&mut self) {
+        if self.extras.minimap_dim != Some(self.dim) {
+            self.extras.minimap.clear();
+            self.extras.tile_versions.clear();
+            self.extras.minimap_dim = Some(self.dim);
+        }
+        let Some(p) = self.player.as_ref() else {
+            return;
+        };
+        let head = (p.position.y + f64::from(p.dimensions.eye_height)).floor() as i32;
+        let (bx, bz) = (p.position.x.floor() as i32, p.position.z.floor() as i32);
+        let covered = self.world.light(bx, head, bz) >> 4 == 0;
+        let layer = if self.dim == Dim::Nether || covered {
+            Layer::Below(head)
+        } else {
+            Layer::Surface
+        };
+        let radius = self.settings.render_distance.max(2);
+        self.extras.minimap.update(
+            &self.world,
+            self.res.facts(),
+            (bx >> 4, bz >> 4),
+            radius,
+            layer,
+            MINIMAP_BUDGET,
+        );
+        self.bump_tile_versions();
+    }
+    /// The cache's tiles as capability `map` reads them (API
+    /// 25), for the view the game lends: every versioned chunk
+    /// (the version table's keys are the cache's — bumps add
+    /// them and the prune keeps them level) with its version.
+    /// A copy, as the lent world view's columns are.
+    #[cfg(feature = "mods")]
+    pub(super) fn map_tile_data(
+        &self,
+    ) -> std::collections::HashMap<(i32, i32), horizon_mods::MapTileData> {
+        let mut out = std::collections::HashMap::new();
+        for (key, version) in &self.extras.tile_versions {
+            let Some(tile) = self.extras.minimap.tile(*key) else {
+                continue;
+            };
+            let (layer, cut_y) = match tile.layer {
+                Layer::Surface => (horizon_mods::ModMapLayer::Surface, None),
+                Layer::Below(head) => (horizon_mods::ModMapLayer::Cave, Some(head)),
+            };
+            out.insert(
+                *key,
+                horizon_mods::MapTileData {
+                    layer,
+                    cut_y,
+                    version: *version,
+                    colors: tile.color,
+                    heights: tile.height,
+                    depths: tile.depth,
+                },
+            );
+        }
+        out
+    }
     /// Refresh the minimap's tiles within the frame budget, recompose its
     /// image when the view or a tile changed, and queue the upload.
     fn update_minimap(&mut self) {
+        let picture = self.minimap_picture();
         let Some((_, _, view)) = self.minimap_shown() else {
-            if self.minimap_wanted().is_none() || self.player.is_none() {
+            if picture.is_some() {
+                // A mod's own image shows with no terrain ask:
+                // the cache warms as for a tile reader, and the
+                // picture uploads.
+                self.warm_map_tiles();
+                if let Some(picture) = &picture {
+                    self.upload_minimap_picture(picture);
+                }
+            } else if self.player.is_none() {
                 self.extras.minimap.clear();
+                self.extras.tile_versions.clear();
+                self.extras.minimap_dim = None;
+            } else if self.minimap_wanted().is_none() && self.mod_wants_map_tiles() {
+                // No map on screen, but a mod reads tiles
+                // (capability `map`, API 25): the cache stays
+                // warm for it — the engine change the district
+                // asked for.
+                self.warm_map_tiles();
+            } else if self.minimap_wanted().is_none() {
+                self.extras.minimap.clear();
+                self.extras.tile_versions.clear();
                 self.extras.minimap_dim = None;
             }
+            // A wanted minimap kept off screen by the title or
+            // a hidden HUD keeps its cache, as before.
             return;
         };
         if self.extras.minimap_dim != Some(self.dim) {
             self.extras.minimap.clear();
+            self.extras.tile_versions.clear();
             self.extras.minimap_dim = Some(self.dim);
         }
         let Some(p) = self.player.as_ref() else {
@@ -203,6 +331,13 @@ impl Game<'_> {
             layer,
             MINIMAP_BUDGET,
         );
+        self.bump_tile_versions();
+        if let Some(picture) = &picture {
+            // A mod's picture stands in for the terrain image:
+            // uploaded instead of composed.
+            self.upload_minimap_picture(picture);
+            return;
+        }
         if !self.extras.minimap.compose(view) {
             return;
         }
@@ -273,7 +408,28 @@ impl Game<'_> {
         #[cfg(target_os = "android")]
         corners.reserve(Corner::TopLeft, 26.0);
         let atlas = &self.gui.atlas;
-        if let Some((map_corner, map_size, view)) = map
+        // A mod's own minimap image (capability `map`, API
+        // 25) stands in for the terrain image at its corner:
+        // the uploaded picture drawn at its declared side,
+        // with no player arrow over it — the mod's shading is
+        // the whole content.
+        let picture = self.minimap_picture();
+        if let Some(picture) = &picture
+            && visible(picture.corner)
+            && let Some((_, pw, ph)) = self.extras.minimap_image_shown
+            && let Some(slot) = atlas.sprites.get(MOD_MINIMAP_SPRITE).copied()
+        {
+            let (x, y) = corners.place(picture.corner, picture.size, picture.size);
+            let sub = horizon_client::hud::Rect {
+                u0: slot.u0,
+                v0: slot.v0,
+                u1: slot.u0 + (slot.u1 - slot.u0) * (pw as f32 / 256.0),
+                v1: slot.v0 + (slot.v1 - slot.v0) * (ph as f32 / 256.0),
+                w: pw,
+                h: ph,
+            };
+            batch.rect_uv(x, y, picture.size, picture.size, sub, u32::MAX);
+        } else if let Some((map_corner, map_size, view)) = map
             && visible(map_corner)
             && !self.extras.minimap.image.is_empty()
             && let Some(image) = atlas.sprites.get(MINIMAP_SPRITE).copied()

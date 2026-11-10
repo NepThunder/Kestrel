@@ -256,6 +256,18 @@ fn brightness(color: u8, height: i16, north: Option<i16>, depth: u8, parity: i32
 const UNKNOWN: [u8; 4] = [20, 20, 20, 200];
 const BORDER: [u8; 4] = [10, 10, 10, 230];
 
+/// One tile as the game's map holds it, for readers
+/// (capability `map`): the layer it was scanned at and the
+/// three arrays verbatim, in the game's column order
+/// (`z * 16 + x`), the wall bit intact on its colours.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TileData {
+    pub layer: Layer,
+    pub color: [u8; 256],
+    pub height: [i16; 256],
+    pub depth: [u8; 256],
+}
+
 #[derive(Default)]
 pub struct Minimap {
     tiles: FxHashMap<(i32, i32), Tile>,
@@ -263,6 +275,12 @@ pub struct Minimap {
     composed: Option<View>,
     /// Tiles changed since the image was composed.
     changed: bool,
+    /// Chunks whose tile content changed in the updates since
+    /// the last [`Minimap::take_changed_tiles`]: a tile's first
+    /// scan, a rescan whose arrays differ, a layer flip. The
+    /// game's tile-version table (capability `map`) is bumped
+    /// from this list.
+    changed_tiles: Vec<(i32, i32)>,
     /// The composed image, `SIZE` x `SIZE` RGBA.
     pub image: Vec<u8>,
 }
@@ -311,10 +329,21 @@ impl Minimap {
                     continue;
                 }
                 let tile = scan_tile(chunk, palette, air, layer, world.revision);
-                if self.tiles.get(&key).is_none_or(|t| {
-                    t.color != tile.color || t.height != tile.height || t.depth != tile.depth
-                }) {
+                // A first tile, a rescan whose arrays differ,
+                // or a flip of the layer the tile was scanned
+                // at: the tile's content changed.
+                let differs = match self.tiles.get(&key) {
+                    None => true,
+                    Some(t) => {
+                        t.layer != tile.layer
+                            || t.color != tile.color
+                            || t.height != tile.height
+                            || t.depth != tile.depth
+                    }
+                };
+                if differs {
                     self.changed = true;
+                    self.changed_tiles.push(key);
                 }
                 self.tiles.insert(key, tile);
                 scanned += 1;
@@ -389,6 +418,26 @@ impl Minimap {
     }
     pub fn tile_count(&self) -> usize {
         self.tiles.len()
+    }
+    /// The tile of one chunk, as readers see it; none where
+    /// the cache holds none. A read never scans: the cache is
+    /// what it is when the read happens.
+    pub fn tile(&self, key: (i32, i32)) -> Option<TileData> {
+        self.tiles.get(&key).map(|t| TileData {
+            layer: t.layer,
+            color: t.color,
+            height: t.height,
+            depth: t.depth,
+        })
+    }
+    /// Whether the cache holds a tile of the chunk.
+    pub fn has_tile(&self, key: (i32, i32)) -> bool {
+        self.tiles.contains_key(&key)
+    }
+    /// The chunks whose tile content changed since the last
+    /// drain (see the field's note), in scan order.
+    pub fn take_changed_tiles(&mut self) -> Vec<(i32, i32)> {
+        std::mem::take(&mut self.changed_tiles)
     }
 }
 /// Chunk offsets at Chebyshev distance `ring`.
@@ -676,5 +725,60 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), 49);
+    }
+
+    /// The changed-chunk report capability `map`'s version
+    /// table is bumped from: a first scan reports the chunk,
+    /// an identical rescan reports nothing, a changed column
+    /// reports it again, and a layer flip reports it too.
+    #[test]
+    fn changed_tiles_report_first_scans_changes_and_layer_flips() {
+        let mut map = Minimap {
+            palette: Some(palette()),
+            ..Default::default()
+        };
+        let facts = BlockFacts {
+            states: Vec::new(),
+            air: horizon_world::registry::BlockStateId(0),
+        };
+        let mut world = world_with(vec![grass_chunk(0, 0), grass_chunk(1, 0)]);
+        let scan = |map: &mut Minimap, world: &World, layer: Layer| {
+            map.update(world, &facts, (0, 0), 1, layer, Duration::from_secs(1));
+            map.take_changed_tiles()
+        };
+        // First scans: both chunks are new.
+        let mut first = scan(&mut map, &world, Layer::Surface);
+        first.sort();
+        assert_eq!(first, [(0, 0), (1, 0)]);
+        // Identical rescans (aged past the throttle): nothing.
+        for t in map.tiles.values_mut() {
+            t.scanned -= RESCAN;
+        }
+        world.revision += 1;
+        assert!(scan(&mut map, &world, Layer::Surface).is_empty());
+        // A changed column in one chunk: that chunk alone.
+        world
+            .set(3, 70, 3, horizon_world::registry::BlockStateId(2))
+            .unwrap();
+        for t in map.tiles.values_mut() {
+            t.scanned -= RESCAN;
+        }
+        assert_eq!(scan(&mut map, &world, Layer::Surface), [(0, 0)]);
+        // A layer flip rescans both at the new layer: both
+        // report, even the chunk whose arrays come back the
+        // same shape (the layer is part of the tile).
+        let mut flipped = scan(&mut map, &world, Layer::Below(70));
+        flipped.sort();
+        assert_eq!(flipped, [(0, 0), (1, 0)]);
+        // The read accessor hands the tile out verbatim: the
+        // flipped tile is the cave layer's, its columns the
+        // floor it scanned (grass at 64 under an air head).
+        let tile = map.tile((1, 0)).expect("chunk (1, 0) is held");
+        assert_eq!(tile.layer, Layer::Below(70));
+        assert!(tile.color.iter().all(|c| *c == 1));
+        assert!(tile.height.iter().all(|h| *h == 64));
+        assert!(map.has_tile((0, 0)));
+        assert!(!map.has_tile((9, 9)));
+        assert_eq!(map.tile((9, 9)), None);
     }
 }

@@ -25,6 +25,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `actions` | [`actions`](#actions) | act as you in the world: use and place with the item in your hand, attack, and choose your hotbar slot — only what your own clicks could do, at the speed your own clicks could do it |
 | `screen` | [`screen`](#screen) | see which of the game's screens is open and what it holds, put its buttons on those screens for you to press, highlight slots, stand in for the debug screen, and choose a villager's trade for you — a trade moves your items, as clicking the trade yourself would |
 | `inventory-actions` | [`inventory-actions`](#inventory-actions) | move your items for you in your inventory and open containers: click and drag over slots, as your own clicks in them would — a server sees ordinary clicks and may refuse any of them |
+| `map` | [`map`](#map) | read the game's map tiles of the ground around you, show its own minimap and a full-screen map, and know where you died and where you came back |
 
 ## World `horizon-mod`
 
@@ -44,7 +45,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `audio`, `hand`, `entity-pose`, `item-model`, `actions`, `screen`, `inventory-actions`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `audio`, `hand`, `entity-pose`, `item-model`, `actions`, `screen`, `inventory-actions`, `map`, `log`, `game`, `chat`, `hud`, `storage`, `command`, `world`, `inventory`, `entity`
 - Exports (what the mod provides): `ui-events`, `audio-events`, `events`
 
 ## World `ui-host`
@@ -63,9 +64,9 @@ The game's side of capability `audio` (API 15) beyond `horizon-mod`: a second wo
 
 ## World `render-host`
 
-The game's side of capability `render` (imports only). API 16's `hand` rides along: it is a render extension, checked against the `render` capability, not one of its own. API 20's `entity-pose` rides along the same way. API 21's `actions` is hosted here too — the frame/tick-adjacent client surfaces live in this world — but it is its own capability, not render's: acting is not presentation. API 22's `screen` likewise: its reads are presentation, but `select-trade` spends items, so the interface is its own capability with a consent line that names both halves. API 23's `item-model` rides along with the hand and the poses: its writes are display only — a stack's picture, marks on its slots, dropped items' lie — so it is render's, with no consent line of its own. API 24's `inventory-actions` is hosted here too, as the actions and the screens are, and is its own capability, not `inventory`'s: reading an inventory and moving its stacks are different consents, and a shipped `inventory` mod's line said only the reading.
+The game's side of capability `render` (imports only). API 16's `hand` rides along: it is a render extension, checked against the `render` capability, not one of its own. API 20's `entity-pose` rides along the same way. API 21's `actions` is hosted here too — the frame/tick-adjacent client surfaces live in this world — but it is its own capability, not render's: acting is not presentation. API 22's `screen` likewise: its reads are presentation, but `select-trade` spends items, so the interface is its own capability with a consent line that names both halves. API 23's `item-model` rides along with the hand and the poses: its writes are display only — a stack's picture, marks on its slots, dropped items' lie — so it is render's, with no consent line of its own. API 24's `inventory-actions` is hosted here too, as the actions and the screens are, and is its own capability, not `inventory`'s: reading an inventory and moving its stacks are different consents, and a shipped `inventory` mod's line said only the reading. API 25's `map` is hosted here too, and is its own capability as well: its heart is a survey — the game's tiles of the ground around the player, and where they died and came back — not drawing, though its full-screen map and its own minimap ride along.
 
-- Imports (what the game offers): `render`, `input`, `hand`, `entity-pose`, `item-model`, `actions`, `screen`, `inventory-actions`
+- Imports (what the game offers): `render`, `input`, `hand`, `entity-pose`, `item-model`, `actions`, `screen`, `inventory-actions`, `map`
 - Exports (what the mod provides): 
 
 ## World `recipes-host`
@@ -909,6 +910,181 @@ A turn of the mouse wheel over the open inventory or container screen since the 
 | `click` | `func(slot: option<u32>, button: u32, kind: click-kind) -> result<_, string>` | One click on a slot of the open menu, in `inventory`'s numbering (0-8 hotbar, 9-35 main inventory, 100-108 crafting grid, 200 its result, 300+ the open container's own slots, 500-503 armour, 504 off hand; a workstation's inputs are 600 up and its result 650). `slot` is none for a click outside the window. Errs only on an argument that is malformed now: a slot past 999, or a button the kind does not take (pickup, quick-move, throw and pickup-all take 0 or 1; swap takes 0 to 8 or 40; clone takes 0). A dropped click is not an error. |
 | `drag` | `func(button: drag-button, slots: list<u32>) -> result<_, string>` | A drag of the hand's stack over `slots`, in the order given: the whole gesture is performed as one drag, as releasing the button over those slots would. At most 64 slots; empty errs. Slots the drag cannot take (a result slot, a slot of another item) are passed by, as the game's own drag passes them. Performed whole or dropped whole: a drag is one gesture in the game's menu logic and cannot be split across ticks. |
 | `poll-wheel` | `func() -> list<wheel-event>` | The wheel turns over the open screen since the last poll, at most 256 kept. |
+
+## `map`
+
+Access: capability `map`.
+
+Capability `map` (experimental: the manifest needs `experimental = ["map"]`): the game's own mapping of the ground around the player, a full-screen map of the mod's own, and the places the player died and came back. The tiles are the game's, computed for its minimap from the chunks it has loaded; they are a view, not an archive — they reach only as far as the loaded chunks, in the dimension the player is in, one layer at a time, and they go when the chunk does. A mod that wants a map of everywhere it has been reads the tiles as it travels and keeps them in its own storage, keyed by `context`.
+
+### record `chunk-pos`
+
+A chunk's position, in chunk coordinates.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `s32` |  |
+| `z` | `s32` |  |
+
+### enum `map-layer`
+
+Which of the game's map layers a tile was scanned at.
+
+| Case | |
+| --- | --- |
+| `surface` | The top block of each column, as map items show it. |
+| `cave` | Underground, under a roof or in the Nether: the floor below the player's head, walls cut at it. |
+
+### record `map-tile`
+
+One chunk of the game's map: what its minimap holds of that chunk, column by column (`z * 16 + x`, as the game stores them). Shading is the map item's, and a mod holding the tile has everything it needs of it: a column is brighter facing a lower north neighbour and darker facing a higher one, water darkens with depth, and a cut wall reads brightest of all.
+
+| Field | Type | |
+| --- | --- | --- |
+| `chunk-x` | `s32` |  |
+| `chunk-z` | `s32` |  |
+| `layer` | `map-layer` |  |
+| `cut-y` | `option<s32>` | A cave tile's cut: the head height its floor and walls were scanned at. None on a surface tile. |
+| `version` | `u64` | The tile's version: it grows each time the tile's content changes, and starts over when the game's map does (a new dimension, a new world). |
+| `colors` | `list<u8>` | The vanilla map colour of each column (a map colour id, 0 for none), 256 of them. A cave tile's cut walls carry the game's wall mark, the extra bit 0x80, on their colour. |
+| `heights` | `list<s16>` | Each column's height: the y its colour was scanned at, 256 of them. |
+| `depths` | `list<u8>` | How deep the fluid over each column runs, 256 of them: the depth the map's water shading darkens by. |
+
+### record `tile-version`
+
+One chunk's tile version, without the tile.
+
+| Field | Type | |
+| --- | --- | --- |
+| `chunk-x` | `s32` |  |
+| `chunk-z` | `s32` |  |
+| `version` | `u64` |  |
+
+### record `map-context`
+
+Where the player is playing, for keying a mod's own stored maps and waypoints.
+
+| Field | Type | |
+| --- | --- | --- |
+| `dimension` | `string` | `minecraft:overworld`, `minecraft:the_nether`, ..., as `game.player` names the dimension. |
+| `world` | `string` | The world, as the game names it: a single-player world's own name, or the address of the server, as the player typed it. |
+
+### record `position`
+
+A place in the world: a dimension and a block position.
+
+| Field | Type | |
+| --- | --- | --- |
+| `dimension` | `string` |  |
+| `x` | `s32` |  |
+| `y` | `s32` |  |
+| `z` | `s32` |  |
+
+### variant `position-event`
+
+A death or a return, as it happened.
+
+| Case | Payload | |
+| --- | --- | --- |
+| `died` | `position` | The player died: where, captured as the death screen opened. |
+| `respawned` | `position` | The player came back: where they stand now. |
+
+### record `map-image`
+
+An image the mod composed, palette-indexed: `pixels` is `width` by `height` indices into `palette`, row by row from the top left, each naming a colour 0xAARRGGBB (an alpha of 0 leaves what is under it). The image's centre pixel sits at (`center-x`, `center-z`) in the world, at `blocks-per-pixel` blocks per pixel.
+
+| Field | Type | |
+| --- | --- | --- |
+| `center-x` | `s32` |  |
+| `center-z` | `s32` |  |
+| `blocks-per-pixel` | `f32` | World blocks per image pixel. |
+| `width` | `u32` |  |
+| `height` | `u32` |  |
+| `palette` | `list<u32>` | At most 256 colours, 0xAARRGGBB. |
+| `pixels` | `list<u8>` | Exactly `width` by `height` indices. |
+
+### record `map-marker`
+
+A mark on the map screen: a coloured square with the label's first letter in it and the label under it, drawn by the game where (`x`, `z`) falls in the view.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `s32` | A block position. |
+| `z` | `s32` |  |
+| `color` | `u32` | 0xAARRGGBB. |
+| `label` | `string` | Up to 64 characters; an empty label draws the square alone. |
+
+### record `map-screen`
+
+The mod's full-screen map: its composed image, and the marks the game draws over it.
+
+| Field | Type | |
+| --- | --- | --- |
+| `image` | `map-image` |  |
+| `markers` | `list<map-marker>` | At most 128, drawn in order. |
+
+### record `map-view`
+
+The map screen's view, as the game now shows it.
+
+| Field | Type | |
+| --- | --- | --- |
+| `center-x` | `f64` | The world position of the view's centre. |
+| `center-z` | `f64` |  |
+| `blocks-per-pixel` | `f32` |  |
+
+### record `map-click`
+
+A click on the map screen: where it fell, in world blocks, and the button (0 left, 1 right, 2 middle).
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `f64` |  |
+| `z` | `f64` |  |
+| `button` | `u32` |  |
+
+### variant `map-event`
+
+What the player did on the map screen.
+
+| Case | Payload | |
+| --- | --- | --- |
+| `clicked` | `map-click` |  |
+| `view` | `map-view` | The view came to rest somewhere new (a drag ended, the wheel turned): where it rests now. A mod whose image is composed around the view re-centres when the view nears the image's edge. |
+| `closed` |  | The player closed the map (Esc), another screen took its place, or another mod's map replaced it. |
+
+### enum `corner`
+
+A corner of the screen (redeclared: WIT interfaces cannot share types).
+
+| Case | |
+| --- | --- |
+| `top-left` |  |
+| `top-right` |  |
+| `bottom-left` |  |
+| `bottom-right` |  |
+
+### record `minimap-image`
+
+The mod's own minimap: an image it composed, in a corner.
+
+| Field | Type | |
+| --- | --- | --- |
+| `corner` | `corner` |  |
+| `size` | `f32` | Its side in GUI pixels, 16 to 256. |
+| `round` | `bool` | Round, the corners left clear; otherwise square. |
+| `image` | `map-image` |  |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `tiles` | `func(chunks: list<chunk-pos>) -> list<map-tile>` | The game's tiles of `chunks`, in the order asked; chunks it holds no tile for are left out. At most 64 chunks a call; a call over the cap returns no tiles. The tiles are the current dimension's, at the layer the game's minimap is mapping now (the surface, or the cave floor at the player's head while under a roof or in the Nether), as of this tick. A tile the game has not scanned yet reads as absent, not as empty ground: the scan runs within the game's own frame budget, nearest first, so ground just arrived may take a few frames to appear. |
+| `tile-versions` | `func(chunks: list<chunk-pos>) -> list<tile-version>` | The versions of the game's tiles of `chunks`: a mod keeping its own map polls these over the ground it has covered and re-reads only the tiles whose version moved. At most 256 chunks a call; chunks with no tile are left out. |
+| `context` | `func() -> option<map-context>` | The context the player is in: maps and waypoints are per world, server and dimension, and the game alone knows all three. None on the title screen. |
+| `last-death` | `func() -> option<position>` | Where the player last died, as the game itself keeps it — the recovery compass reads the same place. The server tells the client at login and at respawn, and the game keeps it between sessions. None when the player has not died in this world. |
+| `poll-events` | `func() -> list<position-event>` | Deaths and respawns since the last poll, in the order they happened, at most 256 kept, oldest dropped. A death here is a death the death screen opened for — every death the player sees is one. |
+| `set-map-screen` | `func(screen: option<map-screen>)` | Shows the mod's full-screen map until the next call (none closes it, and the mod hears no `closed` for that: it was its own doing). The game draws the image to fill the screen and fields the pointer over it: a drag pans, the wheel zooms toward the pointer, clicks are the mod's through `poll-map`, and Esc closes the map (the mod hears `closed`). While it is open, the open screen reads as a map screen (`screen.state`'s "map"). The view starts at the image's centre and scale; panning stays within the image, and zooming keeps the view between 0.125 and 128 blocks per pixel. One map screen at a time: a second mod's call replaces the first's, which hears `closed`. |
+| `poll-map` | `func() -> list<map-event>` | What the player did on the map screen since the last poll, at most 256 kept, oldest dropped. |
+| `set-minimap-image` | `func(image: option<minimap-image>)` | Shows the mod's own map image in a corner until the next call (none hides it): a minimap the mod draws itself — its own shading, its own dots — from `tiles`, stacked with the game's overlays and the other mods' panels, as `render.set-minimap`'s map is. A corner holds one map: while any mod's image shows it stands in for the game's terrain map there, and among image maps the first loaded mod's wins, as with `render.set-minimap`. |
 
 ## `entity-pose`
 
