@@ -246,7 +246,7 @@ impl Capability {
             }
             Capability::Ui => "show its own screens and a settings page",
             Capability::Render => {
-                "draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it, turn off distance fog, move your hand and held item in first person, hide the whole HUD, make the hand's field of view follow the zoom, cap the frame rate, shift how player models are posed, change how items themselves are shown: the model an item displays as, marks on item slots, and how dropped items lie in the world, and spawn particles of its own in the world"
+                "draw on your screen and in the world, shake and zoom the camera, move it and project world positions onto your screen, brighten it, turn off distance fog, move your hand and held item in first person, hide the whole HUD, make the hand's field of view follow the zoom, cap the frame rate, shift how player models are posed, change how items themselves are shown: the model an item displays as, marks on item slots, and how dropped items lie in the world, spawn particles of its own in the world, shed light of its own in the world, and direct the game's own dynamic lights"
             }
             Capability::Input => {
                 "see the keys you hold, your clicks and how long since you last gave input, take over the use button on its own items and the mouse wheel, and add keys"
@@ -315,6 +315,15 @@ impl Capability {
         // drawn by the game's own engine — nothing is spent,
         // moved or read, the hand and item-model precedent.
         if interface == "particles" {
+            return Ok(Some(Capability::Render));
+        }
+        // A mod's own dynamic lights and its word over the
+        // game's own gather (API 28) are part of `render`
+        // too: light shed in the world is a picture on this
+        // client only — nothing is spent, moved, read or
+        // sent, and the player's setting is never written —
+        // the particles precedent.
+        if interface == "dynamic-light" {
             return Ok(Some(Capability::Render));
         }
         // The player's own clicks (API 21) are their own

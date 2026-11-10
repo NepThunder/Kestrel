@@ -1,0 +1,7 @@
+id = "dynamic_light_probe"
+name = "Dynamic Light Probe"
+version = "0.1.0"
+description = "Prototype probe for dynamic-light: a held torch or lantern registers a light source at the player naming the item, and its key (or /lights) toggles its policy over the game's own dynamic-light gather."
+api = "0.2"
+capabilities = ["chat", "input", "inventory", "render"]
+experimental = ["input", "inventory", "render"]

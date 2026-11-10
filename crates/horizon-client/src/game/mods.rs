@@ -1471,6 +1471,12 @@ impl Game<'_> {
     pub(super) fn return_client_world(&mut self) {}
     /// API 26: no mod runs, so no emitter ever stands to end.
     pub(super) fn clear_mod_particle_emitters(&mut self) {}
+    /// API 28: no mod runs, so no dynamic light stands.
+    pub(super) fn mod_dynamic_lights(&self) -> super::dynamic_lights::ModLights {
+        super::dynamic_lights::ModLights::default()
+    }
+    /// API 28: no mod runs, so no dynamic light stands to end.
+    pub(super) fn clear_mod_dynamic_lights(&mut self) {}
     /// API 27: no mod runs, so no chat decoration stands.
     pub(super) fn mod_chat_line_decoration(&self) -> Option<horizon_client::chat::LineDecoration> {
         None
@@ -2965,6 +2971,62 @@ impl Game<'_> {
     /// the close fans out to the server or the save.
     pub(super) fn clear_mod_particle_emitters(&mut self) {
         self.mods.mods.clear_particle_emitters();
+    }
+    /// The mods' dynamic-light declarations (capability
+    /// `render`'s `dynamic-light`, API 28), read by the frame's
+    /// gather: every running mod's own sources translated into
+    /// the gather's own types, and the one policy that stands,
+    /// if any. Anchors resolve in the gather, as the particle
+    /// anchors do.
+    pub(super) fn mod_dynamic_lights(&self) -> super::dynamic_lights::ModLights {
+        let sources = self
+            .mods
+            .mods
+            .dynamic_light_sources()
+            .into_iter()
+            .map(|(_, source)| super::dynamic_lights::ModLight {
+                anchor: match source.anchor {
+                    horizon_mods::ModLightAnchor::SelfPlayer => {
+                        super::dynamic_lights::ModLightAnchor::SelfPlayer
+                    }
+                    horizon_mods::ModLightAnchor::Entity(id) => {
+                        super::dynamic_lights::ModLightAnchor::Entity(id)
+                    }
+                    horizon_mods::ModLightAnchor::Position(at) => {
+                        super::dynamic_lights::ModLightAnchor::Position(glam::DVec3::new(
+                            at.x, at.y, at.z,
+                        ))
+                    }
+                },
+                level: source.level,
+                item: source.item,
+            })
+            .collect();
+        let policy =
+            self.mods
+                .mods
+                .dynamic_light_policy()
+                .map(|p| super::dynamic_lights::ModLightPolicy {
+                    held_items: p.held_items,
+                    dropped_items: p.dropped_items,
+                    burning: p.burning,
+                    glowing: p
+                        .glowing
+                        .iter()
+                        .map(|k| (k.kind.clone(), k.level))
+                        .collect(),
+                    projectiles: p.projectiles,
+                    water_extinguishes: p.water_extinguishes,
+                    brightness: p.brightness,
+                    range: p.range,
+                    max_lights: p.max_lights,
+                });
+        super::dynamic_lights::ModLights { sources, policy }
+    }
+    /// Ends the mods' dynamic lights as the world closes
+    /// (API 28): `close_world`'s call, beside the emitters'.
+    pub(super) fn clear_mod_dynamic_lights(&mut self) {
+        self.mods.mods.clear_dynamic_lights();
     }
     /// The standing line decoration (capability
     /// `chat-decoration`, API 27): the runtime's aggregate,

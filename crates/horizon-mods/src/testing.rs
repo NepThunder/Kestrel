@@ -10,12 +10,12 @@
 use crate::{
     BlockPos, Clock, Container, Corner, Entity, GameMode, InvStack, ItemModelIndex, MapTileData,
     MapView, ModAction, ModActionTarget, ModArmPose, ModBlockDisplay, ModBlockTarget, ModBurst,
-    ModChatAnimation, ModClickKind, ModDragButton, ModEffect, ModEmitter, ModEmitterAnchor,
-    ModEntityPoseState, ModEntityTarget, ModFace, ModFlatDisplay, ModHand, ModItemUse,
-    ModLineDecoration, ModMapContext, ModMapLayer, ModPoseSwingAnim, ModPosition, ModPositionEvent,
-    ModScreenEvent, ModScreenState, ModSelfState, ModSlotMove, ModTradeList, ModTradeOffer,
-    ModTradeStack, ModWheelEvent, Mods, Output, Panel, Player, PlayerInventory, ServerPlayer,
-    Snapshot, Status, Target, WorldDrawLine,
+    ModChatAnimation, ModClickKind, ModDragButton, ModDynamicLightPolicy, ModEffect, ModEmitter,
+    ModEmitterAnchor, ModEntityPoseState, ModEntityTarget, ModFace, ModFlatDisplay, ModHand,
+    ModItemUse, ModLightAnchor, ModLightSource, ModLineDecoration, ModMapContext, ModMapLayer,
+    ModPoseSwingAnim, ModPosition, ModPositionEvent, ModScreenEvent, ModScreenState, ModSelfState,
+    ModSlotMove, ModTradeList, ModTradeOffer, ModTradeStack, ModWheelEvent, Mods, Output, Panel,
+    Player, PlayerInventory, ServerPlayer, Snapshot, Status, Target, WorldDrawLine,
 };
 use serde::Deserialize;
 use std::{
@@ -1101,6 +1101,51 @@ fn animation_line(animation: &ModChatAnimation) -> String {
     )
 }
 
+/// One stored light source as a script's
+/// `expect.dynamic-lights` names it (API 28): its anchor
+/// (`self`, `entity <id>` or `at <x> <y> <z>`), its level as
+/// the door clamped it, and the item it names when it names
+/// one — `self level 0 item minecraft:torch`,
+/// `at 10.5 64 -3 level 15`.
+fn light_source_line(source: &ModLightSource) -> String {
+    let anchor = match &source.anchor {
+        ModLightAnchor::SelfPlayer => "self".to_string(),
+        ModLightAnchor::Entity(id) => format!("entity {id}"),
+        ModLightAnchor::Position(at) => format!("at {} {} {}", at.x, at.y, at.z),
+    };
+    match &source.item {
+        Some(item) => format!("{anchor} level {} item {item}", source.level),
+        None => format!("{anchor} level {}", source.level),
+    }
+}
+
+/// The standing dynamic-light policy as a script's
+/// `expect.dynamic-light-policy` names it (API 28): the
+/// classes in the record's order, its glowing kinds as
+/// `kind=level` pairs, and its three numbers as the host
+/// clamped them — `held true dropped true burning true
+/// glowing [minecraft:blaze=15] projectiles true water true
+/// brightness 100 range 96 max 16`.
+fn light_policy_line(policy: &ModDynamicLightPolicy) -> String {
+    let glowing = policy
+        .glowing
+        .iter()
+        .map(|k| format!("{}={}", k.kind, k.level))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "held {} dropped {} burning {} glowing [{glowing}] projectiles {} water {} brightness {} range {} max {}",
+        policy.held_items,
+        policy.dropped_items,
+        policy.burning,
+        policy.projectiles,
+        policy.water_extinguishes,
+        policy.brightness,
+        policy.range,
+        policy.max_lights
+    )
+}
+
 fn emitter_line(emitter: &ModEmitter) -> String {
     let anchor = match &emitter.anchor {
         ModEmitterAnchor::SelfPlayer => "self".to_string(),
@@ -1612,6 +1657,16 @@ pub struct Expect {
     /// spelling `animation_line` gives it (capability
     /// `chat-decoration`, API 27): `none` once cleared.
     chat_animation: Option<String>,
+    /// The mod's stored dynamic-light sources after the
+    /// step, in stored order, in the spelling
+    /// `light_source_line` gives them (capability `render`'s
+    /// `dynamic-light`, API 28): `[]` once cleared.
+    dynamic_lights: Option<Vec<String>>,
+    /// The standing dynamic-light policy after the step, in
+    /// the spelling `light_policy_line` gives it (capability
+    /// `render`'s `dynamic-light`, API 28): `none` while no
+    /// policy stands.
+    dynamic_light_policy: Option<String>,
     /// The mod is turned off during this step, for a reason holding this text.
     /// Without it, a mod that stops fails the test.
     stopped: Option<String>,
@@ -2137,6 +2192,22 @@ impl Step {
                 .as_ref()
                 .map_or_else(|| "none".to_string(), animation_line);
             same("chat-animation", &Some(want.clone()), &Some(got))?;
+        }
+        if let Some(want) = &e.dynamic_lights {
+            let got: Vec<String> = game
+                .mods
+                .dynamic_light_sources()
+                .iter()
+                .map(|(_, source)| light_source_line(source))
+                .collect();
+            same("dynamic-lights", want, &got)?;
+        }
+        if let Some(want) = &e.dynamic_light_policy {
+            let got = game
+                .mods
+                .dynamic_light_policy()
+                .map_or_else(|| "none".to_string(), light_policy_line);
+            same("dynamic-light-policy", &Some(want.clone()), &Some(got))?;
         }
         let feedback = |error: bool| {
             out.iter().rev().find_map(|o| match o {

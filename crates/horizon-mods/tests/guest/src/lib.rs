@@ -29,17 +29,22 @@
 //! capability `render`'s particles — bursts and emitters
 //! (API 26); `/chathead`, `/chatanim` and
 //! `/chatstyleclear` capability `chat-decoration`'s line
-//! decoration and chat animation (API 27); `tick` and
-//! `frame` do nothing, to measure the cost of a call.
+//! decoration and chat animation (API 27); `/setlights`,
+//! `/setbadlights`, `/clearlights`, `/setpolicy`,
+//! `/setpolicy2` and `/clearpolicy` capability `render`'s
+//! dynamic light — its own sources and its policy over
+//! the game's gather (API 28); `tick` and `frame` do
+//! nothing, to measure the cost of a call.
 use horizon_mod_sdk::{
     ActionHand, ActionTarget, Anchor, BlockDisplay, BlockTarget, Burst, ChatAnimation, ChunkPos,
     ClickKind, ComponentMatch, Corner, Decoration, DecorationPlace, DecorationTarget,
-    DisplayContext, DragButton, DroppedDisplay, Emitter, EmitterAnchor, Face, FlatDisplay, HandFov,
-    HandFovMode, HandTransform, Highlight, LineDecoration, MapEvent, MapImage, MapLayer, MapMarker,
-    MapScreen, MinimapImage, Mod, ModelMatch, ModelRule, PartOffset, ParticleParams, PoseOffset,
-    PoseTarget, PositionEvent, Registration, ScreenButton, ScreenEvent, SoundAdjustment,
-    SoundQuery, SwingAnim, WorldPoint, actions, audio, chat, chat_decoration, entity_pose, game,
-    hand, input, inventory_actions, item_model, map, particles, render, screen, storage,
+    DisplayContext, DragButton, DroppedDisplay, DynamicLightPolicy, Emitter, EmitterAnchor, Face,
+    FlatDisplay, GlowingKind, HandFov, HandFovMode, HandTransform, Highlight, LightSource,
+    LineDecoration, MapEvent, MapImage, MapLayer, MapMarker, MapScreen, MinimapImage, Mod,
+    ModelMatch, ModelRule, PartOffset, ParticleParams, PoseOffset, PoseTarget, PositionEvent,
+    Registration, ScreenButton, ScreenEvent, SoundAdjustment, SoundQuery, SourceAnchor, SwingAnim,
+    WorldPoint, actions, audio, chat, chat_decoration, dynamic_light, entity_pose, game, hand,
+    input, inventory_actions, item_model, map, particles, render, screen, storage,
 };
 
 struct Guest {
@@ -117,6 +122,12 @@ impl Mod for Guest {
             "chathead",
             "chatanim",
             "chatstyleclear",
+            "setlights",
+            "setbadlights",
+            "clearlights",
+            "setpolicy",
+            "setpolicy2",
+            "clearpolicy",
         ]
         .into_iter()
         .fold(Registration::new(), Registration::command)
@@ -1075,6 +1086,114 @@ impl Mod for Guest {
                 chat_decoration::set_animation(None);
                 Ok(Some("cleared".into()))
             }
+            "setlights" => {
+                // Thirty-three declared: the host keeps
+                // thirty-two. The first names an item for
+                // the game to resolve; the second's level
+                // (20) sits past the arena's 15 and is cut
+                // at the door.
+                let mut sources = vec![
+                    LightSource {
+                        anchor: SourceAnchor::SelfPlayer,
+                        level: 0,
+                        item: Some("minecraft:torch".into()),
+                    },
+                    LightSource {
+                        anchor: SourceAnchor::Position(light_point(10.5, 64.0, -3.0)),
+                        level: 20,
+                        item: None,
+                    },
+                ];
+                for i in 0..31 {
+                    sources.push(LightSource {
+                        anchor: SourceAnchor::Position(light_point(f64::from(i), 70.0, 0.0)),
+                        level: 5,
+                        item: None,
+                    });
+                }
+                dynamic_light::set_sources(Some(&sources));
+                Ok(Some("lit".into()))
+            }
+            "setbadlights" => {
+                // A non-finite place drops whole; a source
+                // at level 0 with no item names nothing and
+                // drops; the unknown item stands — resolving
+                // it is the game's side, not the store's.
+                dynamic_light::set_sources(Some(&[
+                    LightSource {
+                        anchor: SourceAnchor::Position(light_point(f64::NAN, 64.0, 0.0)),
+                        level: 10,
+                        item: None,
+                    },
+                    LightSource {
+                        anchor: SourceAnchor::Position(light_point(1.0, 2.0, 3.0)),
+                        level: 0,
+                        item: None,
+                    },
+                    LightSource {
+                        anchor: SourceAnchor::SelfPlayer,
+                        level: 0,
+                        item: Some("minecraft:nosuchthing".into()),
+                    },
+                ]));
+                Ok(Some("badlit".into()))
+            }
+            "clearlights" => {
+                dynamic_light::set_sources(None);
+                Ok(Some("unlit".into()))
+            }
+            "setpolicy" => {
+                // Clamp bait throughout: brightness 5 (to
+                // 10), range 200 (to 96), max-lights 99 (to
+                // 16), thirty-three glowing kinds (to 32),
+                // the first's level 99 (to 15) and the
+                // rest's 0 (to 1).
+                let mut glowing = vec![GlowingKind {
+                    kind: "minecraft:blaze".into(),
+                    level: 99,
+                }];
+                for i in 0..32 {
+                    glowing.push(GlowingKind {
+                        kind: format!("minecraft:kind{i}"),
+                        level: 0,
+                    });
+                }
+                dynamic_light::set_policy(Some(&DynamicLightPolicy {
+                    held_items: true,
+                    dropped_items: true,
+                    burning: true,
+                    glowing,
+                    projectiles: true,
+                    water_extinguishes: true,
+                    brightness: 5,
+                    range: 200,
+                    max_lights: 99,
+                }));
+                Ok(Some("policy".into()))
+            }
+            "setpolicy2" => {
+                // A second, unlike policy, for the tenancy
+                // test: nothing clamped, every value its own.
+                dynamic_light::set_policy(Some(&DynamicLightPolicy {
+                    held_items: false,
+                    dropped_items: true,
+                    burning: false,
+                    glowing: vec![GlowingKind {
+                        kind: "minecraft:glow_squid".into(),
+                        level: 8,
+                    }],
+                    projectiles: false,
+                    water_extinguishes: false,
+                    brightness: 150,
+                    range: 32,
+                    max_lights: 4,
+                }));
+                Ok(Some("policy2".into()))
+            }
+            "clearpolicy" => {
+                dynamic_light::set_policy(None);
+                Ok(Some("unpolicy".into()))
+            }
             _ => {
                 chat::show(&format!("hello {args} after {} ticks", self.ticks));
                 Ok(None)
@@ -1086,6 +1205,13 @@ impl Mod for Guest {
 /// A world point (capability `particles`, API 26).
 fn point(x: f64, y: f64, z: f64) -> WorldPoint {
     WorldPoint { x, y, z }
+}
+
+/// A world point for a light source's anchor (capability
+/// `render`'s `dynamic-light`, API 28): the interface's own
+/// record, not `particles`'.
+fn light_point(x: f64, y: f64, z: f64) -> dynamic_light::WorldPoint {
+    dynamic_light::WorldPoint { x, y, z }
 }
 
 /// A burst with no parameters (capability `particles`,

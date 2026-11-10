@@ -12218,6 +12218,7 @@ impl Game<'_> {
         // Mods' particle emitters (API 26) end with the world:
         // their anchors are this world's drawn things.
         self.clear_mod_particle_emitters();
+        self.clear_mod_dynamic_lights();
         self.post_effects.clear();
         self.spectated_post_effect = None;
         if self.external_server() {

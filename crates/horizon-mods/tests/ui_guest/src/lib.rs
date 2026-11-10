@@ -12,6 +12,8 @@
 //! `render` setters (API 19), for the aggregates' two-mod tests;
 //! `/chat_head` and `/chat_anim` are its `chat-decoration`
 //! setters (API 27), for the same district's two-mod test;
+//! `/light_policy` is its `dynamic-light` policy setter
+//! (API 28), for that district's tenancy test;
 //! `/keys N` registers N keys and reports the first refusal, for the
 //! registered-key cap. `/browser ID...` fills `browser`'s panel (`/browser N`: the first N
 //! items, `/browser` alone empties it) and registers the keys `recipe` (R)
@@ -21,8 +23,8 @@
 //! with `recipes.place`; `/recipe_give ITEM [COUNT]` gives with
 //! `recipes.give`.
 use horizon_mod_sdk::{
-    ChatAnimation, HandFov, HandFovMode, LineDecoration, Mod, Registration, browser, chat,
-    chat_decoration, command, game,
+    ChatAnimation, DynamicLightPolicy, GlowingKind, HandFov, HandFovMode, LineDecoration, Mod,
+    Registration, browser, chat, chat_decoration, command, dynamic_light, game,
     input::{self, Event},
     recipes,
     render::{self, FillShape, ItemShape, Point, QuadShape, Rect, Shape, SpriteShape, TextShape},
@@ -135,6 +137,7 @@ impl Mod for Guest {
             "fps_cap",
             "chat_head",
             "chat_anim",
+            "light_policy",
             "keys",
         ]
         .into_iter()
@@ -303,6 +306,30 @@ impl Mod for Guest {
                         fade_in: false,
                         input_ms: 300,
                         hide_indicator: false,
+                    }));
+                }
+            }
+            // The second mod's API 28 setter, under this
+            // guest's own name: a policy unlike either of
+            // the test guest's, so the tenancy aggregate
+            // can be told apart from any mod alone.
+            "light_policy" => {
+                if args == "off" {
+                    dynamic_light::set_policy(None);
+                } else {
+                    dynamic_light::set_policy(Some(&DynamicLightPolicy {
+                        held_items: true,
+                        dropped_items: false,
+                        burning: true,
+                        glowing: vec![GlowingKind {
+                            kind: "minecraft:magma_cube".into(),
+                            level: 12,
+                        }],
+                        projectiles: true,
+                        water_extinguishes: false,
+                        brightness: 120,
+                        range: 48,
+                        max_lights: 6,
                     }));
                 }
             }

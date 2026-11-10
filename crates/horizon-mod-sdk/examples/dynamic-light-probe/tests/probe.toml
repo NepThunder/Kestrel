@@ -1,0 +1,57 @@
+# Dynamic light (API 28): holding a torch registers a
+# source at the player naming the item — its level is the
+# game's table's to give, so the stored source names the
+# item at level 0 — swapping the hand to stone clears it,
+# a lantern in the off hand lights instead, and /lights
+# stands the probe's policy and takes it down again. The
+# harness never gathers: gathering is the game's side,
+# against the drawn world — so only the stored sources
+# and the standing policy are pinned here.
+
+[[step]]
+ticks = 1
+[step.inventory]
+selected = 0
+slots = [
+  { slot = 0, id = "minecraft:torch", count = 1 },
+]
+[step.expect]
+dynamic-lights = ["self level 0 item minecraft:torch"]
+dynamic-light-policy = "none"
+
+[[step]]
+ticks = 1
+[step.inventory]
+selected = 0
+slots = [
+  { slot = 0, id = "minecraft:stone", count = 1 },
+]
+[step.expect]
+dynamic-lights = []
+dynamic-light-policy = "none"
+
+[[step]]
+ticks = 1
+[step.inventory]
+selected = 0
+slots = [
+  { slot = 0, id = "minecraft:stone", count = 1 },
+  { slot = 504, id = "minecraft:lantern", count = 1 },
+]
+[step.expect]
+dynamic-lights = ["self level 0 item minecraft:lantern"]
+dynamic-light-policy = "none"
+
+[[step]]
+command = "lights"
+[step.expect]
+feedback = "policy on"
+dynamic-lights = ["self level 0 item minecraft:lantern"]
+dynamic-light-policy = "held true dropped true burning true glowing [minecraft:blaze=15, minecraft:glow_squid=15] projectiles true water true brightness 100 range 96 max 16"
+
+[[step]]
+command = "lights"
+[step.expect]
+feedback = "policy off"
+dynamic-lights = ["self level 0 item minecraft:lantern"]
+dynamic-light-policy = "none"

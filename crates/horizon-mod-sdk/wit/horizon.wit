@@ -1929,6 +1929,142 @@ interface particles {
     set-emitters: func(emitters: option<list<emitter>>);
 }
 
+/// Capability `render` (experimental), interface
+/// `dynamic-light`: light sources of the mod's own in the
+/// game's dynamic lights — the render-time lights a held
+/// torch makes, which the game adds over the world's stored
+/// light as it draws. This is a picture, like everything in
+/// `render`: the world's stored light does not change, so
+/// nothing spawns or grows differently, `world.get-lights`
+/// does not see these sources, and no other player is sent
+/// anything — every client makes its own lights from the
+/// world it already sees. The game's own cap rules: at most
+/// 16 sources are drawn at once, the nearest to the camera,
+/// and a source lights nothing past 96 blocks or past its
+/// own level in blocks — a source's reach is its level, one
+/// level less per block away, through walls as through air,
+/// exactly as the game's built-in dynamic lights behave.
+interface dynamic-light {
+    /// A point in the world, in blocks (redeclared: WIT
+    /// interfaces cannot share types).
+    record world-point {
+        x: f64,
+        y: f64,
+        z: f64,
+    }
+
+    /// What a source is tied to.
+    variant source-anchor {
+        /// The local player, at hand height, as the game's
+        /// own held-item light is placed.
+        self-player,
+        /// A drawn entity — a mob or another player — by
+        /// the id `entity.entities` and the pose states
+        /// use, at the height the game's own entity lights
+        /// use. An entity the game is not drawing (gone,
+        /// too far, another dimension) anchors nothing
+        /// until it is drawn again.
+        entity(u32),
+        /// A fixed place in the world.
+        position(world-point),
+    }
+
+    /// One light source of the mod's own.
+    record light-source {
+        anchor: source-anchor,
+        /// How bright, 1 to 15 (clamped): a torch is 14, a
+        /// lantern 15. 0 makes no source. Ignored when
+        /// `item` is set.
+        level: u8,
+        /// The item whose glow this source carries:
+        /// `minecraft:torch`, ... The game looks the level
+        /// up in its own table — an item glows as its block
+        /// does, content blocks included — and an item that
+        /// does not glow, or that the game does not know,
+        /// makes no source. Set this for a held item, whose
+        /// brightness is the game's fact; use a bare `level`
+        /// for a light that is not an item's.
+        item: option<string>,
+    }
+
+    /// Replaces the mod's own sources: at most 32. They
+    /// live until replaced, cleared (none), or the mod
+    /// stops, and they are drawn together with the game's
+    /// own dynamic lights under the same nearest-16 cap —
+    /// a mod's far source yields to the game's nearer one
+    /// exactly as the game's yield to each other. Nothing
+    /// survives the world closing: anchors are the open
+    /// world's, and a reopened world starts with no sources
+    /// until the mod declares them again.
+    set-sources: func(sources: option<list<light-source>>);
+
+    /// One kind of creature that glows by being what it is,
+    /// at the level the mod declares: `minecraft:blaze`
+    /// at 15, ...
+    record glowing-kind {
+        kind: string,
+        /// 1 to 15 (clamped).
+        level: u8,
+    }
+
+    /// The mod's word over the game's own dynamic-light
+    /// sources — the held items, dropped items and burning
+    /// entities the game itself gathers. While any running
+    /// mod has set a policy, the newest such policy is the
+    /// gather's whole input for those sources, in place of
+    /// the player's Dynamic lights extra setting (which is
+    /// not changed on disk, and rules again when no policy
+    /// stands). A policy says nothing about any mod's own
+    /// `set-sources` lights, its author's included.
+    record dynamic-light-policy {
+        /// Held items shed light: the local player's,
+        /// other players', mobs' and armor stands', either
+        /// hand, each as bright as its block.
+        held-items: bool,
+        /// Dropped items shed light where they lie.
+        dropped-items: bool,
+        /// Entities on fire — players, mobs, dropped items,
+        /// arrows — shed light as fire does (15).
+        burning: bool,
+        /// Creatures that glow by kind, nearest-first under
+        /// the same caps: at most 32 kinds. A kind the game
+        /// does not know matches nothing.
+        glowing: list<glowing-kind>,
+        /// Fire projectiles (fireballs, wither skulls,
+        /// spectral arrows, rockets), primed TNT and lit
+        /// minecarts shed light as fire does.
+        projectiles: bool,
+        /// Fire goes out in water: held torches and other
+        /// open-flame items, burning entities and fire
+        /// projectiles shed no light while under water.
+        /// Lanterns and other sealed lights stay lit, as
+        /// do glowing creatures and a mod's own sources.
+        water-extinguishes: bool,
+        /// The gathered sources' brightness, as a percent
+        /// of their own levels: 100 is the levels
+        /// themselves; clamped to 10..=200, and the result
+        /// clamped to 15. A mod's own sources are not
+        /// scaled — their levels are already its word.
+        brightness: u32,
+        /// How far a gathered source can be from the camera
+        /// and still be drawn, in blocks: clamped to
+        /// 8..=96. (A mod's own sources keep the game's 96.)
+        range: u32,
+        /// How many sources are drawn at once, the game's
+        /// and all mods' together: clamped to 1..=16.
+        max-lights: u32,
+    }
+
+    /// Sets the mod's policy over the game's own dynamic
+    /// lights (see `dynamic-light-policy`), or clears it
+    /// (none). Setting one replaces the mod's previous one
+    /// whole. The newest policy among running mods is the
+    /// one that stands; when its author stops or clears,
+    /// the next newest stands, and when none stands the
+    /// player's own Dynamic lights setting rules again.
+    set-policy: func(policy: option<dynamic-light-policy>);
+}
+
 /// Capability `chat-decoration` (experimental: the manifest
 /// needs `experimental = ["chat-decoration"]`): the game's
 /// own chat, restyled as the game allows. A mod declares how
@@ -2613,6 +2749,7 @@ world horizon-ui-mod {
     import entity-pose;
     import item-model;
     import particles;
+    import dynamic-light;
     import actions;
     import screen;
     import inventory-actions;
@@ -2669,6 +2806,12 @@ world audio-host {
 /// content of its own — it asks the game to restyle the
 /// game's own chat — and one of its toggles is trust-adjacent,
 /// so the restyle gets a consent line of its own.
+/// API 28's `dynamic-light` rides along with the particles:
+/// a mod's own light in the game's dynamic lights, and its
+/// policy over the game's own gather, are a picture in the
+/// world — nothing spent, moved, read or sent, and the
+/// player's setting is never written — so it is render's,
+/// with no consent line of its own.
 world render-host {
     import render;
     import input;
@@ -2676,6 +2819,7 @@ world render-host {
     import entity-pose;
     import item-model;
     import particles;
+    import dynamic-light;
     import actions;
     import screen;
     import inventory-actions;

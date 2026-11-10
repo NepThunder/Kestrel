@@ -1,0 +1,16 @@
+[package]
+name = "dynamic-light-probe"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Prototype probe for dynamic-light: a held torch or lantern sheds its own glow at the player, and a key toggles the probe's policy over the game's own dynamic-light gather"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+horizon-mod-sdk = { path = "../.." }
+
+[lints]
+workspace = true

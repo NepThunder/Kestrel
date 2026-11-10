@@ -122,6 +122,19 @@ use render_bindings::horizon::mods::chat_decoration;
 pub use render_bindings::horizon::mods::chat_decoration::{
     ChatAnimation as ModChatAnimation, LineDecoration as ModLineDecoration,
 };
+use render_bindings::horizon::mods::dynamic_light;
+/// Light of the mod's own in the game's dynamic lights, and
+/// its policy over the game's own gather (WIT `interface
+/// dynamic-light`, API 28): a `render` extension, hosted
+/// with the render world, as the particles are.
+/// `ModLightPoint` is the interface's own `world-point`
+/// record — `render`'s type of that name is already
+/// [`WorldPoint`] here, and the particles' is
+/// [`ModParticlePoint`].
+pub use render_bindings::horizon::mods::dynamic_light::{
+    DynamicLightPolicy as ModDynamicLightPolicy, GlowingKind as ModGlowingKind,
+    LightSource as ModLightSource, SourceAnchor as ModLightAnchor, WorldPoint as ModLightPoint,
+};
 use render_bindings::horizon::mods::entity_pose;
 /// Player models' pose states and the offsets a mod sets on them
 /// (WIT `interface entity-pose`, API 20): a `render` extension,
@@ -335,6 +348,18 @@ pub const PARTICLE_EMITTER_RATE_MAX: f32 = 200.0;
 /// larger duration is cut to it at the door — an arrival or
 /// an opening may ease for a second, never longer.
 pub const CHAT_ANIMATION_MS_MAX: u32 = 1000;
+/// Sources one mod may register in the game's dynamic
+/// lights (capability `render`'s `dynamic-light`, API 28),
+/// and the glowing kinds one policy may name: a mod's own
+/// lights are landmarks and held things, not a second
+/// lighting system — and the arena they join is the game's
+/// own sixteen.
+pub const DYNAMIC_LIGHT_SOURCES: usize = 32;
+pub const DYNAMIC_LIGHT_KINDS: usize = 32;
+/// An item or kind name's length cap (API 28): no loaded
+/// item's or entity type's name is near it, and a longer
+/// one names nothing.
+const DYNAMIC_LIGHT_NAME_CHARS: usize = 128;
 /// A particle type name's length cap (API 26): no loaded
 /// type's name is near it, and a longer one spawns nothing.
 const PARTICLE_NAME_CHARS: usize = 128;
@@ -944,6 +969,26 @@ struct ChatDecorationStore {
     animation: Option<(u64, ModChatAnimation)>,
 }
 
+/// What capability `render`'s `dynamic-light` holds for one
+/// mod (API 28): its own registered sources, replaced
+/// wholesale by each `set-sources` call, and its policy over
+/// the game's own gather, stamped with the order its set
+/// happened in ([`DYNAMIC_LIGHT_SEQ`]) so the aggregate can
+/// run the tenancy rule. No outputs, no queues — a source is
+/// standing state and a policy set is not an action; both
+/// drop with the mod's store on stop, as every stateful
+/// surface's state does.
+#[derive(Default)]
+struct DynamicLightStore {
+    /// The mod's own sources (`dynamic-light.set-sources`),
+    /// sanitized by the call ([`DYNAMIC_LIGHT_SOURCES`]).
+    sources: Vec<ModLightSource>,
+    /// The mod's policy (`dynamic-light.set-policy`),
+    /// sanitized by the call: its glowing kinds cut and
+    /// clamped, its three numbers clamped to their ranges.
+    policy: Option<(u64, ModDynamicLightPolicy)>,
+}
+
 /// A stack match with its values parsed (WIT `item-model`, API
 /// 23): a declaration's SNBT, run through the core SNBT parser
 /// once, at set time, into the JSON shape the game's component
@@ -1423,6 +1468,11 @@ static MAP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 /// animation, so the newest stamp of each record wins, as
 /// with the hand's offset.
 static CHAT_DECORATION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// The order `dynamic-light.set-policy` calls happened in,
+/// across mods (API 28): one policy stands over the game's
+/// own gather, so the newest stamp wins, as with the chat
+/// decoration.
+static DYNAMIC_LIGHT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// Items a panel may hold, and events kept for `browser.poll`.
 const BROWSER_ITEMS: usize = 8192;
 /// `recipes.place` and `give` calls a hook call may make.
@@ -1552,6 +1602,11 @@ struct State {
     /// this mod's declarations stand. A stopped mod's styling
     /// ends with its store, as its emitters do.
     chat_decoration: ChatDecorationStore,
+    /// Capability `render`'s `dynamic-light` declarations
+    /// (API 28): the mod's own light sources and its policy
+    /// over the game's own gather. A stopped mod's lights
+    /// end with its store, as its styling does.
+    dynamic_light: DynamicLightStore,
     /// The tick the game last began ([`Mods::tick`]): the
     /// particle budget keys its count on it, so a call
     /// between ticks weighs against the last tick's spends.
@@ -1895,6 +1950,7 @@ impl Mods {
             map: MapStore::default(),
             particles: ParticleStore::default(),
             chat_decoration: ChatDecorationStore::default(),
+            dynamic_light: DynamicLightStore::default(),
             tick: 0,
             wheel: std::collections::VecDeque::new(),
             model_rules: Vec::new(),
@@ -3073,6 +3129,52 @@ impl Mods {
         }
     }
 
+    /// The running mods' own dynamic-light sources
+    /// (capability `render`'s `dynamic-light`, API 28):
+    /// every running mod's registered sources in load order,
+    /// as (entry index, source) pairs — per-mod and additive,
+    /// as the emitters are. The game resolves each anchor
+    /// against the drawn world in its frame gather. A
+    /// stopped mod's sources are gone with its store.
+    pub fn dynamic_light_sources(&self) -> Vec<(usize, ModLightSource)> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| e.run.as_ref().map(|r| (i, r.store.data())))
+            .flat_map(|(i, data)| {
+                data.dynamic_light
+                    .sources
+                    .iter()
+                    .map(move |source| (i, source.clone()))
+            })
+            .collect()
+    }
+    /// The policy standing over the game's own dynamic-light
+    /// gather (API 28): the newest `set-policy` among running
+    /// mods — one policy stands, by tenancy. When its author
+    /// stops or clears, the next newest setter's stands; when
+    /// none stands, `None`: the player's own Dynamic lights
+    /// setting rules the gather, exactly as it does today.
+    pub fn dynamic_light_policy(&self) -> Option<&ModDynamicLightPolicy> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref()?.store.data().dynamic_light.policy.as_ref())
+            .max_by_key(|(seq, _)| *seq)
+            .map(|(_, policy)| policy)
+    }
+    /// Ends every running mod's dynamic lights (API 28): the
+    /// game calls this as the world closes — anchors and the
+    /// gather are the open world's, and a reopened world
+    /// starts with no sources and no policy until the mods
+    /// declare them again.
+    pub fn clear_dynamic_lights(&mut self) {
+        for run in self.entries.iter_mut().filter_map(|e| e.run.as_mut()) {
+            let store = &mut run.store.data_mut().dynamic_light;
+            store.sources.clear();
+            store.policy = None;
+        }
+    }
+
     /// The line decoration that applies to the game's chat
     /// (capability `chat-decoration`, API 27): the newest set
     /// among running mods that set one — the latest-writer
@@ -4138,6 +4240,83 @@ impl particles::Host for State {
             .take(PARTICLE_EMITTERS)
             .filter_map(sanitize_emitter)
             .collect();
+    }
+}
+
+/// A dynamic-light source as the door keeps it (capability
+/// `render`'s `dynamic-light`, API 28): its level clamped
+/// to the arena's 15, its item's name trimmed and cut to
+/// [`DYNAMIC_LIGHT_NAME_CHARS`]. A `position` anchor with a
+/// non-finite component drops the entry whole, as a burst's
+/// non-finite numbers refuse it — half a place is not a
+/// place. A source at level 0 with no item names nothing
+/// that could glow, and is dropped; with an item it stands,
+/// and the game's own table decides whether it glows.
+fn sanitize_light_source(mut source: ModLightSource) -> Option<ModLightSource> {
+    if let ModLightAnchor::Position(at) = &source.anchor
+        && !(at.x.is_finite() && at.y.is_finite() && at.z.is_finite())
+    {
+        return None;
+    }
+    source.level = source.level.min(15);
+    if let Some(item) = &mut source.item {
+        let taken = std::mem::take(item);
+        *item = clip_to(taken.trim().to_string(), DYNAMIC_LIGHT_NAME_CHARS);
+    }
+    if source.level == 0 && source.item.is_none() {
+        return None;
+    }
+    Some(source)
+}
+
+/// A dynamic-light policy as the door keeps it (API 28):
+/// its glowing kinds cut to [`DYNAMIC_LIGHT_KINDS`] with
+/// their levels clamped to 1..=15 and names trimmed and
+/// cut, its brightness clamped to 10..=200, its range to
+/// 8..=96 and its max-lights to 1..=16 — a policy can only
+/// narrow the game's arena, never widen it.
+fn sanitize_light_policy(mut policy: ModDynamicLightPolicy) -> ModDynamicLightPolicy {
+    policy.glowing = policy
+        .glowing
+        .into_iter()
+        .take(DYNAMIC_LIGHT_KINDS)
+        .map(|mut kind| {
+            kind.kind = clip_to(kind.kind.trim().to_string(), DYNAMIC_LIGHT_NAME_CHARS);
+            kind.level = kind.level.clamp(1, 15);
+            kind
+        })
+        .collect();
+    policy.brightness = policy.brightness.clamp(10, 200);
+    policy.range = policy.range.clamp(8, 96);
+    policy.max_lights = policy.max_lights.clamp(1, 16);
+    policy
+}
+
+impl dynamic_light::Host for State {
+    fn set_sources(&mut self, sources: Option<Vec<ModLightSource>>) {
+        // Replaced wholesale, as the declaration districts'
+        // sets are: at most DYNAMIC_LIGHT_SOURCES sources,
+        // each sanitized at the door. None clears, as the
+        // emitters clear. The game resolves the anchors in
+        // its frame gather — what a source draws is its side.
+        self.dynamic_light.sources = sources
+            .unwrap_or_default()
+            .into_iter()
+            .take(DYNAMIC_LIGHT_SOURCES)
+            .filter_map(sanitize_light_source)
+            .collect();
+    }
+    fn set_policy(&mut self, policy: Option<ModDynamicLightPolicy>) {
+        // A policy set, not an action: the declaration is
+        // sanitized and stamped with the order it happened
+        // in, and stored whole, as the chat decoration is —
+        // the aggregate ([`Mods::dynamic_light_policy`])
+        // runs the tenancy rule. None clears the mod's own
+        // policy; the player's setting is never written.
+        self.dynamic_light.policy = policy.map(|policy| {
+            let seq = DYNAMIC_LIGHT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            (seq, sanitize_light_policy(policy))
+        });
     }
 }
 

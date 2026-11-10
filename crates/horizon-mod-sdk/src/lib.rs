@@ -98,6 +98,22 @@
 //! stepped by the game every tick. Everything is drawn by
 //! the game's own particle engine on this client: nothing
 //! reaches the server and nothing in the world changes.
+//! `render` also sheds light through [`dynamic_light`]
+//! (API level 28): [`dynamic_light::set_sources`] registers
+//! the mod's own sources in the game's dynamic lights —
+//! anchored to the player, to a drawn entity, or to a fixed
+//! place, at a level of its own or naming an item whose glow
+//! the game looks up in its own table — and
+//! [`dynamic_light::set_policy`] is the mod's word over the
+//! game's own gather: which of its classes shed light
+//! (held items, dropped items, burning entities, creatures
+//! that glow by kind, fire projectiles), whether water puts
+//! fire out, and the gathered light's brightness, range and
+//! count. A policy replaces the player's Dynamic lights
+//! extra setting while it stands and never writes it; the
+//! newest policy among running mods is the one that stands.
+//! All of it is render-time light: the world's stored light
+//! never changes, and no other player is sent anything.
 //! `chat_decoration` (its own capability, API level 27,
 //! experimental) restyles the game's own chat:
 //! [`chat_decoration::set_line_decoration`] puts a player's
@@ -134,6 +150,9 @@ pub use horizon::mods::actions::{
     BlockTarget, CrosshairTarget as ActionTarget, EntityTarget, Face, Hand as ActionHand,
 };
 pub use horizon::mods::chat_decoration::{ChatAnimation, LineDecoration};
+pub use horizon::mods::dynamic_light::{
+    DynamicLightPolicy, GlowingKind, LightSource, SourceAnchor,
+};
 pub use horizon::mods::entity_pose::{
     ArmPose, EntityPoseState, ItemUse, PartOffset, PoseOffset, PoseTarget,
 };
@@ -154,9 +173,9 @@ pub use horizon::mods::screen::{
     Anchor, Highlight, ScreenButton, ScreenEvent, ScreenState, TradeList, TradeOffer, TradeStack,
 };
 pub use horizon::mods::{
-    actions, audio, browser, chat, chat_decoration, command, entity, entity_pose, game, hand, hud,
-    input, inventory, inventory_actions, item_model, log, map, particles, recipes, render, screen,
-    storage, ui, world,
+    actions, audio, browser, chat, chat_decoration, command, dynamic_light, entity, entity_pose,
+    game, hand, hud, input, inventory, inventory_actions, item_model, log, map, particles, recipes,
+    render, screen, storage, ui, world,
 };
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for

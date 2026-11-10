@@ -85,6 +85,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "chat-decoration-probe",
                 "-p",
+                "dynamic-light-probe",
+                "-p",
                 "horizon-mods-test-guest",
                 "-p",
                 "horizon-mods-test-ui-guest",
@@ -129,6 +131,7 @@ fn mods_dir() -> &'static Path {
             ("map_probe", example("map-probe")),
             ("particles_probe", example("particles-probe")),
             ("chat_decoration_probe", example("chat-decoration-probe")),
+            ("dynamic_light_probe", example("dynamic-light-probe")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
         ];
@@ -2114,8 +2117,9 @@ experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audi
         needed(imports(&wasm).unwrap().iter().map(String::as_str)).0
     };
     assert_eq!(level("coords_hud.kmod"), 0);
-    // The UI guest restyles the chat (`chat-decoration.set-animation`, level 27).
-    assert_eq!(level("horizon_mods_test_ui_guest.kmod"), 27);
+    // The UI guest restyles the chat (`chat-decoration.set-animation`, level 27)
+    // and sets a dynamic-light policy (`dynamic-light.set-policy`, level 28).
+    assert_eq!(level("horizon_mods_test_ui_guest.kmod"), 28);
     // The world probe reads blocks (`world.get-blocks`, level 8).
     assert_eq!(level("world_probe.kmod"), 8);
     // The inventory probe reads its inventory (`inventory.inventory`, level 9).
@@ -2150,6 +2154,171 @@ experimental = ["ui", "render", "input", "recipes", "inventory", "entity", "audi
     assert_eq!(level("particles_probe.kmod"), 26);
     // The chat decoration probe restyles the chat (`chat-decoration.set-line-decoration`, level 27).
     assert_eq!(level("chat_decoration_probe.kmod"), 27);
+    // The dynamic light probe sheds light (`dynamic-light.set-sources`, level 28).
+    assert_eq!(level("dynamic_light_probe.kmod"), 28);
+}
+
+/// Capability `render`'s `dynamic-light` (API 28): sources
+/// are cut to thirty-two and clamped at the door — a level
+/// of 20 stored as 15, a non-finite place and a level-0
+/// itemless source dropped whole, an unknown item kept for
+/// the game to resolve — a policy's numbers and kinds clamp
+/// the same way, the newest policy among running mods
+/// stands by tenancy (an earlier setter's stands again when
+/// the newer stops or clears), and a stopped mod's sources
+/// and policy are gone with it.
+#[test]
+fn dynamic_light_sources_clamp_and_policy_stands() {
+    use horizon_mods::{
+        ModDynamicLightPolicy, ModGlowingKind, ModLightAnchor, ModLightPoint, ModLightSource,
+    };
+    let paths = [
+        mods_dir().join("horizon_mods_test_guest.kmod"),
+        mods_dir().join("horizon_mods_test_ui_guest.kmod"),
+    ];
+    let mut mods = Mods::load(&paths, |_| true, |_| false);
+    assert!(mods.dynamic_light_sources().is_empty());
+    assert_eq!(mods.dynamic_light_policy(), None);
+    // Thirty-three declared, thirty-two kept: the item
+    // source first, the level-20 place stored at 15, then
+    // thirty of the thirty-one fillers.
+    assert!(mods.command("setlights"));
+    mods.drain();
+    let sources = mods.dynamic_light_sources();
+    assert_eq!(sources.len(), 32);
+    assert!(sources.iter().all(|(i, _)| *i == 0));
+    assert_eq!(
+        sources[0].1,
+        ModLightSource {
+            anchor: ModLightAnchor::SelfPlayer,
+            level: 0,
+            item: Some("minecraft:torch".into()),
+        }
+    );
+    assert_eq!(
+        sources[1].1,
+        ModLightSource {
+            anchor: ModLightAnchor::Position(ModLightPoint {
+                x: 10.5,
+                y: 64.0,
+                z: -3.0,
+            }),
+            level: 15,
+            item: None,
+        }
+    );
+    assert_eq!(
+        sources[31].1,
+        ModLightSource {
+            anchor: ModLightAnchor::Position(ModLightPoint {
+                x: 29.0,
+                y: 70.0,
+                z: 0.0,
+            }),
+            level: 5,
+            item: None,
+        }
+    );
+    // The bad set replaces it wholesale: of its three, only
+    // the unknown item stands — inertness is the game's
+    // resolution, not the store's.
+    assert!(mods.command("setbadlights"));
+    mods.drain();
+    assert_eq!(
+        mods.dynamic_light_sources(),
+        [(
+            0,
+            ModLightSource {
+                anchor: ModLightAnchor::SelfPlayer,
+                level: 0,
+                item: Some("minecraft:nosuchthing".into()),
+            },
+        )]
+    );
+    // The UI guest's policy stands first.
+    assert!(mods.command("light_policy"));
+    mods.drain();
+    let ui_policy = ModDynamicLightPolicy {
+        held_items: true,
+        dropped_items: false,
+        burning: true,
+        glowing: vec![ModGlowingKind {
+            kind: "minecraft:magma_cube".into(),
+            level: 12,
+        }],
+        projectiles: true,
+        water_extinguishes: false,
+        brightness: 120,
+        range: 48,
+        max_lights: 6,
+    };
+    assert_eq!(mods.dynamic_light_policy(), Some(&ui_policy));
+    // The guest's policy is the newer set: it stands, its
+    // bait clamped at the door — brightness 5 to 10, range
+    // 200 to 96, max-lights 99 to 16, thirty-three kinds to
+    // thirty-two, their levels into 1..=15.
+    assert!(mods.command("setpolicy"));
+    mods.drain();
+    let guest_policy = mods.dynamic_light_policy().expect("a policy stands");
+    assert_eq!(guest_policy.brightness, 10);
+    assert_eq!(guest_policy.range, 96);
+    assert_eq!(guest_policy.max_lights, 16);
+    assert_eq!(guest_policy.glowing.len(), 32);
+    assert_eq!(
+        guest_policy.glowing[0],
+        ModGlowingKind {
+            kind: "minecraft:blaze".into(),
+            level: 15,
+        }
+    );
+    assert_eq!(
+        guest_policy.glowing[1],
+        ModGlowingKind {
+            kind: "minecraft:kind0".into(),
+            level: 1,
+        }
+    );
+    assert!(guest_policy.held_items && guest_policy.water_extinguishes);
+    // The guest clears its own policy: the UI guest's,
+    // set earlier, stands again.
+    assert!(mods.command("clearpolicy"));
+    mods.drain();
+    assert_eq!(mods.dynamic_light_policy(), Some(&ui_policy));
+    // The guest's second policy is the newest set once
+    // more — and ends with the guest: it panics, and the
+    // UI guest's policy and no sources are what remain.
+    assert!(mods.command("setpolicy2"));
+    mods.drain();
+    assert_eq!(
+        mods.dynamic_light_policy(),
+        Some(&ModDynamicLightPolicy {
+            held_items: false,
+            dropped_items: true,
+            burning: false,
+            glowing: vec![ModGlowingKind {
+                kind: "minecraft:glow_squid".into(),
+                level: 8,
+            }],
+            projectiles: false,
+            water_extinguishes: false,
+            brightness: 150,
+            range: 32,
+            max_lights: 4,
+        })
+    );
+    assert!(mods.command("panic"));
+    mods.drain();
+    assert!(matches!(mods.entries()[0].status, Status::Failed(_)));
+    assert_eq!(mods.dynamic_light_policy(), Some(&ui_policy));
+    assert!(
+        mods.dynamic_light_sources().is_empty(),
+        "a stopped mod's sources are gone"
+    );
+    // The UI guest clears: no policy stands, and the
+    // player's own setting rules the gather again.
+    assert!(mods.command("light_policy off"));
+    mods.drain();
+    assert_eq!(mods.dynamic_light_policy(), None);
 }
 
 #[test]
